@@ -67,6 +67,8 @@ func TestCompletion(t *testing.T) {
 		{[]string{"run", "hello", ""}, ""},
 		{[]string{"run", "-m", ""}, "32m,64m,128m,256m"},
 		{[]string{"run", "--name", ""}, ""},
+		{[]string{"run", "--network", ""}, "bridge,none"},
+		{[]string{"run", "--network", "b"}, "bridge"},
 		{[]string{"pull", ""}, "lab,hello,hello:latest,probe,probe:latest"},
 		{[]string{"pull", "hello", ""}, ""},
 		{[]string{"rmi", "hello", ""}, "hello:latest,probe,probe:latest"},

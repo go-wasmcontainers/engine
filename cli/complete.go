@@ -53,6 +53,25 @@ func (c *completer) ctx(cmd *cobra.Command) (context.Context, context.CancelFunc
 
 // images returns the local images as candidates: repo:tag, and the bare
 // repository for a :latest tag (what `wctr run hello` accepts).
+// networks are the engine's networks, with their driver.
+func (c *completer) networks(cmd *cobra.Command) []cobra.Completion {
+	cl, err := c.client()
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := c.ctx(cmd)
+	defer cancel()
+	ns, err := cl.Networks(ctx)
+	if err != nil {
+		return nil
+	}
+	var out []cobra.Completion
+	for _, n := range ns {
+		out = append(out, cobra.CompletionWithDesc(n.Name, "network, "+n.Driver))
+	}
+	return out
+}
+
 func (c *completer) images(cmd *cobra.Command) []cobra.Completion {
 	cl, err := c.client()
 	if err != nil {
@@ -244,6 +263,12 @@ func (c *completer) install(root *cobra.Command) {
 			if f.Name == "memory" {
 				sub.RegisterFlagCompletionFunc(f.Name, cobra.FixedCompletions(
 					[]cobra.Completion{"32m", "64m", "128m", "256m"}, noFiles))
+				return
+			}
+			if f.Name == "network" {
+				sub.RegisterFlagCompletionFunc(f.Name, func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+					return filter(c.networks(cmd), toComplete, nil), noFiles
+				})
 				return
 			}
 			sub.RegisterFlagCompletionFunc(f.Name, cobra.NoFileCompletions)
