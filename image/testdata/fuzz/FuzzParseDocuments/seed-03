@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"config\":{\"mediaType\":\"application/vnd.wasm.config.v0+json\",\"digest\":\"sha256:15312c4f57dd6de01da0101a5c186509bdbac45e69467226d464aa13803d2ff1\",\"size\":161},\"layers\":[{\"mediaType\":\"application/wasm\",\"digest\":\"sha256:93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476\",\"size\":8,\"annotations\":{\"org.opencontainers.image.title\":\"app.wasm\"}}]}")

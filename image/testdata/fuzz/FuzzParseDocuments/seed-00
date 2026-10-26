@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"created\":\"2026-10-26T00:00:00Z\",\"architecture\":\"wasm\",\"os\":\"wasip1\",\"config\":{\"Entrypoint\":[\"/bin/app.wasm\"]},\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\"sha256:94636791634e1f266c81b2c3f3bcf2d7de5ead55d48f3e22217bd15dc62f8ec8\"]}}")

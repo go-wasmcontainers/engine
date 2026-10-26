@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:488e2c9f36b53670183689e36b0713472a231ba5d3df5f22e94a36f44cd372b9\",\"size\":247,\"platform\":{\"architecture\":\"amd64\",\"os\":\"linux\"}},{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:6f7a1fd7590019a74e0816d16224bcb878fd4d353214b5f396b4e1c4eb2f5792\",\"size\":427,\"platform\":{\"architecture\":\"wasm\",\"os\":\"wasip1\"}}]}")
