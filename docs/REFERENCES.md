@@ -184,6 +184,38 @@ name follows, the last entry may be truncated), `prestat` (8),
 `subscription` (48, union contents at 16) and `event` (32). Package `wasi`
 is written against it.
 
+## Sockets: the WasmEdge socket extension (V2)
+
+Read, for package `wasi`'s socket calls:
+
+- WasmEdge 0.14.1, `lib/host/wasi/wasifunc.cpp` (`WasiSock*V2::body`) and
+  `thirdparty/wasi/api.hpp`: the V2 signatures; an address argument is a
+  `__wasi_address_t {buf, buf_len}` whose buffer is 4 or 16 bytes (V1) or
+  128 bytes of storage, a u16 family then the address (V2); address
+  families (unspec 0, inet4 1, inet6 2, unix 3), socket types (any 0, dgram
+  1, stream 2), `SO_*` numbers (`SO_ERROR` = 2), `AI_*` flags, the
+  `__wasi_addrinfo_t` (28 bytes) and `__wasi_sockaddr_t` (12 bytes)
+  layouts, and the getaddrinfo errnos (`EAI_NONAME` = 84, `EAI_SERVICE` =
+  85); `filetype` socket_dgram = 5, socket_stream = 6.
+- stealthrocket/wasi-go, `imports/wasi_snapshot_preview1/wasmedge.go`
+  (`WasmEdgeV2`): which import names are V2 (`sock_recv_from` with a port
+  out-parameter, `sock_getlocaladdr`/`sock_getpeeraddr` with three
+  parameters), `sock_getsockopt` taking the value length by value (4), the
+  getaddrinfo result chain the guest preallocates, `sa_data` = port
+  (big-endian) then address.
+- stealthrocket/net v0.2.1, `wasip1/*.go`: what a Go guest calls and in
+  which order (non-blocking sockets, `connect` → `EINPROGRESS` →
+  `SO_ERROR`, `net.FileConn` over the descriptor, getaddrinfo only with
+  the `getaddrinfo` build tag, else Go's resolver over UDP).
+- Go 1.27 `runtime/netpoll_wasip1.go` and `net/file_wasip1.go`:
+  `poll_oneoff` is level-triggered, may mix clock and descriptor
+  subscriptions, must not fail (the runtime throws), reads
+  `fd_readwrite.flags` hangup; sockets are recognised by `fd_fdstat_get`'s
+  file type.
+- RFC 1035 (with `golang.org/x/net/dns/dnsmessage`) for the network's DNS
+  server; the relay's `docs/NETWORKDRIVER.md` (v0.2.1) for the
+  NetworkDriver contract and its errno mapping.
+
 ## Threads proposal: shared memory and its binary encoding
 
 Read from `https://raw.githubusercontent.com/WebAssembly/threads/main/proposals/threads/Overview.md`:

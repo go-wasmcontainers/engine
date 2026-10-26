@@ -18,6 +18,7 @@ import (
 	"github.com/go-wasmcontainers/engine/container"
 	"github.com/go-wasmcontainers/engine/events"
 	"github.com/go-wasmcontainers/engine/image"
+	"github.com/go-wasmcontainers/engine/network"
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/volume"
 )
@@ -53,6 +54,9 @@ type Options struct {
 	ImagesRemoved func()
 	// Volumes configures named volumes (they share Containers.Store).
 	Volumes volume.Options
+	// Networks configures networks (they share Containers.Store); every
+	// engine has "bridge", its default, and "none".
+	Networks network.Options
 }
 
 // Daemon is one engine instance.
@@ -68,6 +72,15 @@ type Daemon struct {
 	restored container.RestoreReport
 	events   *events.Bus
 	vols     *volume.Manager
+	nets     *network.Manager
+}
+
+// Networks is the network manager.
+func (d *Daemon) Networks() *network.Manager { return d.nets }
+
+// NetworkRemove removes a created network no container uses.
+func (d *Daemon) NetworkRemove(ref string) error {
+	return d.nets.Remove(ref, d.mgr.UsesNetwork)
 }
 
 // Volumes is the volume manager.
@@ -127,7 +140,16 @@ func New(opt Options) (*Daemon, error) {
 		}
 		return v.FS(), nil
 	}
-	d := &Daemon{opt: opt, store: st, mgr: container.NewManager(opt.Containers), lowers: map[image.Digest]*lowerEntry{}, events: bus, vols: vols}
+	if opt.Networks.Store == nil {
+		opt.Networks.Store = opt.Containers.Store
+	}
+	nets, repairedNets, err := network.New(opt.Networks)
+	if err != nil {
+		return nil, fmt.Errorf("daemon: networks: %w", err)
+	}
+	repairedVols = append(repairedVols, repairedNets...)
+	opt.Containers.Network = nets.Attach
+	d := &Daemon{opt: opt, store: st, mgr: container.NewManager(opt.Containers), lowers: map[image.Digest]*lowerEntry{}, events: bus, vols: vols, nets: nets}
 	// Containers from the last run, if any were stored.
 	rep, err := d.mgr.Restore(func(id string) (*rootfs.FS, error) {
 		_, img, err := d.ResolveImage(id)
@@ -156,6 +178,7 @@ func (d *Daemon) Containers() *container.Manager { return d.mgr }
 // Close kills running containers.
 func (d *Daemon) Close(ctx context.Context) error {
 	d.mgr.Shutdown(ctx)
+	d.nets.Close()
 	return d.vols.Close(ctx)
 }
 
@@ -349,6 +372,9 @@ type CreateRequest struct {
 	// Binds are "VOLUME:/path[:ro|:rw]": named volumes only (a host path
 	// means nothing to a WebAssembly engine), created if missing.
 	Binds []string
+	// Network is the network to join by name or ID ("" or "default": the
+	// engine's default; "none": no network).
+	Network string
 }
 
 // ParseBind reads "VOLUME:/path[:ro|:rw]".
@@ -465,6 +491,17 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 	}
 	if req.WorkingDir != "" {
 		cfg.WorkingDir = req.WorkingDir
+	}
+	switch req.Network {
+	case "", "default":
+	case "host":
+		return nil, fmt.Errorf("%w: the host network does not exist in a WebAssembly engine", container.ErrInvalid)
+	default:
+		n, err := d.nets.Get(req.Network)
+		if err != nil {
+			return nil, fmt.Errorf("%w: network %s not found", container.ErrInvalid, req.Network)
+		}
+		cfg.Network = n.Name
 	}
 	if len(req.Labels) > 0 {
 		cfg.Labels = req.Labels

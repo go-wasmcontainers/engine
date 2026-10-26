@@ -375,6 +375,32 @@ func (c *Client) VolumesPrune(ctx context.Context, all bool) (VolumePruneRespons
 	return out, err
 }
 
+// NetworkCreate makes an in-engine network.
+func (c *Client) NetworkCreate(ctx context.Context, o NetworkCreateRequest) (NetworkCreateResponse, error) {
+	var out NetworkCreateResponse
+	err := c.getJSON(ctx, http.MethodPost, "/networks/create", nil, o, &out)
+	return out, err
+}
+
+// Networks lists networks.
+func (c *Client) Networks(ctx context.Context) ([]Network, error) {
+	var out []Network
+	err := c.getJSON(ctx, http.MethodGet, "/networks", nil, nil, &out)
+	return out, err
+}
+
+// NetworkInspect inspects a network.
+func (c *Client) NetworkInspect(ctx context.Context, ref string) (json.RawMessage, error) {
+	var out json.RawMessage
+	err := c.getJSON(ctx, http.MethodGet, "/networks/"+url.PathEscape(ref), nil, nil, &out)
+	return out, err
+}
+
+// NetworkRemove removes a network.
+func (c *Client) NetworkRemove(ctx context.Context, ref string) error {
+	return c.getJSON(ctx, http.MethodDelete, "/networks/"+url.PathEscape(ref), nil, nil, nil)
+}
+
 // DiskUsage is GET /system/df.
 func (c *Client) DiskUsage(ctx context.Context) (SystemDataUsage, error) {
 	var out SystemDataUsage

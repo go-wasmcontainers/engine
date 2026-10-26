@@ -116,6 +116,51 @@ type HostConfig struct {
 	AutoRemove bool  `json:"AutoRemove"`
 	// Binds are "VOLUME:/path[:ro|:rw]"; named volumes only.
 	Binds []string `json:"Binds,omitempty"`
+	// NetworkMode is the network to join ("default", "none", a name).
+	NetworkMode string `json:"NetworkMode,omitempty"`
+}
+
+// Network is Docker's network object (GET /networks), a subset.
+type Network struct {
+	Name       string                     `json:"Name"`
+	ID         string                     `json:"Id"`
+	Created    string                     `json:"Created"`
+	Scope      string                     `json:"Scope"`
+	Driver     string                     `json:"Driver"`
+	EnableIPv6 bool                       `json:"EnableIPv6"`
+	IPAM       NetworkIPAM                `json:"IPAM"`
+	Internal   bool                       `json:"Internal"`
+	Attachable bool                       `json:"Attachable"`
+	Containers map[string]NetworkEndpoint `json:"Containers"`
+	Options    map[string]string          `json:"Options"`
+	Labels     map[string]string          `json:"Labels"`
+}
+
+// NetworkIPAM is a network's address management.
+type NetworkIPAM struct {
+	Driver string              `json:"Driver"`
+	Config []map[string]string `json:"Config"`
+}
+
+// NetworkEndpoint is a container on a network.
+type NetworkEndpoint struct {
+	Name        string `json:"Name"`
+	IPv4Address string `json:"IPv4Address"`
+}
+
+// NetworkCreateRequest is the body of POST /networks/create.
+type NetworkCreateRequest struct {
+	Name     string            `json:"Name"`
+	Driver   string            `json:"Driver,omitempty"`
+	Internal bool              `json:"Internal,omitempty"`
+	Labels   map[string]string `json:"Labels,omitempty"`
+	Options  map[string]string `json:"Options,omitempty"`
+}
+
+// NetworkCreateResponse is the reply to POST /networks/create.
+type NetworkCreateResponse struct {
+	ID      string `json:"Id"`
+	Warning string `json:"Warning"`
 }
 
 // MountPoint is one entry of an inspected container's Mounts.
@@ -240,6 +285,20 @@ type ContainerInspect struct {
 	Config       ContainerConfig `json:"Config"`
 	HostConfig   HostConfig      `json:"HostConfig"`
 	Mounts       []MountPoint    `json:"Mounts"`
+	// NetworkSettings has the address while the container runs.
+	NetworkSettings NetworkSettings `json:"NetworkSettings"`
+}
+
+// NetworkSettings is an inspected container's networking (a subset).
+type NetworkSettings struct {
+	IPAddress string                      `json:"IPAddress"`
+	Networks  map[string]EndpointSettings `json:"Networks"`
+}
+
+// EndpointSettings is a container's place on one network.
+type EndpointSettings struct {
+	IPAddress string   `json:"IPAddress"`
+	DNSNames  []string `json:"DNSNames"`
 }
 
 // JSONMessage is one line of the POST /images/create progress stream.

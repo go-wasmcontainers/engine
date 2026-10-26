@@ -154,6 +154,13 @@ func (n *netState) changed() {
 	n.wake = make(chan struct{})
 }
 
+// current is the channel the next change closes.
+func (n *netState) current() <-chan struct{} {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.wake
+}
+
 // notify is changed() taking the lock.
 func (n *netState) notify() {
 	n.mu.Lock()
@@ -253,11 +260,14 @@ func (p *Proc) async(fn func(), then func(m Memory) Result) Result {
 
 // block waits for any socket change and retries call, unless the socket
 // is non-blocking.
-func (p *Proc) block(s *sock, call func(m Memory) Result) Result {
+//
+// wake must have been taken (current) before the socket's state was read,
+// so that a change in between is not missed.
+func (p *Proc) block(s *sock, wake <-chan struct{}, call func(m Memory) Result) Result {
 	if s.nonblock {
 		return fail(EAGAIN)
 	}
-	return Result{Wait: p.net.wake, Resume: call}
+	return Result{Wait: wake, Resume: call}
 }
 
 // sockView is what Call reads of a socket's goroutine-set state, taken
@@ -552,12 +562,12 @@ func (p *Proc) sockAccept(fd, flags, resultPtr uint32, m Memory) Result {
 		return fail(EINVAL)
 	}
 	if len(s.accepted) == 0 {
-		err := s.aErr
+		err, wake := s.aErr, n.wake
 		n.mu.Unlock()
 		if err != nil {
 			return fail(sockErrno(err))
 		}
-		return p.block(s, func(m Memory) Result { return p.sockAccept(fd, flags, resultPtr, m) })
+		return p.block(s, wake, func(m Memory) Result { return p.sockAccept(fd, flags, resultPtr, m) })
 	}
 	c := s.accepted[0]
 	s.accepted = s.accepted[1:]
@@ -734,10 +744,13 @@ func (p *Proc) packetSender(s *sock, pc net.PacketConn, conn net.Conn) {
 		n.changed()
 		n.mu.Unlock()
 		var err error
-		if conn != nil && (!d.addr.IsValid() || d.addr == s.peer) {
+		switch {
+		case conn != nil && (!d.addr.IsValid() || d.addr == s.peer):
 			_, err = conn.Write(d.b)
-		} else {
+		case pc != nil:
 			_, err = pc.WriteTo(d.b, net.UDPAddrFromAddrPort(d.addr))
+		default:
+			err = syscall.EISCONN // a connected socket whose driver sends to its peer only
 		}
 		if err != nil {
 			n.mu.Lock()
@@ -858,6 +871,7 @@ func (p *Proc) recv(fd, iovs, niov, flags uint32, m Memory, onData func(n uint32
 	}
 	n := p.net
 	n.mu.Lock()
+	wake := n.wake
 	if s.stype == sockDgram {
 		if len(s.dgrams) == 0 {
 			err, shut, unbound := s.rErr, s.rShut, s.pc == nil
@@ -870,7 +884,7 @@ func (p *Proc) recv(fd, iovs, niov, flags uint32, m Memory, onData func(n uint32
 			case unbound:
 				return fail(ENOTCONN)
 			}
-			return p.block(s, func(m Memory) Result { return p.recv(fd, iovs, niov, flags, m, onData) })
+			return p.block(s, wake, func(m Memory) Result { return p.recv(fd, iovs, niov, flags, m, onData) })
 		}
 		d := s.dgrams[0]
 		if flags&riPeek == 0 {
@@ -888,7 +902,7 @@ func (p *Proc) recv(fd, iovs, niov, flags uint32, m Memory, onData func(n uint32
 		connecting := s.connecting
 		n.mu.Unlock()
 		if connecting {
-			return p.block(s, func(m Memory) Result { return p.recv(fd, iovs, niov, flags, m, onData) })
+			return p.block(s, wake, func(m Memory) Result { return p.recv(fd, iovs, niov, flags, m, onData) })
 		}
 		return fail(ENOTCONN)
 	}
@@ -902,7 +916,7 @@ func (p *Proc) recv(fd, iovs, niov, flags uint32, m Memory, onData func(n uint32
 		case err != nil:
 			return fail(sockErrno(err))
 		}
-		return p.block(s, func(m Memory) Result { return p.recv(fd, iovs, niov, flags, m, onData) })
+		return p.block(s, wake, func(m Memory) Result { return p.recv(fd, iovs, niov, flags, m, onData) })
 	}
 	data := s.rbuf
 	n.mu.Unlock()
@@ -920,6 +934,25 @@ func (p *Proc) recv(fd, iovs, niov, flags uint32, m Memory, onData func(n uint32
 		n.mu.Unlock()
 	}
 	return onData(k, false, peer)
+}
+
+// recvDone writes a receive's count and output flags.
+func (p *Proc) recvDone(k uint32, trunc bool, nPtr, flagsPtr uint32, m Memory) Result {
+	var fl uint16
+	if trunc {
+		fl = roDataTruncated
+	}
+	if !writeU32(m, nPtr, k) {
+		return fail(EFAULT)
+	}
+	// ro_flags is a u16 in preview 1; stealthrocket/net passes an int32
+	// it zeroed: two bytes suit both.
+	var b [2]byte
+	binary.LittleEndian.PutUint16(b[:], fl)
+	if !m.Write(flagsPtr, b[:]) {
+		return fail(EFAULT)
+	}
+	return ok()
 }
 
 // gather reads the guest's iovecs, at most limit bytes.
@@ -956,6 +989,7 @@ func (p *Proc) send(fd, iovs, niov uint32, dst netip.AddrPort, resultPtr uint32,
 		return fail(e)
 	}
 	n := p.net
+	wake := n.current()
 	v := p.view(s)
 	if s.stype == sockDgram {
 		// Sizing first: an iovec list may name more than a datagram holds.
@@ -994,7 +1028,7 @@ func (p *Proc) send(fd, iovs, niov uint32, dst netip.AddrPort, resultPtr uint32,
 		}
 		if len(s.dq) >= netdriver.DatagramQueue {
 			n.mu.Unlock()
-			return p.block(s, func(m Memory) Result { return p.send(fd, iovs, niov, dst, resultPtr, m) })
+			return p.block(s, wake, func(m Memory) Result { return p.send(fd, iovs, niov, dst, resultPtr, m) })
 		}
 		s.dq = append(s.dq, dgram{dst, data})
 		n.changed()
@@ -1006,7 +1040,7 @@ func (p *Proc) send(fd, iovs, niov uint32, dst netip.AddrPort, resultPtr uint32,
 	}
 	if v.conn == nil {
 		if v.connecting {
-			return p.block(s, func(m Memory) Result { return p.send(fd, iovs, niov, dst, resultPtr, m) })
+			return p.block(s, wake, func(m Memory) Result { return p.send(fd, iovs, niov, dst, resultPtr, m) })
 		}
 		return fail(ENOTCONN)
 	}
@@ -1020,7 +1054,7 @@ func (p *Proc) send(fd, iovs, niov uint32, dst netip.AddrPort, resultPtr uint32,
 	case err != nil:
 		return fail(sockErrno(err))
 	case room <= 0:
-		return p.block(s, func(m Memory) Result { return p.send(fd, iovs, niov, dst, resultPtr, m) })
+		return p.block(s, wake, func(m Memory) Result { return p.send(fd, iovs, niov, dst, resultPtr, m) })
 	}
 	data, e := gather(iovs, niov, room, m)
 	if e != 0 {
@@ -1270,7 +1304,7 @@ func (p *Proc) sockGetAddrInfo(nodePtr, nodeLen, servPtr, servLen, hintsPtr, res
 		if !writeU32(m, resLenPtr, count) {
 			return fail(EFAULT)
 		}
-		return ok()
+		return Result{}
 	}
 	switch {
 	case node == "" && hflags&aiPassive != 0:

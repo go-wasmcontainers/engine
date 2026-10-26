@@ -212,6 +212,7 @@ type process struct {
 	mu    sync.Mutex
 	mem   js.Value // the guest's shared memory, once its worker sent it
 	limit int64
+	proc  *wasi.Proc
 }
 
 func (p *process) Wait() runtime.Result { <-p.done; return p.res }
@@ -237,6 +238,7 @@ func (p *process) finish(r runtime.Result) {
 		p.worker.Call("terminate")
 		p.res = r
 		close(p.done)
+		go p.proc.Close() // its sockets
 		// Release the callbacks after the current one returns.
 		go func() {
 			for _, f := range p.funcs {
@@ -274,14 +276,14 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	for i, mt := range spec.Mounts {
 		mounts[i] = wasi.Mount{Path: mt.Path, FS: mt.FS, ReadOnly: mt.ReadOnly}
 	}
-	proc := wasi.New(wasi.Config{Args: args, Env: spec.Env, FS: spec.FS, Mounts: mounts, Stdin: spec.Stdin, Stdout: spec.Stdout, Stderr: spec.Stderr})
+	proc := wasi.New(wasi.Config{Args: args, Env: spec.Env, FS: spec.FS, Mounts: mounts, Stdin: spec.Stdin, Stdout: spec.Stdout, Stderr: spec.Stderr, Net: spec.Net})
 
 	ctl := js.Global().Get("SharedArrayBuffer").New(256)
 	i32 := js.Global().Get("Int32Array").New(ctl)
 	ctlU8 := js.Global().Get("Uint8Array").New(ctl, 0, 192)
 	atomics := js.Global().Get("Atomics")
 	worker := js.Global().Get("Worker").New(e.opt.WorkerURL)
-	p := &process{worker: worker, done: make(chan struct{}), mem: js.Undefined(), limit: int64(pagesFor(limit)) * 65536}
+	p := &process{worker: worker, done: make(chan struct{}), mem: js.Undefined(), limit: int64(pagesFor(limit)) * 65536, proc: proc}
 	mem := jsMemory{mem: js.Undefined()}
 	ctlBuf := make([]byte, 192)
 
@@ -307,20 +309,46 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 				}
 				res = proc.Call(fn, callArgs, mem)
 			}
-			flags := 0
-			if res.Exit {
-				flags = 1
+			reply := func(res wasi.Result) {
+				flags := 0
+				if res.Exit {
+					flags = 1
+				}
+				sleep := res.Sleep.Microseconds()
+				if sleep > math.MaxInt32 {
+					sleep = math.MaxInt32
+				}
+				i32.SetIndex(2, int(res.Errno))
+				i32.SetIndex(3, flags)
+				i32.SetIndex(4, int(sleep))
+				i32.SetIndex(5, int(int32(res.Code)))
+				atomics.Call("store", i32, 0, 2)
+				atomics.Call("notify", i32, 0)
 			}
-			sleep := res.Sleep.Microseconds()
-			if sleep > math.MaxInt32 {
-				sleep = math.MaxInt32
+			if res.Wait == nil {
+				reply(res)
+				break
 			}
-			i32.SetIndex(2, int(res.Errno))
-			i32.SetIndex(3, flags)
-			i32.SetIndex(4, int(sleep))
-			i32.SetIndex(5, int(int32(res.Code)))
-			atomics.Call("store", i32, 0, 2)
-			atomics.Call("notify", i32, 0)
+			// A socket wait: never in this callback (the network needs
+			// the event loop). The guest stays blocked in Atomics.wait.
+			go func(res wasi.Result, mem jsMemory) {
+				for res.Wait != nil {
+					var timeout <-chan time.Time
+					if res.Sleep > 0 {
+						t := time.NewTimer(res.Sleep)
+						timeout = t.C
+						defer t.Stop()
+					}
+					select {
+					case <-res.Wait:
+					case <-timeout:
+					case <-p.done:
+						return // killed: the worker is gone
+					}
+					res = res.Resume(mem)
+				}
+				reply(res)
+			}(res, mem)
 		case "exit":
 			p.finish(runtime.Result{ExitCode: data.Get("code").Int()})
 		case "trap":

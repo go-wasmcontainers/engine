@@ -3,7 +3,9 @@ module github.com/go-wasmcontainers/engine
 go 1.27.3
 
 require (
+	connectrpc.com/connect/v2 v2.0.2
 	github.com/docker/go-units v0.5.0
+	github.com/go-wasmcontainers/relay v0.2.1
 	github.com/klauspost/compress v1.20.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
@@ -12,6 +14,9 @@ require (
 )
 
 require (
+	github.com/coder/websocket v1.8.15 // indirect
+	github.com/go-authn/oidc v0.4.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 )
