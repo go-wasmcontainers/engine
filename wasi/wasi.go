@@ -156,6 +156,18 @@ var Funcs = []Func{
 	{"sock_recv", "iiiiii", false},
 	{"sock_send", "iiiii", false},
 	{"sock_shutdown", "ii", false},
+	// The WasmEdge socket extension (V2), in wasi_snapshot_preview1.
+	{"sock_open", "iii", false},
+	{"sock_bind", "iii", false},
+	{"sock_listen", "ii", false},
+	{"sock_connect", "iii", false},
+	{"sock_recv_from", "iiiiiiii", false},
+	{"sock_send_to", "iiiiiii", false},
+	{"sock_getsockopt", "iiiii", false},
+	{"sock_setsockopt", "iiiii", false},
+	{"sock_getlocaladdr", "iii", false},
+	{"sock_getpeeraddr", "iii", false},
+	{"sock_getaddrinfo", "iiiiiiii", false},
 }
 
 // FuncIndex maps a name to its index in Funcs.
@@ -181,6 +193,9 @@ type Config struct {
 	Now func() time.Time
 	// Rand is the randomness source (default crypto/rand).
 	Rand io.Reader
+	// Net is the container's place on a network; nil means no network
+	// (sock_open fails with ENOTSUP).
+	Net netdriver.Endpoint
 }
 
 type fdKind int
@@ -192,6 +207,7 @@ const (
 	kindPreopen
 	kindFile
 	kindDir
+	kindSocket
 )
 
 // Mount is a tree preopened at Path; ReadOnly refuses every change made
@@ -215,6 +231,7 @@ type fdEntry struct {
 	write  bool
 	read   bool
 	dirent []direntry // readdir snapshot, taken at cookie 0
+	sock   *sock
 }
 
 type direntry struct {
@@ -229,6 +246,7 @@ type Proc struct {
 	fds   map[uint32]*fdEntry
 	next  uint32
 	start time.Time
+	net   *netState
 }
 
 // MaxFDs bounds the descriptors a process may hold.
@@ -249,6 +267,7 @@ func New(cfg Config) *Proc {
 		cfg.Stderr = io.Discard
 	}
 	p := &Proc{cfg: cfg, fds: map[uint32]*fdEntry{}, next: 4, start: time.Now()}
+	p.netInit()
 	p.fds[0] = &fdEntry{kind: kindStdin, read: true}
 	p.fds[1] = &fdEntry{kind: kindStdout, write: true}
 	p.fds[2] = &fdEntry{kind: kindStderr, write: true}
@@ -285,6 +304,12 @@ type Result struct {
 	// Sleep asks the host to block the guest this long before returning
 	// (poll_oneoff on clocks). The host may cut it short on a kill.
 	Sleep time.Duration
+	// Wait, when set, asks the host to block until Wait is closed, Sleep
+	// (if not zero) has passed, or the process is killed, and then to
+	// return what Resume returns instead (which may ask to wait again).
+	// The call itself never blocks: sockets wait this way.
+	Wait   <-chan struct{}
+	Resume func(m Memory) Result
 	// Exit is set by proc_exit, with Code.
 	Exit bool
 	Code uint32
