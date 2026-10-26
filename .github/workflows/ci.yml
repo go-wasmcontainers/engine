@@ -76,6 +76,9 @@ jobs:
           # A guest's WASI calls are hostile input to the engine's host.
           - { target: FuzzCall, pkg: ./wasi }
           - { target: FuzzLimitMemory, pkg: ./wasmbin }
+          # Keys and lines a user types; a front end feeds them raw.
+          - { target: FuzzEditor, pkg: ./cli/lineedit }
+          - { target: FuzzSplitPartial, pkg: ./cli/lineedit }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
