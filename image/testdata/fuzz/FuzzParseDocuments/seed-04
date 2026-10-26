@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"architecture\":\"amd64\",\"os\":\"linux\",\"config\":{},\"rootfs\":{\"type\":\"layers\",\"diff_ids\":null}}")

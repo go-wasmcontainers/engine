@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"schemaVersion\":2,\"config\":{\"mediaType\":\"application/vnd.wasm.config.v0+json\",\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":1,\"data\":\"eA==\"},\"layers\":[]}")

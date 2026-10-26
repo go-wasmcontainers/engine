@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"architecture\":\"wasm\",\"os\":\"wasip1\",\"config\":{\"Env\":[\"A=1\"]}}")

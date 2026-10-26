@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"architecture\":\"wasm\",\"created\":\"2026-10-26T00:00:00Z\",\"layerDigests\":[\"sha256:93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476\"],\"os\":\"wasip1\"}")

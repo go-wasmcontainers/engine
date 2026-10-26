@@ -1,0 +1,5 @@
+/docker
+/dockerd
+*.test
+*.out
+cov.txt
