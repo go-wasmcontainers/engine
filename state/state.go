@@ -188,12 +188,17 @@ func Unseal(kind string, v []byte, max int) ([]byte, error) {
 }
 
 // BlobKey is the key of content-addressed data: "blob/<sha256 hex>".
-func BlobKey(data []byte) string {
+func BlobKey(data []byte) string { return ContentKey("blob", data) }
+
+// ContentKey is the key of content-addressed data of a kind of its own:
+// "<kind>/<sha256 hex>" (volumes keep theirs apart from containers', so
+// one's sweep never touches the other's).
+func ContentKey(kind string, data []byte) string {
 	sum := sha256.Sum256(data)
-	return "blob/" + hex.EncodeToString(sum[:])
+	return kind + "/" + hex.EncodeToString(sum[:])
 }
 
-// GetBlob reads a blob and checks it against its key.
+// GetBlob reads content-addressed data and checks it against its key.
 func GetBlob(s Store, key string, max int) ([]byte, error) {
 	v, err := s.Get(key)
 	if err != nil {
@@ -202,7 +207,8 @@ func GetBlob(s Store, key string, max int) ([]byte, error) {
 	if len(v) > max {
 		return nil, fmt.Errorf("%w: blob of %d bytes (at most %d)", ErrCorrupt, len(v), max)
 	}
-	if BlobKey(v) != key {
+	kind, _, _ := strings.Cut(key, "/")
+	if ContentKey(kind, v) != key {
 		return nil, fmt.Errorf("%w: %s does not match its content", ErrCorrupt, key)
 	}
 	return v, nil
