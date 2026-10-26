@@ -72,6 +72,7 @@ jobs:
           - { target: FuzzResolve, pkg: ./rootfs }
           - { target: FuzzParseDocuments, pkg: ./image }
           - { target: FuzzReference, pkg: ./image }
+          - { target: FuzzDemux, pkg: ./api }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -110,7 +111,9 @@ jobs:
       - uses: actions/setup-go@v7
         with: { go-version: '1.27.3' }
       - run: go version
-      - run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build ./image/... ./rootfs/... ./runtime ./container/...
+      - run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build ./image/... ./rootfs/... ./runtime ./container/... ./api
+      - name: the docker CLI builds for wasip1/wasm
+        run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -o docker.wasm ./cmd/docker && ls -l docker.wasm
 
   cross:
     name: cross ${{ matrix.goos }}/${{ matrix.goarch }}

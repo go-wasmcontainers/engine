@@ -1,0 +1,453 @@
+// Package server serves the engine's Docker Engine API subset over HTTP.
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"regexp"
+	goruntime "runtime"
+	"strconv"
+	"strings"
+	"time"
+
+	units "github.com/docker/go-units"
+
+	"github.com/go-wasmcontainers/engine/api"
+	"github.com/go-wasmcontainers/engine/container"
+	"github.com/go-wasmcontainers/engine/daemon"
+	"github.com/go-wasmcontainers/engine/image"
+	"github.com/go-wasmcontainers/engine/runtime"
+)
+
+// maxBody bounds a request body (a container create is a few hundred bytes).
+const maxBody = 1 << 20
+
+// Info is what /version reports about the build.
+type Info struct {
+	Version   string
+	GitCommit string
+}
+
+type server struct {
+	d    *daemon.Daemon
+	info Info
+	mux  *http.ServeMux
+}
+
+var versionPrefix = regexp.MustCompile(`^/v([0-9]+)\.([0-9]+)(/.*)$`)
+
+// New returns the API handler for d.
+func New(d *daemon.Daemon, info Info) http.Handler {
+	s := &server{d: d, info: info, mux: http.NewServeMux()}
+	s.mux.HandleFunc("GET /_ping", s.ping)
+	s.mux.HandleFunc("HEAD /_ping", s.ping)
+	s.mux.HandleFunc("GET /version", s.version)
+	s.mux.HandleFunc("POST /images/create", s.imagesCreate)
+	s.mux.HandleFunc("GET /images/json", s.imagesList)
+	s.mux.HandleFunc("GET /images/{name...}", s.imagesInspect)
+	s.mux.HandleFunc("DELETE /images/{name...}", s.imagesDelete)
+	s.mux.HandleFunc("POST /containers/create", s.containersCreate)
+	s.mux.HandleFunc("GET /containers/json", s.containersList)
+	s.mux.HandleFunc("POST /containers/{id}/start", s.containersStart)
+	s.mux.HandleFunc("POST /containers/{id}/wait", s.containersWait)
+	s.mux.HandleFunc("POST /containers/{id}/kill", s.containersKill)
+	s.mux.HandleFunc("GET /containers/{id}/logs", s.containersLogs)
+	s.mux.HandleFunc("GET /containers/{id}/json", s.containersInspect)
+	s.mux.HandleFunc("DELETE /containers/{id}", s.containersDelete)
+	return s
+}
+
+func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Accept /vX.Y/... for any version from MinAPIVersion up to APIVersion.
+	if m := versionPrefix.FindStringSubmatch(r.URL.Path); m != nil {
+		if !versionInRange(m[1], m[2]) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("client version %s.%s is not supported (%s to %s)", m[1], m[2], api.MinAPIVersion, api.APIVersion))
+			return
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = m[3]
+		r2.URL.RawPath = ""
+		r = r2
+	}
+	w.Header().Set("Api-Version", api.APIVersion)
+	w.Header().Set("Server", "go-wasmcontainers-engine/"+s.info.Version)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	s.mux.ServeHTTP(w, r)
+}
+
+func versionInRange(maj, min string) bool {
+	v := func(a, b string) int {
+		x, _ := strconv.Atoi(a)
+		y, _ := strconv.Atoi(b)
+		return x*1000 + y
+	}
+	split := func(s string) (string, string) { a, b, _ := strings.Cut(s, "."); return a, b }
+	got := v(maj, min)
+	lo := v(split(api.MinAPIVersion))
+	hi := v(split(api.APIVersion))
+	return got >= lo && got <= hi
+}
+
+// humanDuration is Docker's own rendering (github.com/docker/go-units).
+func humanDuration(d time.Duration) string { return units.HumanDuration(d) }
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, api.ErrorResponse{Message: err.Error()})
+}
+
+// statusOf maps engine errors to the statuses the Docker API documents.
+func statusOf(err error) int {
+	switch {
+	case errors.Is(err, container.ErrNotFound), errors.Is(err, daemon.ErrNoSuchImage), errors.Is(err, image.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, container.ErrNameConflict), errors.Is(err, container.ErrRunning), errors.Is(err, daemon.ErrImageInUse):
+		return http.StatusConflict
+	case errors.Is(err, container.ErrInvalid), errors.Is(err, container.ErrAmbiguous), errors.Is(err, runtime.ErrNotFound),
+		errors.Is(err, runtime.ErrInvalid), errors.Is(err, container.ErrTooMany):
+		return http.StatusBadRequest
+	case errors.Is(err, container.ErrNotRunning):
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
+}
+
+func boolParam(r *http.Request, name string) bool {
+	v := r.URL.Query().Get(name)
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+func (s *server) ping(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Docker-Experimental", "false")
+	w.Header().Set("Swarm", "inactive")
+	w.Header().Set("Builder-Version", "")
+	if r.Method == http.MethodHead {
+		return
+	}
+	io.WriteString(w, "OK")
+}
+
+func (s *server) version(w http.ResponseWriter, r *http.Request) {
+	v := api.SystemVersion{Version: s.info.Version, APIVersion: api.APIVersion, MinAPIVersion: api.MinAPIVersion,
+		GitCommit: s.info.GitCommit, GoVersion: goruntime.Version(), Os: goruntime.GOOS, Arch: goruntime.GOARCH,
+		KernelVersion: "wasip1"}
+	v.Platform.Name = "go-wasmcontainers engine (WASI preview 1 containers)"
+	writeJSON(w, http.StatusOK, v)
+}
+
+type flushWriter struct {
+	w  http.ResponseWriter
+	rc *http.ResponseController
+}
+
+func (f flushWriter) Write(p []byte) (int, error) {
+	n, err := f.w.Write(p)
+	if err == nil {
+		f.rc.Flush()
+	}
+	return n, err
+}
+
+func newFlushWriter(w http.ResponseWriter) flushWriter {
+	return flushWriter{w: w, rc: http.NewResponseController(w)}
+}
+
+func (s *server) imagesCreate(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	from := q.Get("fromImage")
+	if from == "" {
+		writeError(w, http.StatusBadRequest, errors.New("only pulls are supported: fromImage is required (import with fromSrc is not)"))
+		return
+	}
+	if tag := q.Get("tag"); tag != "" && !image.IsLayoutRef(from) {
+		sep := ":"
+		if strings.HasPrefix(tag, "sha256:") {
+			sep = "@"
+		}
+		from += sep + tag
+	}
+	if _, err := image.ParseReference(from); err != nil && !image.IsLayoutRef(from) {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fw := newFlushWriter(w)
+	enc := json.NewEncoder(fw)
+	enc.Encode(api.JSONMessage{Status: "Pulling from " + from})
+	name, res, err := s.d.Pull(r.Context(), from, func(id, status string) {
+		enc.Encode(api.JSONMessage{ID: id, Status: status})
+	})
+	if err != nil {
+		enc.Encode(api.JSONMessage{Error: err.Error(), ErrorDetail: &api.JSONMsgError{Message: err.Error()}})
+		return
+	}
+	enc.Encode(api.JSONMessage{Status: "Digest: " + string(res.RepoDigest)})
+	if res.Downloaded {
+		enc.Encode(api.JSONMessage{Status: "Status: Downloaded newer image for " + name})
+	} else {
+		enc.Encode(api.JSONMessage{Status: "Status: Image is up to date for " + name})
+	}
+}
+
+func (s *server) imagesList(w http.ResponseWriter, r *http.Request) {
+	imgs, err := s.d.Images()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	out := make([]api.ImageSummary, 0, len(imgs))
+	for _, i := range imgs {
+		labels := i.Labels
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		rd := i.RepoDigests
+		if rd == nil {
+			rd = []string{}
+		}
+		out = append(out, api.ImageSummary{ID: string(i.ID), RepoTags: i.RepoTags, RepoDigests: rd, Created: i.Created.Unix(),
+			Size: i.Size, SharedSize: -1, Labels: labels, Containers: int64(i.Containers)})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) imagesInspect(w http.ResponseWriter, r *http.Request) {
+	ref, ok := strings.CutSuffix(r.PathValue("name"), "/json")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	_, img, err := s.d.ResolveImage(ref)
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	imgs, _ := s.d.Images()
+	var tags, digests []string
+	for _, i := range imgs {
+		if i.ID == img.ID() {
+			tags, digests = i.RepoTags, i.RepoDigests
+		}
+	}
+	ec := daemon.ExecConfig(img)
+	var layers []string
+	for _, l := range img.Manifest.Layers {
+		layers = append(layers, string(l.Digest))
+	}
+	out := api.ImageInspect{ID: string(img.ID()), RepoTags: tags, RepoDigests: digests, Created: img.Config.Created,
+		Author: img.Config.Author, Architecture: img.Config.Architecture, Os: img.Config.OS, Size: img.Size,
+		Config: api.ContainerConfig{Cmd: ec.Cmd, Entrypoint: ec.Entrypoint, Env: ec.Env, WorkingDir: ec.WorkingDir, Labels: ec.Labels},
+		RootFS: map[string]any{"Type": "layers", "Layers": layers}}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) imagesDelete(w http.ResponseWriter, r *http.Request) {
+	items, err := s.d.RemoveImage(r.PathValue("name"), boolParam(r, "force"))
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	out := make([]api.ImageDeleteResponseItem, len(items))
+	for i, it := range items {
+		out[i] = api.ImageDeleteResponseItem{Untagged: it.Untagged, Deleted: it.Deleted}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
+	var req api.ContainerCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid create body: %v", err))
+		return
+	}
+	if req.Image == "" {
+		writeError(w, http.StatusBadRequest, errors.New("no image specified"))
+		return
+	}
+	var warnings []string
+	if req.Tty {
+		warnings = append(warnings, "TTY is not supported; output is multiplexed")
+	}
+	c, err := s.d.CreateContainer(daemon.CreateRequest{
+		Name: r.URL.Query().Get("name"), Image: req.Image,
+		Entrypoint: req.Entrypoint, Cmd: req.Cmd, Env: req.Env, WorkingDir: req.WorkingDir, Labels: req.Labels,
+		Memory: req.HostConfig.Memory, AutoRemove: req.HostConfig.AutoRemove,
+	})
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	if warnings == nil {
+		warnings = []string{}
+	}
+	writeJSON(w, http.StatusCreated, api.ContainerCreateResponse{ID: c.ID(), Warnings: warnings})
+}
+
+// humanStatus renders the STATUS column the way Docker does.
+func humanStatus(s container.Snapshot, now time.Time) string {
+	switch s.State {
+	case container.Running:
+		return "Up " + humanDuration(now.Sub(s.StartedAt))
+	case container.Exited:
+		return fmt.Sprintf("Exited (%d) %s ago", s.ExitCode, humanDuration(now.Sub(s.FinishedAt)))
+	}
+	return "Created"
+}
+
+func (s *server) containersList(w http.ResponseWriter, r *http.Request) {
+	all := boolParam(r, "all")
+	now := time.Now()
+	out := []api.ContainerSummary{}
+	for _, c := range s.d.Containers().List(all) {
+		labels := c.Config.Labels
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		cs := api.ContainerSummary{ID: c.ID, Names: []string{"/" + c.Name}, Image: c.Config.Image, ImageID: c.Config.ImageID,
+			Command: strings.Join(c.Command(), " "), Created: c.Created.Unix(), Ports: []any{}, SizeRw: c.SizeRw,
+			Labels: labels, State: string(c.State), Status: humanStatus(c, now)}
+		cs.HostConfig.NetworkMode = "none"
+		out = append(out, cs)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) containersStart(w http.ResponseWriter, r *http.Request) {
+	err := s.d.Containers().Start(context.WithoutCancel(r.Context()), r.PathValue("id"))
+	switch {
+	case errors.Is(err, container.ErrAlreadyStarted):
+		w.WriteHeader(http.StatusNotModified)
+	case err != nil:
+		writeError(w, statusOf(err), err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (s *server) containersKill(w http.ResponseWriter, r *http.Request) {
+	if err := s.d.Containers().Kill(r.PathValue("id")); err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) containersWait(w http.ResponseWriter, r *http.Request) {
+	cond := container.WaitCondition(r.URL.Query().Get("condition"))
+	switch cond {
+	case "", container.WaitNotRunning, container.WaitNextExit, container.WaitRemoved:
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid condition %q", cond))
+		return
+	}
+	c, err := s.d.Containers().Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	// Headers go out at once, so a client knows its wait is registered
+	// before it starts the container (this is how `docker run` avoids
+	// missing a fast exit); the body follows when the condition holds.
+	ready := make(chan struct{})
+	type result struct {
+		code int
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		close(ready)
+		code, err := c.Wait(r.Context(), cond)
+		done <- result{code, err}
+	}()
+	<-ready
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	http.NewResponseController(w).Flush()
+	res := <-done
+	resp := api.ContainerWaitResponse{StatusCode: int64(res.code)}
+	if res.err != nil {
+		resp.Error = &api.ContainerWaitExitError{Message: res.err.Error()}
+	} else if s := c.Snapshot(); s.Error != "" && cond != container.WaitRemoved {
+		resp.Error = &api.ContainerWaitExitError{Message: s.Error}
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *server) containersLogs(w http.ResponseWriter, r *http.Request) {
+	stdout, stderr := boolParam(r, "stdout"), boolParam(r, "stderr")
+	if !stdout && !stderr {
+		writeError(w, http.StatusBadRequest, errors.New("bad parameters: you must choose at least one stream"))
+		return
+	}
+	c, err := s.d.Containers().Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.docker.multiplexed-stream")
+	w.WriteHeader(http.StatusOK)
+	fw := newFlushWriter(w)
+	fw.rc.Flush()
+	c.Logs(r.Context(), boolParam(r, "follow"), func(rec container.Record) error {
+		if (rec.Stream == container.Stdout && !stdout) || (rec.Stream == container.Stderr && !stderr) {
+			return nil
+		}
+		return api.WriteFrame(fw, rec.Stream, rec.Data)
+	})
+}
+
+func rfc3339(t time.Time) string {
+	if t.IsZero() {
+		return "0001-01-01T00:00:00Z"
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
+	c, err := s.d.Containers().Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	sn := c.Snapshot()
+	argv := sn.Command()
+	out := api.ContainerInspect{
+		ID: sn.ID, Created: rfc3339(sn.Created), Path: sn.Path, Image: sn.Config.ImageID, Name: "/" + sn.Name,
+		Driver: "rootfs (in-memory, copy-on-write)", Platform: "wasip1", SizeRw: sn.SizeRw,
+		State: api.ContainerState{Status: string(sn.State), Running: sn.State == container.Running, ExitCode: sn.ExitCode,
+			Error: sn.Error, StartedAt: rfc3339(sn.StartedAt), FinishedAt: rfc3339(sn.FinishedAt)},
+		Config: api.ContainerConfig{Image: sn.Config.Image, Cmd: sn.Config.Cmd, Entrypoint: sn.Config.Entrypoint,
+			Env: sn.Config.Env, WorkingDir: sn.Config.WorkingDir, Labels: sn.Config.Labels},
+		HostConfig: api.HostConfig{Memory: sn.Config.MemoryLimitBytes},
+	}
+	if out.Path == "" && len(argv) > 0 {
+		out.Path = argv[0]
+	}
+	if len(argv) > 1 {
+		out.Args = argv[1:]
+	} else {
+		out.Args = []string{}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) containersDelete(w http.ResponseWriter, r *http.Request) {
+	if err := s.d.Containers().Remove(r.Context(), r.PathValue("id"), boolParam(r, "force")); err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
