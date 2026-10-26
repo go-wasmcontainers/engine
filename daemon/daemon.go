@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-wasmcontainers/engine/container"
+	"github.com/go-wasmcontainers/engine/events"
 	"github.com/go-wasmcontainers/engine/image"
 	"github.com/go-wasmcontainers/engine/rootfs"
 )
@@ -61,7 +62,11 @@ type Daemon struct {
 	tick   uint64
 
 	restored container.RestoreReport
+	events   *events.Bus
 }
+
+// Events is the engine's event bus (GET /events).
+func (d *Daemon) Events() *events.Bus { return d.events }
 
 type lowerEntry struct {
 	fs   *rootfs.FS
@@ -95,7 +100,9 @@ func New(opt Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &Daemon{opt: opt, store: st, mgr: container.NewManager(opt.Containers), lowers: map[image.Digest]*lowerEntry{}}
+	bus := events.New()
+	opt.Containers.Events = bus
+	d := &Daemon{opt: opt, store: st, mgr: container.NewManager(opt.Containers), lowers: map[image.Digest]*lowerEntry{}, events: bus}
 	// Containers from the last run, if any were stored.
 	rep, err := d.mgr.Restore(func(id string) (*rootfs.FS, error) {
 		_, img, err := d.ResolveImage(id)
@@ -144,6 +151,7 @@ func (d *Daemon) Pull(ctx context.Context, ref string, progress image.Progress) 
 	if err := d.store.Tag(name, image.Ref{Manifest: res.Image.ManifestDigest, RepoDigest: res.RepoDigest}); err != nil {
 		return "", nil, err
 	}
+	d.events.Publish(events.Event{Type: events.Image, Action: "pull", ID: name, Attributes: map[string]string{"name": name}})
 	return name, res, nil
 }
 
@@ -391,6 +399,12 @@ func (d *Daemon) RemoveImage(ref string, force bool) ([]DeleteItem, error) {
 	if err != nil {
 		return nil, err
 	}
+	out, err := d.removeImage(ref, name, img, force)
+	d.emitRemoved(out, string(img.ID()))
+	return out, err
+}
+
+func (d *Daemon) removeImage(ref, name string, img *image.Image, force bool) ([]DeleteItem, error) {
 	if users := d.mgr.UsesImage(string(img.ID())); len(users) > 0 && !force {
 		return nil, fmt.Errorf("%w: unable to remove %s (must force) - container %s is using it", ErrImageInUse, ref, users[0][:12])
 	}
@@ -438,4 +452,16 @@ func (d *Daemon) RemoveImage(ref string, force bool) ([]DeleteItem, error) {
 		}
 	}
 	return out, nil
+}
+
+// emitRemoved publishes untag and delete events for a removal.
+func (d *Daemon) emitRemoved(items []DeleteItem, id string) {
+	for _, it := range items {
+		if it.Untagged != "" {
+			d.events.Publish(events.Event{Type: events.Image, Action: "untag", ID: id, Attributes: map[string]string{"name": it.Untagged}})
+		}
+		if it.Deleted != "" {
+			d.events.Publish(events.Event{Type: events.Image, Action: "delete", ID: it.Deleted, Attributes: map[string]string{"name": it.Deleted}})
+		}
+	}
 }

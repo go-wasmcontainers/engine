@@ -202,6 +202,22 @@ type JSONMsgError struct {
 	Message string `json:"message"`
 }
 
+// EventActor is what emitted an event.
+type EventActor struct {
+	ID         string            `json:"ID"`
+	Attributes map[string]string `json:"Attributes"`
+}
+
+// EventMessage is one line of GET /events.
+type EventMessage struct {
+	Type     string     `json:"Type"`
+	Action   string     `json:"Action"`
+	Actor    EventActor `json:"Actor"`
+	Scope    string     `json:"scope"`
+	Time     int64      `json:"time"`
+	TimeNano int64      `json:"timeNano"`
+}
+
 // SystemDataUsage is GET /system/df.
 type SystemDataUsage struct {
 	LayersSize int64              `json:"LayersSize"`
