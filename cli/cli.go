@@ -108,7 +108,7 @@ func RootCmd(o Options) *cobra.Command {
 	root.AddCommand(
 		pullCmd(client), imagesCmd(client), runCmd(client, o.LookupEnv), psCmd(client), logsCmd(client),
 		rmCmd(client), rmiCmd(client), inspectCmd(client), killCmd(client), versionCmd(client, o.Version),
-		systemCmd(client), startCmd(client), diffCmd(client),
+		systemCmd(client), startCmd(client), diffCmd(client), stopCmd(client, false), stopCmd(client, true),
 	)
 	root.CompletionOptions.DisableDefaultCmd = o.NoCompletionCommand
 	(&completer{client: client, opt: o}).install(root)
@@ -563,8 +563,9 @@ func killCmd(client clientFunc) *cobra.Command {
 }
 
 func startCmd(client clientFunc) *cobra.Command {
-	return &cobra.Command{
-		Use:   "start CONTAINER [CONTAINER...]",
+	var attach bool
+	cmd := &cobra.Command{
+		Use:   "start [OPTIONS] CONTAINER [CONTAINER...]",
 		Short: "Start one or more stopped containers",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -572,8 +573,75 @@ func startCmd(client clientFunc) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if !attach {
+				return each(cmd, args, func(id string) error {
+					if err := c.Start(cmd.Context(), id); err != nil {
+						return err
+					}
+					fmt.Fprintln(cmd.OutOrStdout(), id)
+					return nil
+				})
+			}
+			if len(args) > 1 {
+				return &exitError{code: 1, err: errors.New("you cannot start and attach multiple containers at once")}
+			}
+			return startAttached(cmd.Context(), c, cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0])
+		},
+	}
+	cmd.Flags().BoolVarP(&attach, "attach", "a", false, "attach its output and exit with its status")
+	return cmd
+}
+
+// startAttached is start -a: the wait and the output stream are taken
+// before the start, as for run, so nothing is lost; the command exits with
+// the container's status.
+func startAttached(ctx context.Context, c *api.Client, stdout, stderr io.Writer, id string) error {
+	waiter, err := c.Wait(ctx, id, "next-exit")
+	if err != nil {
+		return err
+	}
+	out, err := c.Attach(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if err := c.Start(ctx, id); err != nil {
+		return err
+	}
+	if err := api.Demux(stdout, stderr, out); err != nil {
+		return err
+	}
+	res, err := waiter.Result()
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != 0 {
+		return &exitError{code: int(res.StatusCode)}
+	}
+	return nil
+}
+
+func stopCmd(client clientFunc, restart bool) *cobra.Command {
+	use, short := "stop", "Stop one or more running containers (a wasm guest has no signals: at once)"
+	if restart {
+		use, short = "restart", "Restart one or more containers"
+	}
+	var seconds int
+	cmd := &cobra.Command{
+		Use:   use + " [OPTIONS] CONTAINER [CONTAINER...]",
+		Short: short,
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client()
+			if err != nil {
+				return err
+			}
 			return each(cmd, args, func(id string) error {
-				if err := c.Start(cmd.Context(), id); err != nil {
+				op := c.Stop
+				if restart {
+					op = c.Restart
+				}
+				if err := op(cmd.Context(), id); err != nil {
 					return err
 				}
 				fmt.Fprintln(cmd.OutOrStdout(), id)
@@ -581,6 +649,10 @@ func startCmd(client clientFunc) *cobra.Command {
 			})
 		},
 	}
+	// Accepted for compatibility: there is nothing to wait for, a wasm
+	// guest cannot catch a signal.
+	cmd.Flags().IntVarP(&seconds, "time", "t", 10, "seconds to wait before killing (ignored: wasm guests have no signals)")
+	return cmd
 }
 
 func diffCmd(client clientFunc) *cobra.Command {

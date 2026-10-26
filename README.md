@@ -86,7 +86,8 @@ not have.
 | `rmi IMAGE...` | `-f/--force` |
 | `inspect NAME\|ID...` | containers, then images |
 | `kill CONTAINER...` | |
-| `start CONTAINER...` | starts stopped containers (they keep their files and logs) |
+| `start CONTAINER...` | starts stopped containers (they keep their files and logs); `-a/--attach` (one container) prints this run's output and exits with its status |
+| `stop CONTAINER...`, `restart CONTAINER...` | `-t/--time` accepted and ignored: a wasm guest has no signals, so stopping is killing, at once |
 | `diff CONTAINER` | the files it added (`A`), changed (`C`) or deleted (`D`) |
 | `version` | |
 | `completion bash\|zsh\|fish\|powershell` | prints a shell completion script |

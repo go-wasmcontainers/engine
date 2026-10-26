@@ -220,11 +220,11 @@ func (c *completer) install(root *cobra.Command) {
 				}
 				return filter(c.containers(cmd, true, toComplete), toComplete, nil), noFiles
 			}
-		case "rm", "start":
+		case "rm", "start", "restart":
 			sub.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 				return filter(c.containers(cmd, true, toComplete), toComplete, used(args)), noFiles
 			}
-		case "kill":
+		case "kill", "stop":
 			sub.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 				return filter(c.containers(cmd, false, toComplete), toComplete, used(args)), noFiles
 			}
