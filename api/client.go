@@ -333,6 +333,48 @@ func (c *Client) Events(ctx context.Context, o EventsOptions, fn func(EventMessa
 	}
 }
 
+// VolumeCreate makes a volume (or returns the existing one).
+func (c *Client) VolumeCreate(ctx context.Context, o VolumeCreateOptions) (Volume, error) {
+	var out Volume
+	err := c.getJSON(ctx, http.MethodPost, "/volumes/create", nil, o, &out)
+	return out, err
+}
+
+// Volumes lists volumes.
+func (c *Client) Volumes(ctx context.Context) ([]Volume, error) {
+	var out VolumeListResponse
+	err := c.getJSON(ctx, http.MethodGet, "/volumes", nil, nil, &out)
+	return out.Volumes, err
+}
+
+// VolumeInspect inspects a volume.
+func (c *Client) VolumeInspect(ctx context.Context, name string) (json.RawMessage, error) {
+	var out json.RawMessage
+	err := c.getJSON(ctx, http.MethodGet, "/volumes/"+url.PathEscape(name), nil, nil, &out)
+	return out, err
+}
+
+// VolumeRemove removes a volume.
+func (c *Client) VolumeRemove(ctx context.Context, name string, force bool) error {
+	q := url.Values{}
+	if force {
+		q.Set("force", "1")
+	}
+	return c.getJSON(ctx, http.MethodDelete, "/volumes/"+url.PathEscape(name), q, nil, nil)
+}
+
+// VolumesPrune removes unused anonymous volumes, or with all every unused
+// one.
+func (c *Client) VolumesPrune(ctx context.Context, all bool) (VolumePruneResponse, error) {
+	q := url.Values{}
+	if all {
+		q.Set("filters", `{"all":["true"]}`)
+	}
+	var out VolumePruneResponse
+	err := c.getJSON(ctx, http.MethodPost, "/volumes/prune", q, nil, &out)
+	return out, err
+}
+
 // DiskUsage is GET /system/df.
 func (c *Client) DiskUsage(ctx context.Context) (SystemDataUsage, error) {
 	var out SystemDataUsage

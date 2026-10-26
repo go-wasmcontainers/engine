@@ -109,7 +109,7 @@ func RootCmd(o Options) *cobra.Command {
 		pullCmd(client), imagesCmd(client), runCmd(client, o.LookupEnv), psCmd(client), logsCmd(client),
 		rmCmd(client), rmiCmd(client), inspectCmd(client), killCmd(client), versionCmd(client, o.Version),
 		systemCmd(client), startCmd(client), diffCmd(client), stopCmd(client, false), stopCmd(client, true),
-		eventsCmd(client), statsCmd(client),
+		eventsCmd(client), statsCmd(client), volumeCmd(client),
 	)
 	root.CompletionOptions.DisableDefaultCmd = o.NoCompletionCommand
 	(&completer{client: client, opt: o}).install(root)
@@ -246,6 +246,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 		entrypoint string
 		workdir    string
 		memory     string
+		volumes    []string
 	)
 	cmd := &cobra.Command{
 		Use:   "run [OPTIONS] IMAGE [COMMAND] [ARG...]",
@@ -261,6 +262,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 			req.Env = envFlags(env, lookup)
 			req.WorkingDir = workdir
 			req.HostConfig.AutoRemove = rm
+			req.HostConfig.Binds = volumes
 			if len(args) > 1 {
 				req.Cmd = args[1:]
 			}
@@ -289,6 +291,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 	f.StringVar(&entrypoint, "entrypoint", "", "override the image's entrypoint")
 	f.StringVarP(&workdir, "workdir", "w", "", "working directory inside the container")
 	f.StringVarP(&memory, "memory", "m", "", "memory limit (e.g. 64m)")
+	f.StringArrayVarP(&volumes, "volume", "v", nil, "mount a named volume: NAME:/path[:ro] (created if missing)")
 	return cmd
 }
 

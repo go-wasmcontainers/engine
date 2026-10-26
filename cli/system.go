@@ -66,7 +66,20 @@ func dfCmd(client clientFunc) *cobra.Command {
 			fmt.Fprintln(tw, "TYPE\tTOTAL\tACTIVE\tSIZE\tRECLAIMABLE")
 			fmt.Fprintf(tw, "Images\t%d\t%d\t%s\t%s\n", len(u.Images), activeImgs, size(u.LayersSize), reclaimable(unused, u.LayersSize))
 			fmt.Fprintf(tw, "Containers\t%d\t%d\t%s\t%s\n", len(u.Containers), running, size(rw), reclaimable(rwStopped, rw))
-			fmt.Fprintf(tw, "Local Volumes\t%d\t%d\t%s\t%s\n", len(u.Volumes), 0, size(0), size(0))
+			var vActive int
+			var vSize, vUnused int64
+			for _, v := range u.Volumes {
+				if v.UsageData == nil {
+					continue
+				}
+				vSize += v.UsageData.Size
+				if v.UsageData.RefCount > 0 {
+					vActive++
+				} else {
+					vUnused += v.UsageData.Size
+				}
+			}
+			fmt.Fprintf(tw, "Local Volumes\t%d\t%d\t%s\t%s\n", len(u.Volumes), vActive, size(vSize), reclaimable(vUnused, vSize))
 			if err := tw.Flush(); err != nil {
 				return err
 			}

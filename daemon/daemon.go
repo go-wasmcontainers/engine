@@ -10,6 +10,7 @@ import (
 	"io"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/go-wasmcontainers/engine/events"
 	"github.com/go-wasmcontainers/engine/image"
 	"github.com/go-wasmcontainers/engine/rootfs"
+	"github.com/go-wasmcontainers/engine/volume"
 )
 
 // ErrImageInUse is returned when removing an image a container uses.
@@ -49,6 +51,8 @@ type Options struct {
 	// ImagesRemoved, when set, is called after images were deleted (the
 	// browser executor drops its compiled-module cache then).
 	ImagesRemoved func()
+	// Volumes configures named volumes (they share Containers.Store).
+	Volumes volume.Options
 }
 
 // Daemon is one engine instance.
@@ -63,7 +67,11 @@ type Daemon struct {
 
 	restored container.RestoreReport
 	events   *events.Bus
+	vols     *volume.Manager
 }
+
+// Volumes is the volume manager.
+func (d *Daemon) Volumes() *volume.Manager { return d.vols }
 
 // Events is the engine's event bus (GET /events).
 func (d *Daemon) Events() *events.Bus { return d.events }
@@ -102,7 +110,24 @@ func New(opt Options) (*Daemon, error) {
 	}
 	bus := events.New()
 	opt.Containers.Events = bus
-	d := &Daemon{opt: opt, store: st, mgr: container.NewManager(opt.Containers), lowers: map[image.Digest]*lowerEntry{}, events: bus}
+	if opt.Volumes.Store == nil {
+		opt.Volumes.Store = opt.Containers.Store
+	}
+	vols := volume.New(opt.Volumes)
+	// Volumes first: restored containers mount them.
+	vlim := rootfs.Limits{MaxBytes: 1 << 30, MaxFiles: 1 << 17, MaxRatio: 1, MaxPathLen: 4096, MaxDepth: 256}
+	repairedVols, err := vols.Restore(vlim)
+	if err != nil {
+		return nil, fmt.Errorf("daemon: restoring volumes: %w", err)
+	}
+	opt.Containers.Volume = func(name string) (*rootfs.FS, error) {
+		v, err := vols.Get(name)
+		if err != nil {
+			return nil, err
+		}
+		return v.FS(), nil
+	}
+	d := &Daemon{opt: opt, store: st, mgr: container.NewManager(opt.Containers), lowers: map[image.Digest]*lowerEntry{}, events: bus, vols: vols}
 	// Containers from the last run, if any were stored.
 	rep, err := d.mgr.Restore(func(id string) (*rootfs.FS, error) {
 		_, img, err := d.ResolveImage(id)
@@ -117,6 +142,7 @@ func New(opt Options) (*Daemon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("daemon: restoring containers: %w", err)
 	}
+	rep.Repaired = append(repairedVols, rep.Repaired...)
 	d.restored = rep
 	return d, nil
 }
@@ -130,7 +156,7 @@ func (d *Daemon) Containers() *container.Manager { return d.mgr }
 // Close kills running containers.
 func (d *Daemon) Close(ctx context.Context) error {
 	d.mgr.Shutdown(ctx)
-	return nil
+	return d.vols.Close(ctx)
 }
 
 // Pull fetches ref and names it; it returns the local name.
@@ -320,6 +346,67 @@ type CreateRequest struct {
 	Labels     map[string]string
 	Memory     int64
 	AutoRemove bool
+	// Binds are "VOLUME:/path[:ro|:rw]": named volumes only (a host path
+	// means nothing to a WebAssembly engine), created if missing.
+	Binds []string
+}
+
+// ParseBind reads "VOLUME:/path[:ro|:rw]".
+func ParseBind(b string) (container.Mount, error) {
+	parts := strings.Split(b, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return container.Mount{}, fmt.Errorf("%w: invalid volume specification %q (want VOLUME:/path[:ro])", container.ErrInvalid, b)
+	}
+	m := container.Mount{Volume: parts[0], Target: parts[1]}
+	if strings.HasPrefix(m.Volume, "/") || strings.HasPrefix(m.Volume, ".") {
+		return m, fmt.Errorf("%w: %q is a host path: this engine mounts named volumes only (VOLUME:/path)", container.ErrInvalid, m.Volume)
+	}
+	if !volume.ValidName(m.Volume) {
+		return m, fmt.Errorf("%w: invalid volume name %q", container.ErrInvalid, m.Volume)
+	}
+	if len(parts) == 3 {
+		switch parts[2] {
+		case "ro":
+			m.ReadOnly = true
+		case "rw":
+		default:
+			return m, fmt.Errorf("%w: invalid mode %q in %q (ro or rw)", container.ErrInvalid, parts[2], b)
+		}
+	}
+	return m, nil
+}
+
+// CreateVolume makes a volume (or returns the existing one).
+func (d *Daemon) CreateVolume(name string, labels map[string]string) (*volume.Volume, error) {
+	v, created, err := d.vols.Create(name, labels)
+	if err == nil && created {
+		d.events.Publish(events.Event{Type: events.Volume, Action: "create", ID: v.Name, Attributes: map[string]string{"driver": "local"}})
+	}
+	return v, err
+}
+
+// RemoveVolume deletes a volume no container uses; with force a missing
+// one is not an error (Docker's meaning of force for volumes).
+func (d *Daemon) RemoveVolume(name string, force bool) error {
+	err := d.vols.Remove(name, d.mgr.UsesVolume)
+	if errors.Is(err, volume.ErrNotFound) && force {
+		return nil
+	}
+	if err == nil {
+		d.events.Publish(events.Event{Type: events.Volume, Action: "destroy", ID: name, Attributes: map[string]string{"driver": "local"}})
+	}
+	return err
+}
+
+// PruneVolumes removes unused anonymous volumes, or with all every
+// unused one.
+func (d *Daemon) PruneVolumes(all bool) ([]string, int64) {
+	gone, n := d.vols.Prune(all, d.mgr.UsesVolume)
+	for _, g := range gone {
+		d.events.Publish(events.Event{Type: events.Volume, Action: "destroy", ID: g, Attributes: map[string]string{"driver": "local"}})
+	}
+	d.events.Publish(events.Event{Type: events.Volume, Action: "prune", Attributes: map[string]string{"reclaimed": strconv.FormatInt(n, 10)}})
+	return gone, n
 }
 
 // ExecConfig returns the run configuration an image declares. A wasm
@@ -381,6 +468,20 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 	}
 	if len(req.Labels) > 0 {
 		cfg.Labels = req.Labels
+	}
+	for _, b := range req.Binds {
+		mt, err := ParseBind(b)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Mounts = append(cfg.Mounts, mt)
+	}
+	// Named volumes are created on first use, as Docker does; after the
+	// mounts are known to be well formed.
+	for _, mt := range cfg.Mounts {
+		if _, err := d.CreateVolume(mt.Volume, nil); err != nil {
+			return nil, err
+		}
 	}
 	return d.mgr.Create(container.CreateOptions{Name: req.Name, Config: cfg, Lower: lower})
 }

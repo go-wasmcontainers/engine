@@ -61,6 +61,11 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("DELETE /containers/{id}", s.containersDelete)
 	s.mux.HandleFunc("POST /containers/prune", s.containersPrune)
 	s.mux.HandleFunc("GET /events", s.systemEvents)
+	s.mux.HandleFunc("GET /volumes", s.volumesList)
+	s.mux.HandleFunc("POST /volumes/create", s.volumesCreate)
+	s.mux.HandleFunc("POST /volumes/prune", s.volumesPrune)
+	s.mux.HandleFunc("GET /volumes/{name}", s.volumesInspect)
+	s.mux.HandleFunc("DELETE /volumes/{name}", s.volumesDelete)
 	s.mux.HandleFunc("POST /containers/{id}/stop", s.containersStop)
 	s.mux.HandleFunc("POST /containers/{id}/restart", s.containersRestart)
 	s.mux.HandleFunc("POST /containers/{id}/attach", s.containersAttach)
@@ -229,7 +234,7 @@ func (s *server) systemDF(w http.ResponseWriter, r *http.Request) {
 	st := u.Storage
 	writeJSON(w, http.StatusOK, api.SystemDataUsage{
 		LayersSize: u.LayersSize, Images: imageSummaries(u.Images), Containers: containerSummaries(u.Containers),
-		Volumes: []any{}, BuildCache: []any{},
+		Volumes: s.volumeList(true), BuildCache: []any{},
 		Storage: &api.StorageUsage{Kind: st.Kind, Usage: st.Usage, Quota: st.Quota, Persistent: st.Persistent, Error: st.Error},
 	})
 }
@@ -369,7 +374,7 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 	c, err := s.d.CreateContainer(daemon.CreateRequest{
 		Name: r.URL.Query().Get("name"), Image: req.Image,
 		Entrypoint: req.Entrypoint, Cmd: req.Cmd, Env: req.Env, WorkingDir: req.WorkingDir, Labels: req.Labels,
-		Memory: req.HostConfig.Memory, AutoRemove: req.HostConfig.AutoRemove,
+		Memory: req.HostConfig.Memory, AutoRemove: req.HostConfig.AutoRemove, Binds: req.HostConfig.Binds,
 	})
 	if err != nil {
 		writeError(w, statusOf(err), err)
@@ -568,6 +573,15 @@ func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 		Config: api.ContainerConfig{Image: sn.Config.Image, Cmd: sn.Config.Cmd, Entrypoint: sn.Config.Entrypoint,
 			Env: sn.Config.Env, WorkingDir: sn.Config.WorkingDir, Labels: sn.Config.Labels},
 		HostConfig: api.HostConfig{Memory: sn.Config.MemoryLimitBytes},
+		Mounts:     []api.MountPoint{},
+	}
+	for _, mt := range sn.Config.Mounts {
+		mode, rw := "rw", true
+		if mt.ReadOnly {
+			mode, rw = "ro", false
+		}
+		out.Mounts = append(out.Mounts, api.MountPoint{Type: "volume", Name: mt.Volume, Source: mt.Volume, Destination: mt.Target, Driver: "local", Mode: mode, RW: rw})
+		out.HostConfig.Binds = append(out.HostConfig.Binds, mt.Volume+":"+mt.Target+":"+mode)
 	}
 	if out.Path == "" && len(argv) > 0 {
 		out.Path = argv[0]
