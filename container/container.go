@@ -160,7 +160,8 @@ type Manager struct {
 	byName     map[string]*Container
 	persistErr error
 
-	pmu sync.Mutex // serialises writes to opt.Store
+	pmu   sync.Mutex     // serialises writes to opt.Store
+	exits sync.WaitGroup // exits not yet stored (or --rm removals not done)
 }
 
 // NewManager returns a manager running modules on opt.Executor.
@@ -419,7 +420,9 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 	c.proc = proc
 	c.mu.Unlock()
 	go m.checkpointWhileRunning(c)
+	m.exits.Add(1)
 	go func() {
+		defer m.exits.Done()
 		c.finish(proc.Wait())
 		m.exited(c)
 	}()
@@ -638,5 +641,13 @@ func (m *Manager) Shutdown(ctx context.Context) {
 			p.Kill()
 			c.Wait(ctx, WaitNotRunning)
 		}
+	}
+	// Their exits are stored (or --rm ones removed) before Shutdown
+	// returns, so the next engine on the same store sees them settled.
+	done := make(chan struct{})
+	go func() { m.exits.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }

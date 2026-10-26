@@ -59,6 +59,7 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("GET /containers/{id}/json", s.containersInspect)
 	s.mux.HandleFunc("DELETE /containers/{id}", s.containersDelete)
 	s.mux.HandleFunc("POST /containers/prune", s.containersPrune)
+	s.mux.HandleFunc("GET /containers/{id}/changes", s.containersChanges)
 	s.mux.HandleFunc("POST /images/prune", s.imagesPrune)
 	s.mux.HandleFunc("GET /system/df", s.systemDF)
 	return s
@@ -226,6 +227,19 @@ func (s *server) systemDF(w http.ResponseWriter, r *http.Request) {
 		Volumes: []any{}, BuildCache: []any{},
 		Storage: &api.StorageUsage{Kind: st.Kind, Usage: st.Usage, Quota: st.Quota, Persistent: st.Persistent, Error: st.Error},
 	})
+}
+
+func (s *server) containersChanges(w http.ResponseWriter, r *http.Request) {
+	c, err := s.d.Containers().Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	out := []api.FilesystemChange{}
+	for _, ch := range c.FS().Diff() {
+		out = append(out, api.FilesystemChange{Path: ch.Path, Kind: ch.Kind})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *server) containersPrune(w http.ResponseWriter, r *http.Request) {

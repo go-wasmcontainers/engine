@@ -137,6 +137,18 @@ func TestDiffRoundTrip(t *testing.T) {
 	if b, _ := r.ReadFile("new.txt"); string(b) != "new+" {
 		t.Fatalf("hard link lost: %q", b)
 	}
+	// The change list, as `docker diff` prints it.
+	var got []string
+	for _, ch := range c.Diff() {
+		got = append(got, fmt.Sprintf("%c %s", "CAD"[ch.Kind], ch.Path))
+	}
+	want := "A /.wh..wh..opq,A /.wh.trick,C /bin,D /bin/x,C /d,A /d/c,C /e,C /e/f,C /e/f/g,A /e/up,C /etc,C /etc/motd,A /hard,D /keep,A /moved,A /moved/k,A /new.txt"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("Diff:\n%s\nwant\n%s", strings.Join(got, ","), want)
+	}
+	if len(base.Clone(q).Diff()) != 0 {
+		t.Fatal("an unchanged clone has changes")
+	}
 	// The base never changed.
 	if b, _ := base.ReadFile("d/a"); string(b) != "a" {
 		t.Fatal("base changed")

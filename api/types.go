@@ -228,6 +228,13 @@ type StorageUsage struct {
 	Error string `json:"Error,omitempty"`
 }
 
+// FilesystemChange is one entry of GET /containers/{id}/changes; Kind is
+// 0 modified, 1 added, 2 deleted.
+type FilesystemChange struct {
+	Path string `json:"Path"`
+	Kind int    `json:"Kind"`
+}
+
 // ContainerPruneResponse is POST /containers/prune.
 type ContainerPruneResponse struct {
 	ContainersDeleted []string `json:"ContainersDeleted"`

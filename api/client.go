@@ -259,6 +259,13 @@ func (c *Client) Inspect(ctx context.Context, id string) (json.RawMessage, error
 	return out, err
 }
 
+// Changes lists what a container changed in its filesystem.
+func (c *Client) Changes(ctx context.Context, id string) ([]FilesystemChange, error) {
+	var out []FilesystemChange
+	err := c.getJSON(ctx, http.MethodGet, "/containers/"+url.PathEscape(id)+"/changes", nil, nil, &out)
+	return out, err
+}
+
 // DiskUsage is GET /system/df.
 func (c *Client) DiskUsage(ctx context.Context) (SystemDataUsage, error) {
 	var out SystemDataUsage

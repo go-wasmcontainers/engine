@@ -340,6 +340,9 @@ func (m *Manager) Restore(lower func(imageID string) (*rootfs.FS, error), lim ro
 	var autoRemove []*Container
 	for _, k := range keys {
 		v, err := s.Get(k)
+		if errors.Is(err, state.ErrNotFound) {
+			continue // deleted since it was listed
+		}
 		if err != nil {
 			return rep, err
 		}

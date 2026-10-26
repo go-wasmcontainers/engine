@@ -74,6 +74,65 @@ func (f *FS) Changes() uint64 {
 	return f.changes
 }
 
+// Change kinds, as the Docker Engine API numbers them.
+const (
+	Modified = 0 // C
+	Added    = 1 // A
+	Deleted  = 2 // D
+)
+
+// Change is one path a clone changed relative to its base.
+type Change struct {
+	Path string
+	Kind int
+}
+
+// Diff lists what this tree changed relative to its base, sorted by
+// path, as `docker diff` does: a changed directory is Modified and its
+// changed entries follow; everything under a new directory is Added.
+func (f *FS) Diff() []Change {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Change
+	var walk func(dir string, cur, low *node)
+	walk = func(dir string, cur, low *node) {
+		if low != nil {
+			for _, name := range sortedNames(low) {
+				if cur.kids[name] == nil {
+					out = append(out, Change{dir + name, Deleted})
+				}
+			}
+		}
+		for _, name := range sortedNames(cur) {
+			k := cur.kids[name]
+			var lk *node
+			if low != nil {
+				lk = low.kids[name]
+			}
+			if k == lk {
+				continue
+			}
+			kind := Added
+			if lk != nil {
+				kind = Modified
+			}
+			out = append(out, Change{dir + name, kind})
+			if k.isDir() {
+				var below *node
+				if lk != nil && lk.isDir() && lk.ino == k.ino {
+					below = lk
+				}
+				walk(dir+name+"/", k, below)
+			}
+		}
+	}
+	if f.root != f.base {
+		walk("/", f.root, f.base)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
 type differ struct {
 	tw   *tar.Writer
 	seen map[*node]string // regular files written, for hard links

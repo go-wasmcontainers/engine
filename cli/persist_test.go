@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-wasmcontainers/engine/api/server"
 	"github.com/go-wasmcontainers/engine/container"
@@ -69,6 +70,22 @@ func TestRestartKeepsContainers(t *testing.T) {
 	}
 	if r := must(t, wctr(t, h, "logs", "failed"), 0); r.stderr != "bye\n" {
 		t.Fatalf("%q", r.stderr)
+	}
+	// Its writable layer came back.
+	if r := must(t, wctr(t, h, "diff", "wrote"), 0); r.stdout != "C /etc\nC /etc/motd\nA /tmp\nA /tmp/probe\n" {
+		t.Fatalf("%q", r.stdout)
+	}
+	// A restored container starts again.
+	must(t, wctr(t, h, "start", "failed"), 0) // returns once started, as docker start does
+	for i := 0; ; i++ {
+		r := must(t, wctr(t, h, "logs", "failed"), 0)
+		if r.stderr == "bye\nbye\n" {
+			break
+		}
+		if i > 300 {
+			t.Fatalf("%q", r.stderr)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	df := must(t, wctr(t, h, "system", "df"), 0).stdout
