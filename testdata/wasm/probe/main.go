@@ -8,6 +8,8 @@
 //	probe cat PATH      prints a file
 //	probe ls PATH       lists a directory
 //	probe fs            writes, renames, reads back and removes files in /tmp
+//	probe write PATH S  writes S to PATH
+//	probe mv FROM TO    renames FROM to TO
 //	probe spin          loops for ever (wall-clock cancel)
 //	probe hog           allocates until memory runs out
 package main
@@ -59,6 +61,10 @@ func main() {
 		}
 	case "fs":
 		fsProbe()
+	case "write":
+		check(os.WriteFile(args[0], []byte(args[1]), 0o644))
+	case "mv":
+		check(os.Rename(args[0], args[1]))
 	case "spin":
 		for i := 0; ; i++ {
 			if i < 0 {

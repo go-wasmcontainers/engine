@@ -84,6 +84,7 @@ jobs:
           - { target: FuzzUnseal, pkg: ./state }
           - { target: FuzzDecodeRecord, pkg: ./container }
           - { target: FuzzDecodeLogs, pkg: ./container }
+          - { target: FuzzDecodeRecord, pkg: ./volume }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -137,7 +138,7 @@ jobs:
       - uses: actions/setup-go@v7
         with: { go-version: '1.27.3' }
       - run: go version
-      - run: GOOS=js GOARCH=wasm CGO_ENABLED=0 go vet ./runtime/browser ./wasi ./wasmbin ./cli/... ./api/... ./daemon ./container ./image ./rootfs ./state
+      - run: GOOS=js GOARCH=wasm CGO_ENABLED=0 go vet ./runtime/browser ./wasi ./wasmbin ./cli/... ./api/... ./daemon ./container ./image ./rootfs ./state ./events ./volume
 
   cross:
     name: cross ${{ matrix.goos }}/${{ matrix.goarch }}

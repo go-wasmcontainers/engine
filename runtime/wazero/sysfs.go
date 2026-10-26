@@ -17,7 +17,10 @@ import (
 type sysFS struct {
 	experimentalsys.UnimplementedFS
 	fs *rootfs.FS
+	ro bool // a read-only mount: every change is EROFS
 }
+
+const writeFlags = experimentalsys.O_RDWR | experimentalsys.O_WRONLY | experimentalsys.O_CREAT | experimentalsys.O_TRUNC | experimentalsys.O_APPEND
 
 func errno(err error) experimentalsys.Errno {
 	switch {
@@ -84,11 +87,22 @@ func stat(in *rootfs.Info) sys.Stat_t {
 }
 
 func (s *sysFS) OpenFile(path string, flag experimentalsys.Oflag, perm fs.FileMode) (experimentalsys.File, experimentalsys.Errno) {
+	if s.ro && flag&writeFlags != 0 {
+		return nil, experimentalsys.EROFS
+	}
 	h, err := s.fs.OpenFile(path, toFlag(flag), perm)
 	if err != nil {
 		return nil, errno(err)
 	}
-	return &sysFile{h: h}, 0
+	return &sysFile{h: h, ro: s.ro}, 0
+}
+
+// rw is errno(err) of a change, or EROFS on a read-only mount.
+func (s *sysFS) rw(change func() error) experimentalsys.Errno {
+	if s.ro {
+		return experimentalsys.EROFS
+	}
+	return errno(change())
 }
 
 func (s *sysFS) Lstat(path string) (sys.Stat_t, experimentalsys.Errno) {
@@ -108,20 +122,25 @@ func (s *sysFS) Stat(path string) (sys.Stat_t, experimentalsys.Errno) {
 }
 
 func (s *sysFS) Mkdir(path string, perm fs.FileMode) experimentalsys.Errno {
-	return errno(s.fs.Mkdir(path, perm))
+	return s.rw(func() error { return s.fs.Mkdir(path, perm) })
 }
 
 func (s *sysFS) Chmod(path string, perm fs.FileMode) experimentalsys.Errno {
-	return errno(s.fs.Chmod(path, perm))
+	return s.rw(func() error { return s.fs.Chmod(path, perm) })
 }
 
 func (s *sysFS) Rename(from, to string) experimentalsys.Errno {
-	return errno(s.fs.Rename(from, to))
+	return s.rw(func() error { return s.fs.Rename(from, to) })
 }
 
-func (s *sysFS) Rmdir(path string) experimentalsys.Errno { return errno(s.fs.Rmdir(path)) }
+func (s *sysFS) Rmdir(path string) experimentalsys.Errno {
+	return s.rw(func() error { return s.fs.Rmdir(path) })
+}
 
 func (s *sysFS) Unlink(path string) experimentalsys.Errno {
+	if s.ro {
+		return experimentalsys.EROFS
+	}
 	err := s.fs.Remove(path)
 	if errors.Is(err, rootfs.ErrIsDir) {
 		// unlink(2) on a directory is EISDIR on Linux, EPERM by POSIX;
@@ -132,11 +151,11 @@ func (s *sysFS) Unlink(path string) experimentalsys.Errno {
 }
 
 func (s *sysFS) Link(oldPath, newPath string) experimentalsys.Errno {
-	return errno(s.fs.Link(oldPath, newPath))
+	return s.rw(func() error { return s.fs.Link(oldPath, newPath) })
 }
 
 func (s *sysFS) Symlink(oldPath, linkName string) experimentalsys.Errno {
-	return errno(s.fs.Symlink(oldPath, linkName))
+	return s.rw(func() error { return s.fs.Symlink(oldPath, linkName) })
 }
 
 func (s *sysFS) Readlink(path string) (string, experimentalsys.Errno) {
@@ -151,13 +170,14 @@ func (s *sysFS) Utimens(path string, atim, mtim int64) experimentalsys.Errno {
 		}
 		return 0
 	}
-	return errno(s.fs.Chtimes(path, time.Unix(0, mtim), true))
+	return s.rw(func() error { return s.fs.Chtimes(path, time.Unix(0, mtim), true) })
 }
 
 // sysFile adapts an open rootfs.File.
 type sysFile struct {
 	experimentalsys.UnimplementedFile
-	h *rootfs.File
+	h  *rootfs.File
+	ro bool
 }
 
 func (f *sysFile) Dev() (uint64, experimentalsys.Errno) { return 1, 0 }
@@ -234,6 +254,9 @@ func (f *sysFile) Truncate(size int64) experimentalsys.Errno { return errno(f.h.
 func (f *sysFile) Utimens(atim, mtim int64) experimentalsys.Errno {
 	if mtim == experimentalsys.UTIME_OMIT {
 		return 0
+	}
+	if f.ro {
+		return experimentalsys.EROFS
 	}
 	return errno(f.h.Chtimes(time.Unix(0, mtim)))
 }

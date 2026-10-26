@@ -270,7 +270,11 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	if len(args) == 0 {
 		args = []string{spec.Path}
 	}
-	proc := wasi.New(wasi.Config{Args: args, Env: spec.Env, FS: spec.FS, Stdin: spec.Stdin, Stdout: spec.Stdout, Stderr: spec.Stderr})
+	mounts := make([]wasi.Mount, len(spec.Mounts))
+	for i, mt := range spec.Mounts {
+		mounts[i] = wasi.Mount{Path: mt.Path, FS: mt.FS, ReadOnly: mt.ReadOnly}
+	}
+	proc := wasi.New(wasi.Config{Args: args, Env: spec.Env, FS: spec.FS, Mounts: mounts, Stdin: spec.Stdin, Stdout: spec.Stdout, Stderr: spec.Stderr})
 
 	ctl := js.Global().Get("SharedArrayBuffer").New(256)
 	i32 := js.Global().Get("Int32Array").New(ctl)

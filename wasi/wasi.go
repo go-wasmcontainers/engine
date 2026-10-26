@@ -50,6 +50,7 @@ const (
 	EPERM        = 63
 	EROFS        = 69
 	ESPIPE       = 70
+	EXDEV        = 75
 	ENOTCAPABLE  = 76
 )
 
@@ -168,8 +169,12 @@ var FuncIndex = func() map[string]int {
 
 // Config is a process's world.
 type Config struct {
-	Args, Env      []string
-	FS             *rootfs.FS
+	Args, Env []string
+	FS        *rootfs.FS
+	// Mounts are further trees, each preopened under its own path after
+	// "/" (fd 4 onwards), as wasmtime's --dir host::guest does: a guest
+	// resolves an absolute path against the longest matching preopen.
+	Mounts         []Mount
 	Stdin          io.Reader
 	Stdout, Stderr io.Writer
 	// Now is the realtime clock (default time.Now).
@@ -189,8 +194,21 @@ const (
 	kindDir
 )
 
+// Mount is a tree preopened at Path; ReadOnly refuses every change made
+// through it with EROFS.
+type Mount struct {
+	Path     string
+	FS       *rootfs.FS
+	ReadOnly bool
+}
+
 type fdEntry struct {
-	kind   fdKind
+	kind fdKind
+	// fs is the tree this descriptor belongs to, ro whether it was reached
+	// through a read-only mount; name is a preopen's guest path.
+	fs     *rootfs.FS
+	ro     bool
+	name   string
 	file   *rootfs.File
 	path   string // canonical path for directories (and files, for info)
 	append bool
@@ -234,8 +252,31 @@ func New(cfg Config) *Proc {
 	p.fds[0] = &fdEntry{kind: kindStdin, read: true}
 	p.fds[1] = &fdEntry{kind: kindStdout, write: true}
 	p.fds[2] = &fdEntry{kind: kindStderr, write: true}
-	p.fds[3] = &fdEntry{kind: kindPreopen, path: "/", read: true}
+	p.fds[3] = &fdEntry{kind: kindPreopen, fs: cfg.FS, name: "/", path: "/", read: true}
+	for _, mt := range cfg.Mounts {
+		p.fds[p.next] = &fdEntry{kind: kindPreopen, fs: mt.FS, ro: mt.ReadOnly, name: mt.Path, path: "/", read: true}
+		p.next++
+	}
 	return p
+}
+
+// at resolves a guest path against a directory descriptor: the tree it
+// lies in, the path in that tree, and whether it is read-only there.
+func (p *Proc) at(dirfd, ptr, n uint32, m Memory) (*fdEntry, string, uint32) {
+	path, e := p.path(dirfd, ptr, n, m)
+	if e != 0 {
+		return nil, "", e
+	}
+	return p.fds[dirfd], path, 0
+}
+
+// change is at for an operation that modifies the tree.
+func (p *Proc) change(dirfd, ptr, n uint32, m Memory) (*fdEntry, string, uint32) {
+	d, path, e := p.at(dirfd, ptr, n, m)
+	if e == 0 && d.ro {
+		return nil, "", EROFS
+	}
+	return d, path, e
 }
 
 // Result is what a call returned.
@@ -345,6 +386,9 @@ func (p *Proc) Call(fn int, args []uint64, m Memory) Result {
 			return ok()
 		}
 		if t, set := p.times(args[2], a(3)); set {
+			if f.ro {
+				return fail(EROFS)
+			}
 			return fail(errno(f.file.Chtimes(t)))
 		}
 		return ok()
@@ -357,23 +401,25 @@ func (p *Proc) Call(fn int, args []uint64, m Memory) Result {
 	case "fd_write":
 		return p.rw(a(0), a(1), a(2), 0, false, true, a(3), m)
 	case "fd_prestat_get":
-		if f := p.fds[a(0)]; f == nil || f.kind != kindPreopen {
+		f := p.fds[a(0)]
+		if f == nil || f.kind != kindPreopen {
 			return fail(EBADF)
 		}
 		var b [8]byte
-		put32(b[4:], 1) // tag 0 (dir), name length 1: "/"
+		put32(b[4:], uint32(len(f.name))) // tag 0 (dir), then the name's length
 		if !m.Write(a(1), b[:]) {
 			return fail(EFAULT)
 		}
 		return ok()
 	case "fd_prestat_dir_name":
-		if f := p.fds[a(0)]; f == nil || f.kind != kindPreopen {
+		f := p.fds[a(0)]
+		if f == nil || f.kind != kindPreopen {
 			return fail(EBADF)
 		}
-		if a(2) < 1 {
+		if a(2) < uint32(len(f.name)) {
 			return fail(EINVAL)
 		}
-		if !m.Write(a(1), []byte("/")) {
+		if !m.Write(a(1), []byte(f.name)) {
 			return fail(EFAULT)
 		}
 		return ok()
@@ -396,58 +442,64 @@ func (p *Proc) Call(fn int, args []uint64, m Memory) Result {
 	case "fd_tell":
 		return p.seek(a(0), 0, whenceCur, a(1), m)
 	case "path_create_directory":
-		path, e := p.path(a(0), a(1), a(2), m)
+		d, path, e := p.change(a(0), a(1), a(2), m)
 		if e != 0 {
 			return fail(e)
 		}
-		return fail(errno(p.cfg.FS.Mkdir(path, 0o755)))
+		return fail(errno(d.fs.Mkdir(path, 0o755)))
 	case "path_filestat_get":
-		path, e := p.path(a(0), a(2), a(3), m)
+		d, path, e := p.at(a(0), a(2), a(3), m)
 		if e != 0 {
 			return fail(e)
 		}
 		var in *rootfs.Info
 		var err error
 		if a(1)&lookupSymlinkFollow != 0 {
-			in, err = p.cfg.FS.Stat(path)
+			in, err = d.fs.Stat(path)
 		} else {
-			in, err = p.cfg.FS.Lstat(path)
+			in, err = d.fs.Lstat(path)
 		}
 		if err != nil {
 			return fail(errno(err))
 		}
 		return p.writeFilestat(in, a(4), m)
 	case "path_filestat_set_times":
-		path, e := p.path(a(0), a(2), a(3), m)
+		d, path, e := p.at(a(0), a(2), a(3), m)
 		if e != 0 {
 			return fail(e)
 		}
 		t, set := p.times(args[5], a(6))
 		if !set {
-			if _, err := p.cfg.FS.Lstat(path); err != nil {
+			if _, err := d.fs.Lstat(path); err != nil {
 				return fail(errno(err))
 			}
 			return ok()
 		}
-		return fail(errno(p.cfg.FS.Chtimes(path, t, a(1)&lookupSymlinkFollow != 0)))
+		if d.ro {
+			return fail(EROFS)
+		}
+		return fail(errno(d.fs.Chtimes(path, t, a(1)&lookupSymlinkFollow != 0)))
 	case "path_link":
-		oldp, e := p.path(a(0), a(2), a(3), m)
+		od, oldp, e := p.change(a(0), a(2), a(3), m)
 		if e != 0 {
 			return fail(e)
 		}
-		newp, e := p.path(a(4), a(5), a(6), m)
+		nd, newp, e := p.change(a(4), a(5), a(6), m)
 		if e != 0 {
 			return fail(e)
 		}
-		return fail(errno(p.cfg.FS.Link(oldp, newp)))
+		if od.fs != nd.fs {
+			return fail(EXDEV)
+		}
+		return fail(errno(od.fs.Link(oldp, newp)))
 	case "path_open":
 		return p.open(a(0), a(1), a(2), a(3), a(4), args[5], a(7), a(8), m)
 	case "path_readlink":
-		path, e := p.path(a(0), a(1), a(2), m)
+		d, path, e := p.at(a(0), a(1), a(2), m)
 		if e != 0 {
 			return fail(e)
 		}
-		t, err := p.cfg.FS.Readlink(path)
+		t, err := d.fs.Readlink(path)
 		if err != nil {
 			return fail(errno(err))
 		}
@@ -460,38 +512,41 @@ func (p *Proc) Call(fn int, args []uint64, m Memory) Result {
 		}
 		return ok()
 	case "path_remove_directory":
-		path, e := p.path(a(0), a(1), a(2), m)
+		d, path, e := p.change(a(0), a(1), a(2), m)
 		if e != 0 {
 			return fail(e)
 		}
-		return fail(errno(p.cfg.FS.Rmdir(path)))
+		return fail(errno(d.fs.Rmdir(path)))
 	case "path_rename":
-		oldp, e := p.path(a(0), a(1), a(2), m)
+		od, oldp, e := p.change(a(0), a(1), a(2), m)
 		if e != 0 {
 			return fail(e)
 		}
-		newp, e := p.path(a(3), a(4), a(5), m)
+		nd, newp, e := p.change(a(3), a(4), a(5), m)
 		if e != 0 {
 			return fail(e)
 		}
-		return fail(errno(p.cfg.FS.Rename(oldp, newp)))
+		if od.fs != nd.fs {
+			return fail(EXDEV) // across mounts: the guest copies
+		}
+		return fail(errno(od.fs.Rename(oldp, newp)))
 	case "path_symlink":
 		tb, okb := m.Read(a(0), a(1))
 		if !okb {
 			return fail(EFAULT)
 		}
 		target := string(tb)
-		newp, e := p.path(a(2), a(3), a(4), m)
+		d, newp, e := p.change(a(2), a(3), a(4), m)
 		if e != 0 {
 			return fail(e)
 		}
-		return fail(errno(p.cfg.FS.Symlink(target, newp)))
+		return fail(errno(d.fs.Symlink(target, newp)))
 	case "path_unlink_file":
-		path, e := p.path(a(0), a(1), a(2), m)
+		d, path, e := p.change(a(0), a(1), a(2), m)
 		if e != 0 {
 			return fail(e)
 		}
-		return fail(errno(p.cfg.FS.Remove(path)))
+		return fail(errno(d.fs.Remove(path)))
 	case "poll_oneoff":
 		return p.poll(a(0), a(1), a(2), a(3), m)
 	case "proc_exit":
@@ -666,7 +721,7 @@ func (p *Proc) fdFilestat(fd, ptr uint32, m Memory) Result {
 		}
 		return ok()
 	case kindPreopen:
-		in, err := p.cfg.FS.Stat("/")
+		in, err := f.fs.Stat("/")
 		if err != nil {
 			return fail(errno(err))
 		}
@@ -857,11 +912,14 @@ func (p *Proc) open(dirfd, lookup, ptr, n, oflags uint32, rightsBase uint64, fdf
 	if len(p.fds) >= MaxFDs {
 		return fail(33) // EMFILE
 	}
-	path, e := p.path(dirfd, ptr, n, m)
+	d, path, e := p.at(dirfd, ptr, n, m)
 	if e != 0 {
 		return fail(e)
 	}
 	write := rightsBase&rightFdWrite != 0
+	if d.ro && (write || oflags&(oflagCreat|oflagTrunc) != 0) {
+		return fail(EROFS)
+	}
 	var fl rootfs.Flag
 	if write {
 		fl = rootfs.O_RDWR
@@ -887,11 +945,11 @@ func (p *Proc) open(dirfd, lookup, ptr, n, oflags uint32, rightsBase uint64, fdf
 	if lookup&lookupSymlinkFollow == 0 {
 		fl |= rootfs.O_NOFOLLOW
 	}
-	h, err := p.cfg.FS.OpenFile(path, fl, 0o644)
+	h, err := d.fs.OpenFile(path, fl, 0o644)
 	if err != nil {
 		return fail(errno(err))
 	}
-	ent := &fdEntry{kind: kindFile, file: h, read: fl&rootfs.O_ACCMODE != rootfs.O_WRONLY, write: write, append: fdflags&fdflagAppend != 0}
+	ent := &fdEntry{kind: kindFile, fs: d.fs, ro: d.ro, file: h, read: fl&rootfs.O_ACCMODE != rootfs.O_WRONLY, write: write, append: fdflags&fdflagAppend != 0}
 	if h.IsDir() {
 		ent.kind = kindDir
 		ent.path = canonical(path)
@@ -935,11 +993,11 @@ func (p *Proc) readdir(fd, buf, bufLen uint32, cookie uint64, resultPtr uint32, 
 		return fail(ENOTDIR)
 	}
 	if cookie == 0 || f.dirent == nil {
-		ents, err := p.cfg.FS.ReadDir(f.path)
+		ents, err := f.fs.ReadDir(f.path)
 		if err != nil {
 			return fail(errno(err))
 		}
-		self, _ := p.cfg.FS.Stat(f.path)
+		self, _ := f.fs.Stat(f.path)
 		var selfIno uint64
 		if self != nil {
 			selfIno = self.Ino

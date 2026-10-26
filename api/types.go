@@ -114,6 +114,58 @@ type ContainerConfig struct {
 type HostConfig struct {
 	Memory     int64 `json:"Memory"`
 	AutoRemove bool  `json:"AutoRemove"`
+	// Binds are "VOLUME:/path[:ro|:rw]"; named volumes only.
+	Binds []string `json:"Binds,omitempty"`
+}
+
+// MountPoint is one entry of an inspected container's Mounts.
+type MountPoint struct {
+	Type        string `json:"Type"`
+	Name        string `json:"Name"`
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	Driver      string `json:"Driver"`
+	Mode        string `json:"Mode"`
+	RW          bool   `json:"RW"`
+}
+
+// Volume is Docker's Volume object.
+type Volume struct {
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver"`
+	Mountpoint string            `json:"Mountpoint"`
+	CreatedAt  string            `json:"CreatedAt"`
+	Labels     map[string]string `json:"Labels"`
+	Scope      string            `json:"Scope"`
+	Options    map[string]string `json:"Options"`
+	UsageData  *VolumeUsage      `json:"UsageData,omitempty"`
+}
+
+// VolumeUsage is a volume's size and how many containers reference it
+// (GET /system/df).
+type VolumeUsage struct {
+	Size     int64 `json:"Size"`
+	RefCount int64 `json:"RefCount"`
+}
+
+// VolumeCreateOptions is the body of POST /volumes/create.
+type VolumeCreateOptions struct {
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver,omitempty"`
+	DriverOpts map[string]string `json:"DriverOpts,omitempty"`
+	Labels     map[string]string `json:"Labels,omitempty"`
+}
+
+// VolumeListResponse is GET /volumes.
+type VolumeListResponse struct {
+	Volumes  []Volume `json:"Volumes"`
+	Warnings []string `json:"Warnings"`
+}
+
+// VolumePruneResponse is POST /volumes/prune.
+type VolumePruneResponse struct {
+	VolumesDeleted []string `json:"VolumesDeleted"`
+	SpaceReclaimed int64    `json:"SpaceReclaimed"`
 }
 
 // ContainerCreateRequest is the body of POST /containers/create.
@@ -187,6 +239,7 @@ type ContainerInspect struct {
 	SizeRw       int64           `json:"SizeRw"`
 	Config       ContainerConfig `json:"Config"`
 	HostConfig   HostConfig      `json:"HostConfig"`
+	Mounts       []MountPoint    `json:"Mounts"`
 }
 
 // JSONMessage is one line of the POST /images/create progress stream.
@@ -282,7 +335,7 @@ type SystemDataUsage struct {
 	LayersSize int64              `json:"LayersSize"`
 	Images     []ImageSummary     `json:"Images"`
 	Containers []ContainerSummary `json:"Containers"`
-	Volumes    []any              `json:"Volumes"`
+	Volumes    []Volume           `json:"Volumes"`
 	BuildCache []any              `json:"BuildCache"`
 	// Storage is this engine's own addition: where its state lives and
 	// how full that is. Docker clients ignore it.
