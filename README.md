@@ -89,6 +89,7 @@ not have.
 | `start CONTAINER...` | starts stopped containers (they keep their files and logs); `-a/--attach` (one container) prints this run's output and exits with its status |
 | `stop CONTAINER...`, `restart CONTAINER...` | `-t/--time` accepted and ignored: a wasm guest has no signals, so stopping is killing, at once |
 | `diff CONTAINER` | the files it added (`A`), changed (`C`) or deleted (`D`) |
+| `events` | `--since`, `--until` (Unix seconds, RFC 3339, or a duration such as `10m`), `-f/--filter` `type=`, `event=`, `container=`, `image=`, `volume=`, `label=`; streams container `create start die kill stop restart destroy prune` and image `pull untag delete prune` (`GET /events`; the last 1024 events are kept for `--since`) |
 | `version` | |
 | `completion bash\|zsh\|fish\|powershell` | prints a shell completion script |
 | `system df` | `-v/--verbose`; images, containers' writable layers, and the state store (kind, bytes, quota) |

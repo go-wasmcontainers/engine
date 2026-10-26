@@ -13,10 +13,12 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-wasmcontainers/engine/events"
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/runtime"
 	"github.com/go-wasmcontainers/engine/state"
@@ -153,6 +155,25 @@ type Options struct {
 	// CheckpointEvery is how often a running container's changes are
 	// stored (default 2s; negative: only at state changes).
 	CheckpointEvery time.Duration
+	// Events, when set, receives create, start, die, kill, stop, restart,
+	// destroy and prune, with Docker's attributes (image, name, labels,
+	// exitCode).
+	Events *events.Bus
+}
+
+// emit publishes a container event.
+func (m *Manager) emit(action string, c *Container, extra map[string]string) {
+	if m.opt.Events == nil {
+		return
+	}
+	attrs := map[string]string{"image": c.cfg.Image, "name": c.name}
+	for k, v := range c.cfg.Labels {
+		attrs[k] = v
+	}
+	for k, v := range extra {
+		attrs[k] = v
+	}
+	m.opt.Events.Publish(events.Event{Type: events.Container, Action: action, ID: c.id, Attributes: attrs})
 }
 
 // Manager owns every container of a daemon.
@@ -231,6 +252,7 @@ func (m *Manager) Create(o CreateOptions) (*Container, error) {
 	c, err := m.create(o)
 	if err == nil {
 		m.schedule(c)
+		m.emit("create", c, nil)
 	}
 	return c, err
 }
@@ -439,6 +461,7 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 	if pending {
 		proc.Kill() // a kill arrived before the process existed
 	}
+	m.emit("start", c, nil)
 	go m.checkpointWhileRunning(c)
 	m.exits.Add(1)
 	go func() {
@@ -451,6 +474,10 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 
 // exited stores an exit, or removes a --rm container.
 func (m *Manager) exited(c *Container) {
+	c.mu.Lock()
+	code := c.exitCode
+	c.mu.Unlock()
+	m.emit("die", c, map[string]string{"exitCode": strconv.Itoa(code)})
 	if c.cfg.AutoRemove {
 		m.removeNow(c)
 		return
@@ -462,11 +489,15 @@ func (m *Manager) exited(c *Container) {
 // the store.
 func (m *Manager) removeNow(c *Container) {
 	m.mu.Lock()
-	if m.byID[c.id] == c {
+	live := m.byID[c.id] == c
+	if live {
 		delete(m.byID, c.id)
 		delete(m.byName, c.name)
 	}
 	m.mu.Unlock()
+	if live {
+		m.emit("destroy", c, nil)
+	}
 	m.schedule(c) // no longer live: the writer deletes it
 	c.mu.Lock()
 	c.removed = true
@@ -497,6 +528,10 @@ func (m *Manager) Prune() ([]string, int64) {
 		ids = append(ids, s.ID)
 		bytes += s.SizeRw
 	}
+	if m.opt.Events != nil {
+		m.opt.Events.Publish(events.Event{Type: events.Container, Action: "prune",
+			Attributes: map[string]string{"reclaimed": strconv.FormatInt(bytes, 10)}})
+	}
 	return ids, bytes
 }
 
@@ -523,6 +558,7 @@ func (m *Manager) Kill(ref string) error {
 	if !c.kill() {
 		return ErrNotRunning
 	}
+	m.emit("kill", c, map[string]string{"signal": "9"})
 	return nil
 }
 
@@ -537,8 +573,12 @@ func (m *Manager) Stop(ctx context.Context, ref string) error {
 	if !c.kill() {
 		return ErrNotRunning
 	}
-	_, err = c.Wait(ctx, WaitNotRunning)
-	return err
+	m.emit("kill", c, map[string]string{"signal": "9"})
+	if _, err = c.Wait(ctx, WaitNotRunning); err != nil {
+		return err
+	}
+	m.emit("stop", c, nil)
+	return nil
 }
 
 // Restart stops the container if it runs, then starts it.
@@ -546,7 +586,13 @@ func (m *Manager) Restart(ctx context.Context, ref string) error {
 	if err := m.Stop(ctx, ref); err != nil && !errors.Is(err, ErrNotRunning) {
 		return err
 	}
-	return m.Start(ctx, ref)
+	if err := m.Start(ctx, ref); err != nil {
+		return err
+	}
+	if c, err := m.Get(ref); err == nil {
+		m.emit("restart", c, nil)
+	}
+	return nil
 }
 
 // Attach streams to fn what the container writes from now on (with logs,

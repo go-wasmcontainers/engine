@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"strconv"
+
 	"github.com/go-wasmcontainers/engine/container"
+	"github.com/go-wasmcontainers/engine/events"
 	"github.com/go-wasmcontainers/engine/state"
 )
 
@@ -78,5 +81,6 @@ func (d *Daemon) PruneImages(all bool) ([]DeleteItem, int64, error) {
 		}
 		reclaimed += i.Size
 	}
+	d.events.Publish(events.Event{Type: events.Image, Action: "prune", Attributes: map[string]string{"reclaimed": strconv.FormatInt(reclaimed, 10)}})
 	return out, reclaimed, nil
 }

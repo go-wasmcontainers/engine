@@ -68,6 +68,12 @@ Read from the OpenAPI document `https://docs.docker.com/reference/api/engine/ver
   (`stream`, `stdout`, `stderr`, `logs`): Docker hijacks the connection;
   without stdin to carry, this engine answers an ordinary streamed
   multiplexed response, which `start -a` reads.
+- `GET /events` (`since`, `until`, `filters`), one `EventMessage` per line:
+  `Type`, `Action`, `Actor{ID, Attributes}`, `scope`, `time`, `timeNano`;
+  the actions containers, images and volumes report. Filters implemented:
+  `type`, `event`, `container`, `image`, `volume`, `label`; others are
+  refused, not ignored. `since`/`until` take Unix seconds (with a
+  fraction), RFC 3339, or a duration back from now.
 - `GET /system/df` (`SystemDataUsageResponse`: `LayersSize`, `Images`
   [`ImageSummary`], `Containers` [`ContainerSummary`], `Volumes`,
   `BuildCache`); `POST /containers/prune` (`ContainersDeleted`,

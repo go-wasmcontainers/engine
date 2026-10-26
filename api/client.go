@@ -288,6 +288,51 @@ func (c *Client) Changes(ctx context.Context, id string) ([]FilesystemChange, er
 	return out, err
 }
 
+// EventsOptions selects events: since and until as GET /events takes
+// them (Unix seconds, RFC 3339 or a duration back from now), filters as
+// key → values.
+type EventsOptions struct {
+	Since, Until string
+	Filters      map[string][]string
+}
+
+// Events streams events to fn until the stream ends (until reached, the
+// context cancelled, or the daemon cutting off a slow reader).
+func (c *Client) Events(ctx context.Context, o EventsOptions, fn func(EventMessage) error) error {
+	q := url.Values{}
+	if o.Since != "" {
+		q.Set("since", o.Since)
+	}
+	if o.Until != "" {
+		q.Set("until", o.Until)
+	}
+	if len(o.Filters) > 0 {
+		b, err := json.Marshal(o.Filters)
+		if err != nil {
+			return err
+		}
+		q.Set("filters", string(b))
+	}
+	resp, err := c.do(ctx, http.MethodGet, "/events", q, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var m EventMessage
+		if err := dec.Decode(&m); err != nil {
+			if errors.Is(err, io.EOF) || ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		if err := fn(m); err != nil {
+			return err
+		}
+	}
+}
+
 // DiskUsage is GET /system/df.
 func (c *Client) DiskUsage(ctx context.Context) (SystemDataUsage, error) {
 	var out SystemDataUsage
