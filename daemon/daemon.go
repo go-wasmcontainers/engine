@@ -42,6 +42,12 @@ type Options struct {
 	Containers container.Options
 	// MaxLowers bounds how many unpacked image trees stay in memory.
 	MaxLowers int
+	// StorageInfo, when set, reports the state store's usage for
+	// `system df` (a browser's quota estimate, a disk's free space).
+	StorageInfo func() StorageInfo
+	// ImagesRemoved, when set, is called after images were deleted (the
+	// browser executor drops its compiled-module cache then).
+	ImagesRemoved func()
 }
 
 // Daemon is one engine instance.
@@ -53,6 +59,8 @@ type Daemon struct {
 	mu     sync.Mutex
 	lowers map[image.Digest]*lowerEntry // by manifest digest
 	tick   uint64
+
+	restored container.RestoreReport
 }
 
 type lowerEntry struct {
@@ -87,8 +95,27 @@ func New(opt Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Daemon{opt: opt, store: st, mgr: container.NewManager(opt.Containers), lowers: map[image.Digest]*lowerEntry{}}, nil
+	d := &Daemon{opt: opt, store: st, mgr: container.NewManager(opt.Containers), lowers: map[image.Digest]*lowerEntry{}}
+	// Containers from the last run, if any were stored.
+	rep, err := d.mgr.Restore(func(id string) (*rootfs.FS, error) {
+		_, img, err := d.ResolveImage(id)
+		if err != nil {
+			return nil, err
+		}
+		return d.lower(img)
+	}, rootfs.Limits{
+		MaxBytes: max(opt.Containers.Quota.MaxBytes, 1<<20) + 1<<20, MaxFiles: max(opt.Containers.Quota.MaxFiles, 1<<10) + 1<<10,
+		MaxRatio: 1, MaxPathLen: 4096, MaxDepth: 256,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("daemon: restoring containers: %w", err)
+	}
+	d.restored = rep
+	return d, nil
 }
+
+// Restored says what was restored from the state store at start.
+func (d *Daemon) Restored() container.RestoreReport { return d.restored }
 
 // Containers is the container manager.
 func (d *Daemon) Containers() *container.Manager { return d.mgr }
@@ -333,7 +360,7 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 		Image: req.Image, ImageID: string(img.ID()),
 		Entrypoint: ec.Entrypoint, Cmd: ec.Cmd,
 		Env: mergeEnv(ec.Env, req.Env), WorkingDir: ec.WorkingDir, Labels: ec.Labels,
-		MemoryLimitBytes: req.Memory,
+		MemoryLimitBytes: req.Memory, AutoRemove: req.AutoRemove,
 	}
 	if req.Entrypoint != nil {
 		cfg.Entrypoint, cfg.Cmd = req.Entrypoint, nil
@@ -347,18 +374,7 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 	if len(req.Labels) > 0 {
 		cfg.Labels = req.Labels
 	}
-	c, err := d.mgr.Create(container.CreateOptions{Name: req.Name, Config: cfg, Lower: lower})
-	if err != nil {
-		return nil, err
-	}
-	if req.AutoRemove {
-		go func() {
-			if _, err := c.Wait(context.Background(), container.WaitNextExit); err == nil {
-				d.mgr.Remove(context.Background(), c.ID(), true)
-			}
-		}()
-	}
-	return c, nil
+	return d.mgr.Create(container.CreateOptions{Name: req.Name, Config: cfg, Lower: lower})
 }
 
 // DeleteItem is one line of an image removal.
@@ -408,6 +424,9 @@ func (d *Daemon) RemoveImage(ref string, force bool) ([]DeleteItem, error) {
 	d.mu.Lock()
 	delete(d.lowers, img.ManifestDigest)
 	d.mu.Unlock()
+	if len(gone) > 0 && d.opt.ImagesRemoved != nil {
+		d.opt.ImagesRemoved()
+	}
 	for _, g := range gone {
 		if g == img.ID() {
 			out = append(out, DeleteItem{Deleted: string(g)})

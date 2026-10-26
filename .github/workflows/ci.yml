@@ -79,6 +79,11 @@ jobs:
           # Keys and lines a user types; a front end feeds them raw.
           - { target: FuzzEditor, pkg: ./cli/lineedit }
           - { target: FuzzSplitPartial, pkg: ./cli/lineedit }
+          # What the state store hands back after a restart or a reload.
+          - { target: FuzzApplyDiff, pkg: ./rootfs }
+          - { target: FuzzUnseal, pkg: ./state }
+          - { target: FuzzDecodeRecord, pkg: ./container }
+          - { target: FuzzDecodeLogs, pkg: ./container }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -132,7 +137,7 @@ jobs:
       - uses: actions/setup-go@v7
         with: { go-version: '1.27.3' }
       - run: go version
-      - run: GOOS=js GOARCH=wasm CGO_ENABLED=0 go vet ./runtime/browser ./wasi ./wasmbin ./cli ./api/... ./daemon ./container ./image ./rootfs
+      - run: GOOS=js GOARCH=wasm CGO_ENABLED=0 go vet ./runtime/browser ./wasi ./wasmbin ./cli/... ./api/... ./daemon ./container ./image ./rootfs ./state
 
   cross:
     name: cross ${{ matrix.goos }}/${{ matrix.goarch }}

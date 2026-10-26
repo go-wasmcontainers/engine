@@ -56,6 +56,19 @@ func (l *Logs) append(stream byte, p []byte) {
 	l.mu.Unlock()
 }
 
+// restore appends a stored record, keeping its time.
+func (l *Logs) restore(r Record) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.recs = append(l.recs, r)
+	l.size += len(r.Data)
+	for l.size > l.max && len(l.recs) > 1 {
+		l.size -= len(l.recs[0].Data)
+		l.recs = l.recs[1:]
+		l.base++
+	}
+}
+
 // since returns the records from sequence number seq on, the next
 // sequence number, and a channel closed at the next append.
 func (l *Logs) since(seq int) ([]Record, int, <-chan struct{}) {

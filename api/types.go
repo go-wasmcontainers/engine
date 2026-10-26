@@ -201,3 +201,41 @@ type JSONMessage struct {
 type JSONMsgError struct {
 	Message string `json:"message"`
 }
+
+// SystemDataUsage is GET /system/df.
+type SystemDataUsage struct {
+	LayersSize int64              `json:"LayersSize"`
+	Images     []ImageSummary     `json:"Images"`
+	Containers []ContainerSummary `json:"Containers"`
+	Volumes    []any              `json:"Volumes"`
+	BuildCache []any              `json:"BuildCache"`
+	// Storage is this engine's own addition: where its state lives and
+	// how full that is. Docker clients ignore it.
+	Storage *StorageUsage `json:"Storage,omitempty"`
+}
+
+// StorageUsage describes the engine's storage (see SystemDataUsage).
+type StorageUsage struct {
+	// Kind names the store: "directory /var/lib/wctr", "IndexedDB".
+	Kind string `json:"Kind"`
+	// Usage and Quota are bytes (-1: unknown); a browser reports its
+	// estimate for the whole origin.
+	Usage int64 `json:"Usage"`
+	Quota int64 `json:"Quota"`
+	// Persistent says the browser will not evict it under pressure.
+	Persistent bool `json:"Persistent"`
+	// Error is the last failure to store the engine's state, if any.
+	Error string `json:"Error,omitempty"`
+}
+
+// ContainerPruneResponse is POST /containers/prune.
+type ContainerPruneResponse struct {
+	ContainersDeleted []string `json:"ContainersDeleted"`
+	SpaceReclaimed    int64    `json:"SpaceReclaimed"`
+}
+
+// ImagePruneResponse is POST /images/prune.
+type ImagePruneResponse struct {
+	ImagesDeleted  []ImageDeleteResponseItem `json:"ImagesDeleted"`
+	SpaceReclaimed int64                     `json:"SpaceReclaimed"`
+}

@@ -241,12 +241,19 @@ type staged struct {
 // (which is how a symlink planted by one entry redirects the next), symlink
 // targets that climb above the root, hard links to anything but an
 // existing regular file, and anything over the budget.
-func (f *FS) ApplyTar(r io.Reader, b *Budget) error {
+func (f *FS) ApplyTar(r io.Reader, b *Budget) error { return f.applyTar(r, b, false) }
+
+// applyTar is ApplyTar; with diff it reads WriteDiff's dialect instead:
+// whiteouts are marked by a PAX record, not by name (a guest may name a
+// file .wh.x), and a symlink target may climb (Symlink accepts any target;
+// resolution never climbs above the root).
+func (f *FS) applyTar(r io.Reader, b *Budget, diff bool) error {
 	tr := tar.NewReader(r)
 	var (
 		opaque    [][]string
 		whiteouts [][]string
 		adds      []staged
+		root      *tar.Header
 	)
 	for {
 		hdr, err := tr.Next()
@@ -265,15 +272,36 @@ func (f *FS) ApplyTar(r io.Reader, b *Budget) error {
 			return err
 		}
 		if len(comps) == 0 {
+			if diff && hdr.Typeflag == tar.TypeDir && len(hdr.PAXRecords[paxWhiteout]) == 0 {
+				root = hdr // a diff restores the root's mode and time, last
+			}
 			continue // the root itself
 		}
+		base := comps[len(comps)-1]
+		if diff {
+			switch hdr.PAXRecords[paxWhiteout] {
+			case "":
+			case "file":
+				if hdr.Typeflag != tar.TypeReg {
+					return layerErr("whiteout %q is not a plain entry", hdr.Name)
+				}
+				whiteouts = append(whiteouts, comps)
+				continue
+			case "opaque":
+				if hdr.Typeflag != tar.TypeDir {
+					return layerErr("opaque %q is not a directory", hdr.Name)
+				}
+				opaque = append(opaque, comps)
+			default:
+				return layerErr("invalid whiteout record on %q", hdr.Name)
+			}
+		}
 		for _, c := range comps[:len(comps)-1] {
-			if strings.HasPrefix(c, whiteoutPrefix) {
+			if !diff && strings.HasPrefix(c, whiteoutPrefix) {
 				return layerErr("entry %q lies under a whiteout name", hdr.Name)
 			}
 		}
-		base := comps[len(comps)-1]
-		if strings.HasPrefix(base, whiteoutPrefix) {
+		if !diff && strings.HasPrefix(base, whiteoutPrefix) {
 			if hdr.Typeflag == tar.TypeDir {
 				return layerErr("whiteout %q is a directory", hdr.Name)
 			}
@@ -305,7 +333,11 @@ func (f *FS) ApplyTar(r io.Reader, b *Budget) error {
 				return layerErr("reading %q: %v", hdr.Name, err)
 			}
 		case tar.TypeSymlink:
-			if err := checkSymlinkTarget(comps[:len(comps)-1], hdr.Linkname, b.Limits); err != nil {
+			if diff {
+				if hdr.Linkname == "" || len(hdr.Linkname) > b.MaxPathLen || strings.IndexByte(hdr.Linkname, 0) >= 0 {
+					return layerErr("invalid symlink target %q", hdr.Linkname)
+				}
+			} else if err := checkSymlinkTarget(comps[:len(comps)-1], hdr.Linkname, b.Limits); err != nil {
 				return err
 			}
 			if err := b.spend(int64(len(hdr.Linkname)), 0); err != nil {
@@ -362,6 +394,13 @@ func (f *FS) ApplyTar(r io.Reader, b *Budget) error {
 		if err := f.addLocked(&adds[i]); err != nil {
 			return err
 		}
+	}
+	if root != nil {
+		if _, err := f.mutDirLocked(nil); err != nil {
+			return err
+		}
+		f.root.mode = fs.ModeDir | fs.FileMode(root.Mode).Perm()
+		f.root.mtime = root.ModTime
 	}
 	return nil
 }

@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/runtime"
+	"github.com/go-wasmcontainers/engine/state"
 )
 
 // State is a container's lifecycle state.
@@ -54,6 +55,8 @@ type Config struct {
 	Labels     map[string]string `json:"Labels"`
 	// MemoryLimitBytes bounds linear memory (0 = manager default).
 	MemoryLimitBytes int64 `json:"-"`
+	// AutoRemove removes the container when it exits (run --rm).
+	AutoRemove bool `json:"-"`
 }
 
 // Container is one container. Read it through Snapshot.
@@ -77,6 +80,8 @@ type Container struct {
 	path       string
 	proc       runtime.Process
 	changed    chan struct{}
+
+	persisted persisted // guarded by Manager.pmu
 }
 
 // Snapshot is a consistent copy of a container's state.
@@ -138,15 +143,24 @@ type Options struct {
 	MaxLogBytes int
 	// MaxContainers bounds how many containers exist (default 256).
 	MaxContainers int
+	// Store, when set, keeps containers across restarts: their state,
+	// logs and writable layers (see Restore).
+	Store state.Store
+	// CheckpointEvery is how often a running container's changes are
+	// stored (default 2s; negative: only at state changes).
+	CheckpointEvery time.Duration
 }
 
 // Manager owns every container of a daemon.
 type Manager struct {
 	opt Options
 
-	mu     sync.Mutex
-	byID   map[string]*Container
-	byName map[string]*Container
+	mu         sync.Mutex
+	byID       map[string]*Container
+	byName     map[string]*Container
+	persistErr error
+
+	pmu sync.Mutex // serialises writes to opt.Store
 }
 
 // NewManager returns a manager running modules on opt.Executor.
@@ -198,6 +212,14 @@ type CreateOptions struct {
 
 // Create makes a container in the created state.
 func (m *Manager) Create(o CreateOptions) (*Container, error) {
+	c, err := m.create(o)
+	if err == nil {
+		m.checkpoint(c)
+	}
+	return c, err
+}
+
+func (m *Manager) create(o CreateOptions) (*Container, error) {
 	if o.Lower == nil {
 		return nil, fmt.Errorf("%w: no root filesystem", ErrInvalid)
 	}
@@ -381,6 +403,7 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 	c.errMsg, c.exitCode, c.timedOut = "", 0, false
 	c.notifyLocked()
 	c.mu.Unlock()
+	m.checkpoint(c)
 
 	proc, err := m.opt.Executor.Start(ctx, spec)
 	if err != nil {
@@ -389,13 +412,69 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 			code = runtime.ExitMissing
 		}
 		c.finish(runtime.Result{ExitCode: code, Error: err.Error()})
+		m.exited(c)
 		return err
 	}
 	c.mu.Lock()
 	c.proc = proc
 	c.mu.Unlock()
-	go func() { c.finish(proc.Wait()) }()
+	go m.checkpointWhileRunning(c)
+	go func() {
+		c.finish(proc.Wait())
+		m.exited(c)
+	}()
 	return nil
+}
+
+// exited stores an exit, or removes a --rm container.
+func (m *Manager) exited(c *Container) {
+	if c.cfg.AutoRemove {
+		m.removeNow(c)
+		return
+	}
+	m.checkpoint(c)
+}
+
+// removeNow takes a container that is not running out of the manager and
+// the store.
+func (m *Manager) removeNow(c *Container) {
+	m.mu.Lock()
+	if m.byID[c.id] == c {
+		delete(m.byID, c.id)
+		delete(m.byName, c.name)
+	}
+	m.mu.Unlock()
+	m.forget(c)
+	c.mu.Lock()
+	c.removed = true
+	c.notifyLocked()
+	c.mu.Unlock()
+}
+
+// Prune removes every container that is not running and returns their IDs
+// and the bytes their writable layers held.
+func (m *Manager) Prune() ([]string, int64) {
+	var ids []string
+	var bytes int64
+	for _, s := range m.List(true) {
+		if s.State == Running {
+			continue
+		}
+		c, err := m.Get(s.ID)
+		if err != nil {
+			continue
+		}
+		c.mu.Lock()
+		running := c.state == Running
+		c.mu.Unlock()
+		if running {
+			continue
+		}
+		m.removeNow(c)
+		ids = append(ids, s.ID)
+		bytes += s.SizeRw
+	}
+	return ids, bytes
 }
 
 func (c *Container) finish(r runtime.Result) {
@@ -500,16 +579,7 @@ func (m *Manager) Remove(ctx context.Context, ref string, force bool) error {
 			return err
 		}
 	}
-	m.mu.Lock()
-	if m.byID[c.id] == c {
-		delete(m.byID, c.id)
-		delete(m.byName, c.name)
-	}
-	m.mu.Unlock()
-	c.mu.Lock()
-	c.removed = true
-	c.notifyLocked()
-	c.mu.Unlock()
+	m.removeNow(c)
 	return nil
 }
 

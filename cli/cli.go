@@ -108,6 +108,7 @@ func RootCmd(o Options) *cobra.Command {
 	root.AddCommand(
 		pullCmd(client), imagesCmd(client), runCmd(client, o.LookupEnv), psCmd(client), logsCmd(client),
 		rmCmd(client), rmiCmd(client), inspectCmd(client), killCmd(client), versionCmd(client, o.Version),
+		systemCmd(client),
 	)
 	root.CompletionOptions.DisableDefaultCmd = o.NoCompletionCommand
 	(&completer{client: client, opt: o}).install(root)
