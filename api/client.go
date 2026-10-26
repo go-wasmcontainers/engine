@@ -359,6 +359,36 @@ func (c *Client) PruneImages(ctx context.Context, all bool) (ImagePruneResponse,
 	return out, err
 }
 
+// Stats reads a container's stats once (stream false) or once a second
+// until fn returns an error or the stream ends.
+func (c *Client) Stats(ctx context.Context, id string, stream bool, fn func(ContainerStats) error) error {
+	q := url.Values{"stream": {"0"}}
+	if stream {
+		q.Set("stream", "1")
+	}
+	resp, err := c.do(ctx, http.MethodGet, "/containers/"+url.PathEscape(id)+"/stats", q, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	dec := json.NewDecoder(io.LimitReader(resp.Body, 1<<40))
+	for {
+		var s ContainerStats
+		if err := dec.Decode(&s); err != nil {
+			if errors.Is(err, io.EOF) || ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		if err := fn(s); err != nil {
+			return err
+		}
+		if !stream {
+			return nil
+		}
+	}
+}
+
 // Remove removes a container.
 func (c *Client) Remove(ctx context.Context, id string, force bool) error {
 	q := url.Values{}

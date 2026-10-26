@@ -12,8 +12,10 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/experimental"
 	"github.com/tetratelabs/wazero/experimental/sysfs"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/sys"
@@ -195,6 +197,13 @@ type process struct {
 	cancel context.CancelFunc
 	mu     sync.Mutex
 	killed bool
+	mem    atomic.Int64 // linear memory bytes, published by measuredMemory
+	limit  int64
+}
+
+// Stats implements runtime.StatsReporter.
+func (p *process) Stats() runtime.Stats {
+	return runtime.Stats{MemoryBytes: p.mem.Load(), MemoryLimitBytes: p.limit}
 }
 
 func (p *process) Wait() runtime.Result { <-p.done; return p.res }
@@ -268,7 +277,8 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 			Args: args, Env: spec.Env, FS: spec.FS, Stdin: stdin, Stdout: stdout, Stderr: stderr,
 		}))
 	}
-	p := &process{done: make(chan struct{}), cancel: cancel}
+	p := &process{done: make(chan struct{}), cancel: cancel, limit: int64(pagesFor(limit)) * 65536}
+	runCtx = experimental.WithMemoryAllocator(runCtx, allocator(&p.mem))
 	// The caller's context bounds the start, and cancelling it kills the run.
 	stop := context.AfterFunc(ctx, p.Kill)
 	go func() {
