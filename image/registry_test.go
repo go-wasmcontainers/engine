@@ -232,6 +232,23 @@ func TestRedirectDropsAuthorization(t *testing.T) {
 	}
 }
 
+func TestMirror(t *testing.T) {
+	c := testutil.BuildContent(testutil.ImageSpec{RefName: "latest", Module: fakeModule})
+	reg := testutil.NewRegistry("library/hello", c)
+	defer reg.Close()
+	// The mirror is served under a path prefix, as a static site would be.
+	prefixed := httptest.NewServer(http.StripPrefix("/playground", reg.Config.Handler))
+	defer prefixed.Close()
+	src, name, err := image.OpenSource("hello", image.RegistryOptions{Mirrors: map[string]string{"docker.io": prefixed.URL + "/playground/"}}, image.DefaultLimits)
+	if err != nil || name != "hello:latest" {
+		t.Fatal(name, err)
+	}
+	st, _ := image.OpenStore(t.TempDir())
+	if _, err := image.Pull(context.Background(), st, src, image.DefaultLimits, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInsecureHosts(t *testing.T) {
 	ref, _ := image.ParseReference("registry.lab:5000/x")
 	src := image.NewRegistrySource(ref, image.RegistryOptions{Insecure: []string{"registry.lab:5000"}}, image.DefaultLimits)

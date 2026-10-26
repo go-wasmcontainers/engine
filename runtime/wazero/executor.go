@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"strings"
 	"sync"
 
@@ -21,6 +20,7 @@ import (
 
 	"github.com/go-wasmcontainers/engine/image"
 	"github.com/go-wasmcontainers/engine/runtime"
+	"github.com/go-wasmcontainers/engine/wasi"
 )
 
 const pageSize = 65536
@@ -33,6 +33,11 @@ type Options struct {
 	MaxCompiled int
 	// Interpreter forces wazero's interpreter instead of its compiler.
 	Interpreter bool
+	// EngineWASI serves wasi_snapshot_preview1 with the engine's own host
+	// (package wasi, the one the browser executor uses) instead of
+	// wazero's. It exists so that host is exercised natively by real
+	// guests.
+	EngineWASI bool
 }
 
 // Executor runs modules with wazero. Compiled modules are cached by the
@@ -102,7 +107,11 @@ func (e *Executor) runtimeLocked(ctx context.Context, pages uint32) (wazero.Runt
 		WithMemoryLimitPages(pages).
 		WithCloseOnContextDone(true)
 	r := wazero.NewRuntimeWithConfig(ctx, cfg)
-	if _, err := wasi_snapshot_preview1.Instantiate(ctx, r); err != nil {
+	instantiate := wasi_snapshot_preview1.Instantiate
+	if e.opt.EngineWASI {
+		instantiate = instantiateEngineWASI
+	}
+	if _, err := instantiate(ctx, r); err != nil {
 		r.Close(ctx)
 		return nil, err
 	}
@@ -199,25 +208,9 @@ func (p *process) Kill() {
 
 // Start implements runtime.Executor.
 func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Process, error) {
-	if spec.FS == nil {
-		return nil, errors.New("spec has no filesystem")
-	}
-	st, err := spec.FS.Stat(spec.Path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("%s: %w", spec.Path, runtime.ErrNotFound)
-		}
-		return nil, fmt.Errorf("%s: %w: %v", spec.Path, runtime.ErrInvalid, err)
-	}
-	if !st.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s: %w: not a regular file", spec.Path, runtime.ErrInvalid)
-	}
-	wasm, err := spec.FS.ReadFile(spec.Path)
+	wasm, err := runtime.LoadModule(spec)
 	if err != nil {
 		return nil, err
-	}
-	if !bytes.HasPrefix(wasm, []byte("\x00asm")) {
-		return nil, fmt.Errorf("%s: %w: no wasm magic", spec.Path, runtime.ErrInvalid)
 	}
 	limit := spec.MemoryLimitBytes
 	if limit <= 0 {
@@ -269,6 +262,11 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		cancel = func() { tcancel(); inner() }
 		deadlineCtx := runCtx
 		timedOut = func() bool { return errors.Is(deadlineCtx.Err(), context.DeadlineExceeded) }
+	}
+	if e.opt.EngineWASI {
+		runCtx = withProc(runCtx, wasi.New(wasi.Config{
+			Args: args, Env: spec.Env, FS: spec.FS, Stdin: stdin, Stdout: stdout, Stderr: stderr,
+		}))
 	}
 	p := &process{done: make(chan struct{}), cancel: cancel}
 	// The caller's context bounds the start, and cancelling it kills the run.

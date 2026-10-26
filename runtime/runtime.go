@@ -5,9 +5,12 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"time"
 
 	"github.com/go-wasmcontainers/engine/rootfs"
@@ -60,6 +63,32 @@ var (
 	ErrNotFound = errors.New("module not found")
 	ErrInvalid  = errors.New("not a valid WebAssembly module")
 )
+
+// LoadModule reads and checks the module a spec names: present (else
+// ErrNotFound), a regular file with the wasm magic (else ErrInvalid).
+func LoadModule(spec Spec) ([]byte, error) {
+	if spec.FS == nil {
+		return nil, errors.New("spec has no filesystem")
+	}
+	st, err := spec.FS.Stat(spec.Path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%s: %w", spec.Path, ErrNotFound)
+		}
+		return nil, fmt.Errorf("%s: %w: %v", spec.Path, ErrInvalid, err)
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: %w: not a regular file", spec.Path, ErrInvalid)
+	}
+	wasm, err := spec.FS.ReadFile(spec.Path)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.HasPrefix(wasm, []byte("\x00asm")) {
+		return nil, fmt.Errorf("%s: %w: no wasm magic", spec.Path, ErrInvalid)
+	}
+	return wasm, nil
+}
 
 // Process is a started run.
 type Process interface {

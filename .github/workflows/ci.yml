@@ -73,6 +73,9 @@ jobs:
           - { target: FuzzParseDocuments, pkg: ./image }
           - { target: FuzzReference, pkg: ./image }
           - { target: FuzzDemux, pkg: ./api }
+          # A guest's WASI calls are hostile input to the engine's host.
+          - { target: FuzzCall, pkg: ./wasi }
+          - { target: FuzzLimitMemory, pkg: ./wasmbin }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -114,6 +117,19 @@ jobs:
       - run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build ./image/... ./rootfs/... ./runtime ./container/... ./api
       - name: the wctr CLI builds for wasip1/wasm
         run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -o wctr.wasm ./cmd/wctr && ls -l wctr.wasm
+
+  # The browser executor, the in-memory transport and everything the
+  # playground's engine imports build for GOOS=js (they run in a Web Worker;
+  # the playground repository tests them in Chromium and Firefox).
+  js:
+    name: build and vet for js/wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.27.3' }
+      - run: go version
+      - run: GOOS=js GOARCH=wasm CGO_ENABLED=0 go vet ./runtime/browser ./wasi ./wasmbin ./cli ./api/... ./daemon ./container ./image ./rootfs
 
   cross:
     name: cross ${{ matrix.goos }}/${{ matrix.goarch }}

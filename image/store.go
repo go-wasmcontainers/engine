@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 )
@@ -15,17 +12,28 @@ import (
 // ErrNotFound is wrapped when a blob or a name is not in the store.
 var ErrNotFound = errors.New("not found")
 
-// Store is a content-addressed blob store on disk with a table of names.
+// Backend is where a Store keeps bytes: a directory on disk natively, a
+// map in memory, or the browser's IndexedDB in the playground. Blobs are
+// named by the encoded part of their sha256 digest; the Store has always
+// verified a blob before PutBlob, and PutBlob must not make a blob visible
+// unless its reader reached EOF without error (it is a verifying reader).
+type Backend interface {
+	OpenBlob(hex string) (io.ReadCloser, error)
+	HasBlob(hex string) bool
+	PutBlob(hex string, r io.Reader) error
+	DeleteBlob(hex string) error
+	ListBlobs() ([]string, error)
+	// LoadRefs returns the saved name table, nil when there is none.
+	LoadRefs() ([]byte, error)
+	SaveRefs(b []byte) error
+}
+
+// Store is a content-addressed blob store with a table of names.
 //
-// Layout under root:
-//
-//	blobs/sha256/<hex>   verified content, written once by rename
-//	refs.json            name -> manifest digest
-//
-// A blob only ever reaches its final path after its size and digest were
-// checked, so anything found there can be trusted to be what its name says.
+// A blob only ever becomes visible after its size and digest were checked,
+// so anything found there can be trusted to be what its name says.
 type Store struct {
-	root string
+	b Backend
 
 	mu   sync.Mutex
 	refs map[string]Ref
@@ -40,22 +48,24 @@ type Ref struct {
 	RepoDigest Digest `json:"repoDigest,omitempty"`
 }
 
-// OpenStore opens (creating if needed) a store rooted at root.
+// OpenStore opens (creating if needed) a store in a directory.
 func OpenStore(root string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Join(root, "blobs", "sha256"), 0o700); err != nil {
+	b, err := NewDirBackend(root)
+	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(root, "tmp"), 0o700); err != nil {
+	return NewStore(b)
+}
+
+// NewStore opens a store over a backend, loading its name table.
+func NewStore(b Backend) (*Store, error) {
+	s := &Store{b: b, refs: map[string]Ref{}}
+	raw, err := b.LoadRefs()
+	if err != nil {
 		return nil, err
 	}
-	s := &Store{root: root, refs: map[string]Ref{}}
-	b, err := os.ReadFile(filepath.Join(root, "refs.json"))
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-	case err != nil:
-		return nil, err
-	default:
-		if err := json.Unmarshal(b, &s.refs); err != nil {
+	if raw != nil {
+		if err := json.Unmarshal(raw, &s.refs); err != nil {
 			return nil, fmt.Errorf("refs.json: %w", err)
 		}
 		for name, r := range s.refs {
@@ -67,31 +77,24 @@ func OpenStore(root string) (*Store, error) {
 	return s, nil
 }
 
-func (s *Store) blobPath(d Digest) string {
-	// d is a validated Digest, so Encoded() is 64 hex digits: no separator,
-	// no dot, nothing that can leave the directory.
-	return filepath.Join(s.root, "blobs", "sha256", d.Encoded())
-}
-
 // Has reports whether the blob is present.
 func (s *Store) Has(d Digest) bool {
 	if _, err := ParseDigest(string(d)); err != nil {
 		return false
 	}
-	_, err := os.Stat(s.blobPath(d))
-	return err == nil
+	return s.b.HasBlob(d.Encoded())
 }
 
 // Open opens a stored blob.
-func (s *Store) Open(d Digest) (*os.File, error) {
+func (s *Store) Open(d Digest) (io.ReadCloser, error) {
 	if _, err := ParseDigest(string(d)); err != nil {
 		return nil, err
 	}
-	f, err := os.Open(s.blobPath(d))
-	if errors.Is(err, fs.ErrNotExist) {
+	rc, err := s.b.OpenBlob(d.Encoded())
+	if errors.Is(err, ErrNotFound) {
 		return nil, fmt.Errorf("blob %s: %w", d, ErrNotFound)
 	}
-	return f, err
+	return rc, err
 }
 
 // ReadBlob reads a stored blob of at most max bytes.
@@ -114,28 +117,7 @@ func (s *Store) Ingest(desc Descriptor, r io.Reader) error {
 	if s.Has(desc.Digest) {
 		return nil
 	}
-	tmp, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "ingest-")
-	if err != nil {
-		return err
-	}
-	ok := false
-	defer func() {
-		if !ok {
-			tmp.Close()
-			os.Remove(tmp.Name())
-		}
-	}()
-	if _, err := io.Copy(tmp, NewVerifyingReader(r, desc.Digest, desc.Size)); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp.Name(), s.blobPath(desc.Digest)); err != nil {
-		return err
-	}
-	ok = true
-	return nil
+	return s.b.PutBlob(desc.Digest.Encoded(), NewVerifyingReader(r, desc.Digest, desc.Size))
 }
 
 // Tag points name at a manifest.
@@ -188,20 +170,7 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "refs-")
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	return os.Rename(tmp.Name(), filepath.Join(s.root, "refs.json"))
+	return s.b.SaveRefs(b)
 }
 
 // Image loads the image a manifest digest names, re-validating what it reads.
@@ -250,24 +219,24 @@ func (s *Store) GC(lim Limits) ([]Digest, error) {
 			keep[l.Digest.Encoded()] = true
 		}
 	}
-	dir := filepath.Join(s.root, "blobs", "sha256")
-	ents, err := os.ReadDir(dir)
+	all, err := s.b.ListBlobs()
 	if err != nil {
 		return nil, err
 	}
 	var gone []Digest
-	for _, e := range ents {
-		if keep[e.Name()] {
+	for _, hex := range all {
+		if keep[hex] {
 			continue
 		}
-		d, err := ParseDigest("sha256:" + e.Name())
+		d, err := ParseDigest("sha256:" + hex)
 		if err != nil {
 			continue // not ours; leave it
 		}
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+		if err := s.b.DeleteBlob(hex); err != nil {
 			return gone, err
 		}
 		gone = append(gone, d)
 	}
+	sort.Slice(gone, func(i, j int) bool { return gone[i] < gone[j] })
 	return gone, nil
 }

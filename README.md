@@ -18,10 +18,11 @@ M1 runs natively on Linux and macOS, with [wazero](https://wazero.io) as the
 executor, so the whole core is testable in CI. Documentation:
 <https://go-wasmcontainers.github.io/docs/>.
 
-> **Status: M1.** `wctrd` serves its API on a unix socket; `wctr` pulls
-> images from an OCI image layout or an OCI registry and runs them as
-> WebAssembly containers. No networking, no `exec`, no build yet — see
-> [Limitations](#limitations).
+> **Status: M1, plus the browser executor.** `wctrd` serves its API on a
+> unix socket; `wctr` pulls images from an OCI image layout or an OCI
+> registry and runs them as WebAssembly containers. The same engine runs in
+> a web page ([In a browser](#in-a-browser)). No networking, no `exec`, no
+> build yet — see [Limitations](#limitations).
 
 ## Demo
 
@@ -132,14 +133,31 @@ The module sees the container's root filesystem as its preopened `/`
 
 | Package | What it does |
 |---|---|
-| `image` | OCI content store (content-addressed, every blob sha256-verified), manifests, indexes, configs; pull from an OCI image layout or a registry's `/v2` API with token auth |
+| `image` | OCI content store (content-addressed, every blob sha256-verified) over a pluggable backend (directory, memory, or the playground's IndexedDB), manifests, indexes, configs; pull from an OCI image layout or a registry's `/v2` API with token auth, or from a mirror with a path prefix (`RegistryOptions.Mirrors`) |
 | `rootfs` | in-memory root filesystem: layers applied per the OCI layer spec (whiteouts, opaque whiteouts), frozen as a shared read-only lower, cloned copy-on-write per container |
-| `runtime` | the `Executor` interface (no WebAssembly runtime type in it, so a browser executor can implement it too) |
-| `runtime/wazero` | the native executor: wazero, WASI preview 1, memory limit, wall-clock timeout, compiled modules cached per sha256 |
+| `runtime` | the `Executor` interface (no WebAssembly runtime type in it) |
+| `runtime/wazero` | the native executor: wazero, WASI preview 1 (wazero's, or the engine's own with `EngineWASI`), memory limit, wall-clock timeout, compiled modules cached per sha256 |
+| `runtime/browser` | the browser executor (`GOOS=js`): one Web Worker per container process, its WASI calls served synchronously by the engine's worker over `SharedArrayBuffer` + `Atomics.wait`, guest memory capped and shared by rewriting the module's memory limits; `worker.js` is embedded |
+| `wasi` | the engine's WASI preview 1 host: every import Go's `wasip1` port uses, over a byte-addressed memory and the container's `rootfs` — one implementation for the native and the browser executors |
+| `wasmbin` | rewrites a module's memory limits (maximum, shared) |
 | `container` | lifecycle `created` → `running` → `exited` (restartable), exit codes, bounded logs, wait conditions, names, ID prefixes |
 | `daemon` | image store + unpacked image trees + container manager; the create override rules |
-| `api`, `api/server` | the API: types, client, multiplexed stream; the HTTP server |
+| `api`, `api/server`, `api/inproc` | the API: types, client, multiplexed stream; the HTTP server; an in-memory transport for an in-process client (the browser has no sockets) |
+| `cli` | the `wctr` command tree, importable (the playground runs it in-process) |
 | `cmd/wctr`, `cmd/wctrd` | the CLI (cobra; also builds for `GOOS=wasip1`) and the daemon |
+
+## In a browser
+
+The [playground](https://github.com/go-wasmcontainers/playground) runs this
+engine in a web page: the daemon, its API and the `wctr` command tree in one
+Web Worker (`GOOS=js`), each container in its own worker. A container's
+WASI calls are answered by package `wasi` in the engine's worker, against
+the same copy-on-write `rootfs` as natively, through a `SharedArrayBuffer`
+control block and `Atomics.wait`; the engine reads and writes the guest's
+memory directly, because `wasmbin` makes it shared (and caps it, which is
+how the memory limit is enforced there). The same `wasi` package is run
+natively by every guest test (`runtime/wazero`, `EngineWASI`), so the
+browser path's file-system semantics are tested without a browser.
 
 ## Performance
 

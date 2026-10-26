@@ -29,6 +29,11 @@ type RegistryOptions struct {
 	Insecure []string
 	// UserAgent is sent on every request.
 	UserAgent string
+	// Mirrors maps a reference's domain ("docker.io" for familiar names)
+	// to the base URL that serves its /v2 API, which may carry a path
+	// prefix: "https://example.org/playground" makes "hello" resolve to
+	// https://example.org/playground/v2/library/hello/manifests/latest.
+	Mirrors map[string]string
 }
 
 // RegistrySource pulls one reference from an OCI distribution registry.
@@ -69,7 +74,11 @@ func NewRegistrySource(ref Reference, opt RegistryOptions, lim Limits) *Registry
 	if ua == "" {
 		ua = "go-wasmcontainers-engine"
 	}
-	return &RegistrySource{ref: ref, base: scheme + "://" + host, client: c, ua: ua, lim: lim}
+	base := scheme + "://" + host
+	if m, ok := opt.Mirrors[ref.Domain]; ok {
+		base = strings.TrimSuffix(m, "/")
+	}
+	return &RegistrySource{ref: ref, base: base, client: c, ua: ua, lim: lim}
 }
 
 func isInsecure(host string, list []string) bool {
