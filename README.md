@@ -87,6 +87,16 @@ not have.
 | `inspect NAME\|ID...` | containers, then images |
 | `kill CONTAINER...` | |
 | `version` | |
+| `completion bash\|zsh\|fish\|powershell` | prints a shell completion script |
+
+**Shell completion.** `source <(wctr completion bash)` (or `zsh`, `fish`,
+`powershell`; see `wctr completion bash --help` to install it for good).
+Tab then completes subcommands and flags, image names for `run`, `pull`,
+`rmi`, `inspect`, container names (or IDs from a prefix) for `logs`, `rm`,
+`inspect`, running containers for `kill`, and example sizes for
+`-m/--memory`, with descriptions in zsh and fish. The candidates come from
+the daemon, through cobra's hidden `__complete` command — the same code the
+playground's terminal calls in-process (`cli.Complete`).
 
 Exit status of `wctr run`: the container's, or 125 (the CLI or daemon
 failed), 126 (not a WebAssembly module), 127 (module not found), 137 (killed

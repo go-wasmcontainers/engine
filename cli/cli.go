@@ -37,6 +37,15 @@ type Options struct {
 	Client func(host string) (*api.Client, error)
 	// LookupEnv resolves `-e KEY` (default os.LookupEnv).
 	LookupEnv func(string) (string, bool)
+	// PullCandidates, when set, adds pullable images to the completion of
+	// pull and run (the playground's mirror catalogue).
+	PullCandidates func(context.Context) []cobra.Completion
+	// RunArgs, when set, completes the arguments after the image of run
+	// (the playground knows its lab image's subcommands).
+	RunArgs func(image string, args []string) []cobra.Completion
+	// NoCompletionCommand removes cobra's `completion` command (scripts
+	// for a shell the host does not have, as in the browser).
+	NoCompletionCommand bool
 }
 
 // exitError carries a process exit status through cobra.
@@ -100,6 +109,8 @@ func RootCmd(o Options) *cobra.Command {
 		pullCmd(client), imagesCmd(client), runCmd(client, o.LookupEnv), psCmd(client), logsCmd(client),
 		rmCmd(client), rmiCmd(client), inspectCmd(client), killCmd(client), versionCmd(client, o.Version),
 	)
+	root.CompletionOptions.DisableDefaultCmd = o.NoCompletionCommand
+	(&completer{client: client, opt: o}).install(root)
 	return root
 }
 
