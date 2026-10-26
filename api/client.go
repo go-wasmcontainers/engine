@@ -48,7 +48,7 @@ func NewClient(host string) (*Client, error) {
 		},
 		DisableCompression: true,
 	}
-	return &Client{http: &http.Client{Transport: tr}, base: "http://docker/v" + APIVersion}, nil
+	return &Client{http: &http.Client{Transport: tr}, base: "http://wctr/v" + APIVersion}, nil
 }
 
 // NewClientWith uses a caller-provided HTTP client and base URL (tests,

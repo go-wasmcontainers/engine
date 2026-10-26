@@ -1,6 +1,6 @@
-/docker
-/dockerd
-/docker.wasm
+/wctr
+/wctrd
+/wctr.wasm
 *.test
 *.out
 cov.txt

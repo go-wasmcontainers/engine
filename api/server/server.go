@@ -359,7 +359,7 @@ func (s *server) containersWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Headers go out at once, so a client knows its wait is registered
-	// before it starts the container (this is how `docker run` avoids
+	// before it starts the container (this is how `wctr run` avoids
 	// missing a fast exit); the body follows when the condition holds.
 	ready := make(chan struct{})
 	type result struct {

@@ -75,8 +75,8 @@ type result struct {
 	code           int
 }
 
-// docker runs the CLI in-process against host.
-func docker(t *testing.T, host string, args ...string) result {
+// wctr runs the CLI in-process against host.
+func wctr(t *testing.T, host string, args ...string) result {
 	t.Helper()
 	cmd := RootCmd()
 	var out, errb bytes.Buffer
@@ -104,60 +104,60 @@ func TestDemo(t *testing.T) {
 	host := startDaemon(t, container.Options{})
 	layout := testLayout(t)
 
-	r := must(t, docker(t, host, "pull", "oci:"+layout+":hello"), 0)
+	r := must(t, wctr(t, host, "pull", "oci:"+layout+":hello"), 0)
 	if !strings.Contains(r.stdout, "Status: Downloaded newer image for hello:latest") || !strings.Contains(r.stdout, "Pull complete") {
 		t.Fatal(r.stdout)
 	}
-	r = must(t, docker(t, host, "pull", "oci:"+layout+":hello"), 0)
+	r = must(t, wctr(t, host, "pull", "oci:"+layout+":hello"), 0)
 	if !strings.Contains(r.stdout, "Image is up to date") {
 		t.Fatal(r.stdout)
 	}
-	must(t, docker(t, host, "pull", "oci:"+layout+":greet"), 0)
-	must(t, docker(t, host, "pull", "oci:"+layout+":probe"), 0)
+	must(t, wctr(t, host, "pull", "oci:"+layout+":greet"), 0)
+	must(t, wctr(t, host, "pull", "oci:"+layout+":probe"), 0)
 
-	r = must(t, docker(t, host, "images"), 0)
+	r = must(t, wctr(t, host, "images"), 0)
 	for _, want := range []string{"REPOSITORY", "hello", "greet", "probe", "latest"} {
 		if !strings.Contains(r.stdout, want) {
 			t.Fatalf("images lacks %q:\n%s", want, r.stdout)
 		}
 	}
-	if q := must(t, docker(t, host, "images", "-q"), 0); len(strings.Fields(q.stdout)) != 3 {
+	if q := must(t, wctr(t, host, "images", "-q"), 0); len(strings.Fields(q.stdout)) != 3 {
 		t.Fatal(q.stdout)
 	}
 
-	r = must(t, docker(t, host, "run", "--rm", "hello"), 0)
+	r = must(t, wctr(t, host, "run", "--rm", "hello"), 0)
 	if r.stdout != "Hello from a WebAssembly container!\n" {
 		t.Fatalf("%q", r.stdout)
 	}
-	r = must(t, docker(t, host, "run", "--rm", "-e", "NAME=lab", "greet"), 0)
+	r = must(t, wctr(t, host, "run", "--rm", "-e", "NAME=lab", "greet"), 0)
 	if r.stdout != "Hello, lab!\n" {
 		t.Fatalf("%q", r.stdout)
 	}
 	t.Setenv("NAME", "from-shell")
-	if r = must(t, docker(t, host, "run", "--rm", "-e", "NAME", "-e", "UNSET_VAR_X", "greet"), 0); r.stdout != "Hello, from-shell!\n" {
+	if r = must(t, wctr(t, host, "run", "--rm", "-e", "NAME", "-e", "UNSET_VAR_X", "greet"), 0); r.stdout != "Hello, from-shell!\n" {
 		t.Fatalf("%q", r.stdout)
 	}
 
 	// Exit codes propagate; the container stays for ps/logs/inspect.
-	r = must(t, docker(t, host, "run", "--name", "p", "probe", "exit", "3"), 3)
+	r = must(t, wctr(t, host, "run", "--name", "p", "probe", "exit", "3"), 3)
 	if r.stderr != "bye\n" {
 		t.Fatalf("%q", r.stderr)
 	}
-	r = must(t, docker(t, host, "ps", "-a"), 0)
+	r = must(t, wctr(t, host, "ps", "-a"), 0)
 	if !strings.Contains(r.stdout, "Exited (3)") || !strings.Contains(r.stdout, `"/bin/probe.wasm exi…"`) || !strings.Contains(r.stdout, " p\n") {
 		t.Fatalf("ps -a:\n%s", r.stdout)
 	}
 	if strings.Contains(r.stdout, "hello") {
 		t.Fatalf("--rm left a container:\n%s", r.stdout)
 	}
-	if r = must(t, docker(t, host, "ps"), 0); strings.Count(r.stdout, "\n") != 1 {
+	if r = must(t, wctr(t, host, "ps"), 0); strings.Count(r.stdout, "\n") != 1 {
 		t.Fatalf("ps shows stopped containers:\n%s", r.stdout)
 	}
-	r = must(t, docker(t, host, "logs", "p"), 0)
+	r = must(t, wctr(t, host, "logs", "p"), 0)
 	if r.stderr != "bye\n" || r.stdout != "" {
 		t.Fatalf("logs: %q %q", r.stdout, r.stderr)
 	}
-	r = must(t, docker(t, host, "inspect", "p"), 0)
+	r = must(t, wctr(t, host, "inspect", "p"), 0)
 	var insp []api.ContainerInspect
 	if err := json.Unmarshal([]byte(r.stdout), &insp); err != nil || len(insp) != 1 {
 		t.Fatal(err, r.stdout)
@@ -166,62 +166,62 @@ func TestDemo(t *testing.T) {
 		t.Fatalf("%+v", insp[0])
 	}
 	// Image env and image files are there; -w and argv work.
-	r = must(t, docker(t, host, "run", "--rm", "-w", "/etc", "probe", "cat", "motd"), 0)
+	r = must(t, wctr(t, host, "run", "--rm", "-w", "/etc", "probe", "cat", "motd"), 0)
 	if r.stdout != "welcome\n" {
 		t.Fatalf("%q", r.stdout)
 	}
-	r = must(t, docker(t, host, "run", "--rm", "probe", "env"), 0)
+	r = must(t, wctr(t, host, "run", "--rm", "probe", "env"), 0)
 	if !strings.Contains(r.stdout, "FROM_IMAGE=1\n") {
 		t.Fatalf("%q", r.stdout)
 	}
-	must(t, docker(t, host, "rm", "p"), 0)
-	if r = must(t, docker(t, host, "ps", "-a", "-q"), 0); r.stdout != "" {
+	must(t, wctr(t, host, "rm", "p"), 0)
+	if r = must(t, wctr(t, host, "ps", "-a", "-q"), 0); r.stdout != "" {
 		t.Fatalf("%q", r.stdout)
 	}
 
 	// Detached, killed, force-removed.
-	r = must(t, docker(t, host, "run", "-d", "--name", "spin", "probe", "spin"), 0)
+	r = must(t, wctr(t, host, "run", "-d", "--name", "spin", "probe", "spin"), 0)
 	id := strings.TrimSpace(r.stdout)
 	if len(id) != 64 {
 		t.Fatal(id)
 	}
-	r = must(t, docker(t, host, "rm", "spin"), 1)
+	r = must(t, wctr(t, host, "rm", "spin"), 1)
 	if !strings.Contains(r.stderr, "running") {
 		t.Fatal(r.stderr)
 	}
-	must(t, docker(t, host, "kill", id[:12]), 0)
-	must(t, docker(t, host, "rm", "-f", "spin"), 0)
+	must(t, wctr(t, host, "kill", id[:12]), 0)
+	must(t, wctr(t, host, "rm", "-f", "spin"), 0)
 
 	// Images: in use, removed, the second removal fails.
-	must(t, docker(t, host, "run", "--name", "keep", "hello"), 0)
-	r = must(t, docker(t, host, "rmi", "hello"), 1)
+	must(t, wctr(t, host, "run", "--name", "keep", "hello"), 0)
+	r = must(t, wctr(t, host, "rmi", "hello"), 1)
 	if !strings.Contains(r.stderr, "is using it") {
 		t.Fatal(r.stderr)
 	}
-	must(t, docker(t, host, "rm", "keep"), 0)
-	r = must(t, docker(t, host, "rmi", "hello"), 0)
+	must(t, wctr(t, host, "rm", "keep"), 0)
+	r = must(t, wctr(t, host, "rmi", "hello"), 0)
 	if !strings.Contains(r.stdout, "Untagged: hello:latest") || !strings.Contains(r.stdout, "Deleted: sha256:") {
 		t.Fatal(r.stdout)
 	}
-	must(t, docker(t, host, "rmi", "hello"), 1)
+	must(t, wctr(t, host, "rmi", "hello"), 1)
 
 	// run pulls what is missing.
-	r = must(t, docker(t, host, "run", "--rm", "oci:"+layout+":hello"), 0)
+	r = must(t, wctr(t, host, "run", "--rm", "oci:"+layout+":hello"), 0)
 	if !strings.Contains(r.stderr, "Unable to find image") || r.stdout != "Hello from a WebAssembly container!\n" {
 		t.Fatalf("%+v", r)
 	}
 
 	// Image inspect through the fallback.
-	r = must(t, docker(t, host, "inspect", "greet"), 0)
+	r = must(t, wctr(t, host, "inspect", "greet"), 0)
 	if !strings.Contains(r.stdout, `"Os": "wasip1"`) || !strings.Contains(r.stdout, "/app.wasm") {
 		t.Fatal(r.stdout)
 	}
-	r = must(t, docker(t, host, "inspect", "nothing-here"), 1)
+	r = must(t, wctr(t, host, "inspect", "nothing-here"), 1)
 	if !strings.Contains(r.stderr, "No such object") {
 		t.Fatal(r.stderr)
 	}
 
-	r = must(t, docker(t, host, "version"), 0)
+	r = must(t, wctr(t, host, "version"), 0)
 	if !strings.Contains(r.stdout, "API version: 1.47") || !strings.Contains(r.stdout, "Server:") {
 		t.Fatal(r.stdout)
 	}
@@ -230,58 +230,58 @@ func TestDemo(t *testing.T) {
 func TestRunErrors(t *testing.T) {
 	host := startDaemon(t, container.Options{Timeout: 500 * time.Millisecond})
 	layout := testLayout(t)
-	must(t, docker(t, host, "pull", "oci:"+layout+":probe"), 0)
+	must(t, wctr(t, host, "pull", "oci:"+layout+":probe"), 0)
 
-	// A command that is not in the image: 127, like docker.
-	r := docker(t, host, "run", "--rm", "--entrypoint", "/nope.wasm", "probe")
+	// A command that is not in the image: 127.
+	r := wctr(t, host, "run", "--rm", "--entrypoint", "/nope.wasm", "probe")
 	if r.code != 127 || !strings.Contains(r.stderr, "module not found") {
 		t.Fatalf("%+v", r)
 	}
 	// A file that is not a module: 126.
-	r = docker(t, host, "run", "--rm", "--entrypoint", "/etc/motd", "probe")
+	r = wctr(t, host, "run", "--rm", "--entrypoint", "/etc/motd", "probe")
 	if r.code != 126 {
 		t.Fatalf("%+v", r)
 	}
 	// The wall-clock limit ends a spinning container with 137.
-	if r = docker(t, host, "run", "--rm", "probe", "spin"); r.code != 137 {
+	if r = wctr(t, host, "run", "--rm", "probe", "spin"); r.code != 137 {
 		t.Fatalf("%+v", r)
 	}
 	// A memory limit from the command line.
-	if r = docker(t, host, "run", "--rm", "-m", "32m", "probe", "hog"); r.code == 0 {
+	if r = wctr(t, host, "run", "--rm", "-m", "32m", "probe", "hog"); r.code == 0 {
 		t.Fatalf("%+v", r)
 	}
-	if r = docker(t, host, "run", "-m", "lots", "probe"); r.code != 125 {
+	if r = wctr(t, host, "run", "-m", "lots", "probe"); r.code != 125 {
 		t.Fatalf("%+v", r)
 	}
 	// Names: invalid, conflicting.
-	if r = docker(t, host, "run", "--name", "bad name", "probe", "args"); r.code != 125 || !strings.Contains(r.stderr, "invalid container name") {
+	if r = wctr(t, host, "run", "--name", "bad name", "probe", "args"); r.code != 125 || !strings.Contains(r.stderr, "invalid container name") {
 		t.Fatalf("%+v", r)
 	}
-	must(t, docker(t, host, "run", "--name", "dup", "probe", "args"), 0)
-	if r = docker(t, host, "run", "--name", "dup", "probe", "args"); r.code != 125 || !strings.Contains(r.stderr, "already in use") {
+	must(t, wctr(t, host, "run", "--name", "dup", "probe", "args"), 0)
+	if r = wctr(t, host, "run", "--name", "dup", "probe", "args"); r.code != 125 || !strings.Contains(r.stderr, "already in use") {
 		t.Fatalf("%+v", r)
 	}
 	// Pulling something that is not there.
-	if r = docker(t, host, "run", "oci:"+layout+":absent"); r.code != 125 {
+	if r = wctr(t, host, "run", "oci:"+layout+":absent"); r.code != 125 {
 		t.Fatalf("%+v", r)
 	}
-	if r = docker(t, host, "pull", "oci:/no/such/dir:x"); r.code != 1 || !strings.Contains(r.stderr, "Error response from daemon") {
+	if r = wctr(t, host, "pull", "oci:/no/such/dir:x"); r.code != 1 || !strings.Contains(r.stderr, "Error response from daemon") {
 		t.Fatalf("%+v", r)
 	}
 	// Bad host / no daemon.
-	if r = docker(t, "tcp://127.0.0.1:2375", "ps"); r.code != 1 || !strings.Contains(r.stderr, "unix") {
+	if r = wctr(t, "tcp://127.0.0.1:2375", "ps"); r.code != 1 || !strings.Contains(r.stderr, "unix") {
 		t.Fatalf("%+v", r)
 	}
-	if r = docker(t, "unix:///nonexistent/d.sock", "run", "probe"); r.code != 125 {
+	if r = wctr(t, "unix:///nonexistent/d.sock", "run", "probe"); r.code != 125 {
 		t.Fatalf("%+v", r)
 	}
-	if r = docker(t, host, "logs", "nope"); r.code != 1 {
+	if r = wctr(t, host, "logs", "nope"); r.code != 1 {
 		t.Fatalf("%+v", r)
 	}
-	if r = docker(t, host, "kill", "dup"); r.code != 1 {
+	if r = wctr(t, host, "kill", "dup"); r.code != 1 {
 		t.Fatalf("%+v", r)
 	}
-	if r = docker(t, host, "rmi", "sha256:0000"); r.code != 1 {
+	if r = wctr(t, host, "rmi", "sha256:0000"); r.code != 1 {
 		t.Fatalf("%+v", r)
 	}
 }
@@ -293,15 +293,15 @@ func TestRegistryPull(t *testing.T) {
 	reg.RequireToken = true
 	defer reg.Close()
 	ref := reg.Host() + "/lab/hello:v1"
-	r := must(t, docker(t, host, "pull", ref), 0)
+	r := must(t, wctr(t, host, "pull", ref), 0)
 	if !strings.Contains(r.stdout, "Downloaded newer image for "+ref) {
 		t.Fatal(r.stdout)
 	}
-	r = must(t, docker(t, host, "run", "--rm", ref), 0)
+	r = must(t, wctr(t, host, "run", "--rm", ref), 0)
 	if r.stdout != "Hello from a WebAssembly container!\n" {
 		t.Fatal(r.stdout)
 	}
-	r = must(t, docker(t, host, "images"), 0)
+	r = must(t, wctr(t, host, "images"), 0)
 	if !strings.Contains(r.stdout, reg.Host()+"/lab/hello") {
 		t.Fatal(r.stdout)
 	}
@@ -338,7 +338,7 @@ func TestHelpers(t *testing.T) {
 	code := -1
 	osExit = func(c int) { code = c }
 	defer func() { osExit = os.Exit }()
-	os.Args = []string{"docker", "-H", "unix:///nonexistent/x.sock", "ps"}
+	os.Args = []string{"wctr", "-H", "unix:///nonexistent/x.sock", "ps"}
 	main()
 	if code != 1 {
 		t.Fatal(code)

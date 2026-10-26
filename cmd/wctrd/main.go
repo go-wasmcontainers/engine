@@ -1,6 +1,6 @@
-// Command dockerd is the engine's daemon: it serves the engine's subset of
-// the Docker Engine API on a unix socket and runs wasip1 containers with
-// wazero.
+// Command wctrd is the engine's daemon: it serves an API compatible with
+// (a subset of) the Docker Engine API on a unix socket and runs wasip1
+// containers with wazero.
 package main
 
 import (
@@ -46,7 +46,7 @@ func init() {
 func main() {
 	cmd := RootCmd()
 	if err := cmd.Execute(); err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), "dockerd:", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), "wctrd:", err)
 		osExit(1)
 	}
 }
@@ -79,8 +79,8 @@ func RootCmd() *cobra.Command { return rootCmd(nil) }
 func rootCmd(ready chan<- string) *cobra.Command {
 	var cfg Config
 	cmd := &cobra.Command{
-		Use:           "dockerd",
-		Short:         "Serve the go-wasmcontainers engine: WebAssembly (wasip1) containers behind a Docker API",
+		Use:           "wctrd",
+		Short:         "Serve the go-wasmcontainers engine: WebAssembly (wasip1) containers behind an API compatible with the Docker Engine API",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -92,7 +92,7 @@ func rootCmd(ready chan<- string) *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&cfg.Host, "host", "H", "unix://"+api.DefaultSocket(), "unix socket to listen on (unix:///path)")
+	f.StringVarP(&cfg.Host, "host", "H", "unix://"+api.DefaultSocket, "unix socket to listen on (unix:///path)")
 	f.StringVar(&cfg.DataRoot, "data-root", defaultDataRoot(), "directory holding the image store")
 	f.StringVar(&cfg.Memory, "memory", "256m", "default linear-memory limit per container")
 	f.DurationVar(&cfg.Timeout, "run-timeout", 10*time.Minute, "wall-clock limit of one container run (0 = none)")
@@ -102,23 +102,18 @@ func rootCmd(ready chan<- string) *cobra.Command {
 	return cmd
 }
 
-// listenUnix creates the socket inside a directory only this user can
-// enter, then makes the socket itself 0600: nobody else can reach the API,
-// and there is no window during which the socket is open to others.
+// listenUnix binds the socket inside a fresh 0700 directory next to its
+// final path, makes it 0600, and only then renames it into place: nobody
+// else can reach the API at any moment, and the parent directory (often a
+// shared one such as /var/run) is never created loosely nor re-permissioned.
 func listenUnix(path string) (net.Listener, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
-	}
-	st, err := os.Lstat(dir)
+	st, err := os.Stat(dir)
 	if err != nil {
 		return nil, err
 	}
 	if !st.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", dir)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, err
 	}
 	if st, err := os.Lstat(path); err == nil {
 		if st.Mode()&os.ModeSocket == 0 {
@@ -132,11 +127,28 @@ func listenUnix(path string) (net.Listener, error) {
 			return nil, err
 		}
 	}
-	l, err := net.Listen("unix", path)
+	tmp, err := os.MkdirTemp(dir, ".wctrd-")
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	defer os.RemoveAll(tmp)
+	if err := os.Chmod(tmp, 0o700); err != nil {
+		return nil, err
+	}
+	staged := filepath.Join(tmp, "s")
+	l, err := net.Listen("unix", staged)
+	if err != nil {
+		return nil, err
+	}
+	ul := l.(*net.UnixListener)
+	// The listener's path changes with the rename; the caller removes the
+	// final path itself.
+	ul.SetUnlinkOnClose(false)
+	if err := os.Chmod(staged, 0o600); err != nil {
+		l.Close()
+		return nil, err
+	}
+	if err := os.Rename(staged, path); err != nil {
 		l.Close()
 		return nil, err
 	}
@@ -162,7 +174,7 @@ func serve(ctx context.Context, cfg Config, out io.Writer, ready chan<- string) 
 	copt.Quota.MaxBytes = quota
 	d, err := daemon.New(daemon.Options{
 		Root:       cfg.DataRoot,
-		Registry:   image.RegistryOptions{Insecure: cfg.Insecure, UserAgent: "go-wasmcontainers-dockerd/" + version},
+		Registry:   image.RegistryOptions{Insecure: cfg.Insecure, UserAgent: "wctrd/" + version},
 		Containers: copt,
 	})
 	if err != nil {
@@ -178,7 +190,7 @@ func serve(ctx context.Context, cfg Config, out io.Writer, ready chan<- string) 
 		ReadHeaderTimeout: 10 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 	}
-	fmt.Fprintf(out, "dockerd %s listening on unix://%s (data root %s)\n", version, u.Path, cfg.DataRoot)
+	fmt.Fprintf(out, "wctrd %s listening on unix://%s (data root %s)\n", version, u.Path, cfg.DataRoot)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(l) }()
 	if ready != nil {
@@ -191,7 +203,7 @@ func serve(ctx context.Context, cfg Config, out io.Writer, ready chan<- string) 
 		}
 	case <-ctx.Done():
 	}
-	fmt.Fprintln(out, "dockerd: shutting down")
+	fmt.Fprintln(out, "wctrd: shutting down")
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	d.Close(sctx)
