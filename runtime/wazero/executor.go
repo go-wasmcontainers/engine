@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/experimental"
 	"github.com/tetratelabs/wazero/experimental/sysfs"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
@@ -107,7 +108,12 @@ func (e *Executor) runtimeLocked(ctx context.Context, pages uint32) (wazero.Runt
 	}
 	cfg = cfg.WithCompilationCache(e.cache).
 		WithMemoryLimitPages(pages).
-		WithCloseOnContextDone(true)
+		WithCloseOnContextDone(true).
+		// Exception handling: C and C++ guests compiled with wasm
+		// exceptions (lua's error()) need it; browsers ship it (Chrome 95,
+		// Firefox 100). wazero has it behind an experimental flag, in its
+		// interpreter and its compiler.
+		WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExceptionHandling)
 	r := wazero.NewRuntimeWithConfig(ctx, cfg)
 	instantiate := wasi_snapshot_preview1.Instantiate
 	if e.opt.EngineWASI {

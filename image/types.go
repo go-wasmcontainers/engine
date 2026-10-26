@@ -11,6 +11,8 @@ const (
 	MediaTypeOCILayer    = "application/vnd.oci.image.layer.v1.tar"
 	MediaTypeOCILayerGz  = "application/vnd.oci.image.layer.v1.tar+gzip"
 	MediaTypeOCILayerZst = "application/vnd.oci.image.layer.v1.tar+zstd"
+	// MediaTypePkgxLayerZst is a pkgx bottle's layer (go-pkgx/packages).
+	MediaTypePkgxLayerZst = "application/vnd.pkgx.bottle.layer.v1.tar+zstd"
 
 	MediaTypeDockerManifest = "application/vnd.docker.distribution.manifest.v2+json"
 	MediaTypeDockerList     = "application/vnd.docker.distribution.manifest.list.v2+json"

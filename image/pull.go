@@ -130,7 +130,8 @@ func supportedConfig(mt string) bool {
 // SupportedLayer reports whether the engine can unpack a layer media type.
 func SupportedLayer(mt string) bool {
 	switch mt {
-	case MediaTypeOCILayer, MediaTypeOCILayerGz, MediaTypeDockerLayerGz, MediaTypeWasmLayer:
+	case MediaTypeOCILayer, MediaTypeOCILayerGz, MediaTypeDockerLayerGz, MediaTypeWasmLayer,
+		MediaTypeOCILayerZst, MediaTypePkgxLayerZst:
 		return true
 	}
 	return false

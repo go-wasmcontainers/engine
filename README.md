@@ -230,6 +230,7 @@ committed (`go test -run '^$' -bench . -cpu 1 ./image ./rootfs ./runtime/wazero`
 |---|---|---|
 | `BenchmarkPullLayout` | cold pull of the `hello` image (735 kB tar+gzip layer) from an OCI layout: verify + store | 1.26 ms (583 MB/s) |
 | `BenchmarkUnpackGzipLayer` | apply that layer (2.4 MB module) to an empty tree | 11.5 ms (210 MB/s, bound by `compress/gzip`) |
+| `BenchmarkUnpackZstdLayer` | the same layer as `tar+zstd` (default level), bounded single-threaded decoder | 2.1 ms against 8.3 ms for gzip in the same run (load 32: indicative) |
 | `BenchmarkClone` | a container's copy-on-write root plus its first write | 2.2 µs |
 | `BenchmarkStartCold` | first container of an image: wazero compiles the 2.4 MB Go module, runs it to exit | 610 ms |
 | `BenchmarkStartWarm` | every later container: compiled module from the per-digest cache | 3.4 ms |
@@ -253,7 +254,8 @@ open item.
 - **Layers**: absolute names, `..`, writes under a symlink or a file, symlink
   targets that climb above the root, hard links to anything but an existing
   regular file are refused; total bytes (1 GiB), entries (131072), path
-  length, depth and gzip ratio (200:1) are bounded; devices and FIFOs are
+  length, depth and gzip or zstd ratio (200:1) are bounded, as is a zstd
+  frame's window (64 MiB, refused before it is allocated); devices and FIFOs are
   skipped.
 - **Containers**: the root filesystem is in memory and every path resolves
   inside it, so nothing reaches the host; linear memory, wall-clock time,
@@ -284,7 +286,8 @@ open item.
 - A running container's writes are stored every 2 s and at exit: a crash
   loses at most the last 2 s of them. Hard links to an unchanged image file
   come back as copies.
-- Layers: `tar+zstd` is not supported yet; hard links from image layers are
+- Layers: `tar`, `tar+gzip`, `tar+zstd` (OCI, and pkgx bottles'
+  `application/vnd.pkgx.bottle.layer.v1.tar+zstd`); hard links from image layers are
   separate copies once a container writes to them (as overlayfs does without
   its index feature).
 - Registry auth is anonymous (Bearer token flow); no `login`.

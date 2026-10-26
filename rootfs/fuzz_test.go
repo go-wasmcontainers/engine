@@ -34,12 +34,13 @@ func fuzzSeeds() [][]byte {
 func FuzzApplyTar(f *testing.F) {
 	for _, s := range fuzzSeeds() {
 		f.Add(s)
+		f.Add(zstdOf(f, s)) // and as zstd
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		lim := DefaultLimits
 		lim.MaxBytes = 1 << 20
 		lim.MaxFiles = 256
-		for _, mt := range []string{mtTar, mtTarGz} {
+		for _, mt := range []string{mtTar, mtTarGz, mtTarZstd} {
 			fs := New()
 			b := NewBudget(lim)
 			if err := fs.ApplyTar(bytes.NewReader(testutil.Tar(
