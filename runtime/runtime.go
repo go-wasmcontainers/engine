@@ -22,6 +22,8 @@ type Spec struct {
 	ID string
 	// FS is the container's root filesystem, preopened as "/".
 	FS *rootfs.FS
+	// Mounts are volumes, each preopened at its own path.
+	Mounts []Mount
 	// Path is the module's absolute path inside FS.
 	Path string
 	// Args is argv, Args[0] included.
@@ -88,6 +90,14 @@ func LoadModule(spec Spec) ([]byte, error) {
 		return nil, fmt.Errorf("%s: %w: no wasm magic", spec.Path, ErrInvalid)
 	}
 	return wasm, nil
+}
+
+// Mount is a tree (a volume) preopened at Path in the guest, read-only
+// when ReadOnly.
+type Mount struct {
+	Path     string
+	FS       *rootfs.FS
+	ReadOnly bool
 }
 
 // Process is a started run.

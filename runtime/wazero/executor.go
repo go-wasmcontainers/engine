@@ -241,7 +241,7 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		WithSysNanotime().
 		WithSysNanosleep().
 		WithRandSource(rand.Reader).
-		WithFSConfig(wazero.NewFSConfig().(sysfs.FSConfig).WithSysFSMount(&sysFS{fs: spec.FS}, "/"))
+		WithFSConfig(fsConfig(spec))
 	for _, kv := range spec.Env {
 		k, v, _ := strings.Cut(kv, "=")
 		if k == "" {
@@ -274,7 +274,7 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	}
 	if e.opt.EngineWASI {
 		runCtx = withProc(runCtx, wasi.New(wasi.Config{
-			Args: args, Env: spec.Env, FS: spec.FS, Stdin: stdin, Stdout: stdout, Stderr: stderr,
+			Args: args, Env: spec.Env, FS: spec.FS, Mounts: WASIMounts(spec.Mounts), Stdin: stdin, Stdout: stdout, Stderr: stderr,
 		}))
 	}
 	p := &process{done: make(chan struct{}), cancel: cancel, limit: int64(pagesFor(limit)) * 65536}
@@ -295,6 +295,25 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		p.res = result(err, killed, timedOut())
 	}()
 	return p, nil
+}
+
+// fsConfig preopens the root and each mount (wazero orders preopens as
+// added: "/" first, then the volumes).
+func fsConfig(spec runtime.Spec) wazero.FSConfig {
+	c := wazero.NewFSConfig().(sysfs.FSConfig).WithSysFSMount(&sysFS{fs: spec.FS}, "/")
+	for _, m := range spec.Mounts {
+		c = c.(sysfs.FSConfig).WithSysFSMount(&sysFS{fs: m.FS, ro: m.ReadOnly}, m.Path)
+	}
+	return c
+}
+
+// WASIMounts converts runtime mounts for the engine's WASI host.
+func WASIMounts(ms []runtime.Mount) []wasi.Mount {
+	out := make([]wasi.Mount, len(ms))
+	for i, m := range ms {
+		out[i] = wasi.Mount{Path: m.Path, FS: m.FS, ReadOnly: m.ReadOnly}
+	}
+	return out
 }
 
 func result(err error, killed, timedOut bool) runtime.Result {
