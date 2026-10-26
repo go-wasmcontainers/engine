@@ -101,6 +101,19 @@ Read from the module source `github.com/tetratelabs/wazero@v1.12.0`.
   `size.go` (`HumanSizeWithPrecision`, `RAMInBytes`): imported as is by the
   CLI and the server for the CREATED / STATUS / SIZE columns and `--memory`.
 
+## cobra shell completion
+
+Read from `github.com/spf13/cobra@v1.10.2`, `site/content/completions/_index.md`
+and `completions.go`: the hidden `__complete` command (the word being
+completed is the last argument, `""` for a new word), its output (one
+`value\tdescription` per line, then `:<directive>`), `ValidArgsFunction`
+(called after cobra has parsed flags and arguments; it does not filter by
+prefix), `RegisterFlagCompletionFunc`, `CompletionWithDesc`,
+`FixedCompletions`, `NoFileCompletions`, the directive bits (Error 1,
+NoSpace 2, NoFileComp 4, FilterFileExt 8, FilterDirs 16, KeepOrder 32) and
+`CompletionOptions.DisableDefaultCmd`. `cli/complete.go` and `cli.Complete`
+are written against it.
+
 ## Go `wasip1` port
 
 Read from `$(go env GOROOT)/src/syscall/fs_wasip1.go` (go1.27): the initial

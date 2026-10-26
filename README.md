@@ -87,6 +87,27 @@ not have.
 | `inspect NAME\|ID...` | containers, then images |
 | `kill CONTAINER...` | |
 | `version` | |
+| `completion bash\|zsh\|fish\|powershell` | prints a shell completion script |
+
+**Shell completion.** `source <(wctr completion bash)` (or `zsh`, `fish`,
+`powershell`; see `wctr completion bash --help` to install it for good).
+Tab then completes subcommands and flags, image names for `run`, `pull`,
+`rmi`, `inspect`, container names (or IDs from a prefix) for `logs`, `rm`,
+`inspect`, running containers for `kill`, and example sizes for
+`-m/--memory`, with descriptions in zsh and fish. The candidates come from
+the daemon, through cobra's hidden `__complete` command — the same code the
+playground's terminal calls in-process (`cli.Complete`).
+
+**Line editor for embedders.** `cli/lineedit` is wctr's interactive line
+editor as a pure model (no terminal, DOM or widget type): `New(Options)`,
+`Key(ctx, Key) Event` (editing keys, history Up/Down and Ctrl-P/N, Ctrl-A/E/
+B/F/U/K/W/L/C/D, reverse search Ctrl-R, Tab completion — unique match,
+longest common prefix, second Tab lists, "Display all N possibilities?"
+past 100), `State()` (prompt, line, cursor), `History`/`SetHistory`;
+`WctrCompleter(cli.Options, builtins)` completes through `__complete`;
+`ParseKeys` reads terminal input and `Renderer` writes ANSI for a terminal,
+both optional. The playground's terminal and the dashboard's terminal
+widget drive the same model.
 
 Exit status of `wctr run`: the container's, or 125 (the CLI or daemon
 failed), 126 (not a WebAssembly module), 127 (module not found), 137 (killed
