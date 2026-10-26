@@ -21,8 +21,11 @@ executor, so the whole core is testable in CI. Documentation:
 > **Status: M1, plus the browser executor.** `wctrd` serves its API on a
 > unix socket; `wctr` pulls images from an OCI image layout or an OCI
 > registry and runs them as WebAssembly containers. The same engine runs in
-> a web page ([In a browser](#in-a-browser)). No networking, no `exec`, no
-> build yet — see [Limitations](#limitations).
+> a web page ([In a browser](#in-a-browser)). Containers have a network:
+> TCP and UDP between containers, by name, on in-engine networks or on a
+> class network through the [relay](https://github.com/go-wasmcontainers/relay)
+> ([Networks](#networks)). No `exec`, no build yet — see
+> [Limitations](#limitations).
 
 ## Demo
 
@@ -79,7 +82,7 @@ not have.
 |---|---|
 | `pull IMAGE` | `IMAGE` is a registry reference or `oci:<dir>[:<ref.name>]` |
 | `images` | `-q` |
-| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory` |
+| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network) |
 | `ps` | `-a/--all`, `-q` |
 | `logs CONTAINER` | `-f/--follow` |
 | `rm CONTAINER...` | `-f/--force` |
@@ -92,6 +95,7 @@ not have.
 | `events` | `--since`, `--until` (Unix seconds, RFC 3339, or a duration such as `10m`), `-f/--filter` `type=`, `event=`, `container=`, `image=`, `volume=`, `label=`; streams container `create start die kill stop restart destroy prune` and image `pull untag delete prune` (`GET /events`; the last 1024 events are kept for `--since`) |
 | `stats [CONTAINER...]` | `--no-stream`, `-a/--all`; linear memory against its limit, bytes written, pids (`GET /containers/{id}/stats`, one reading or one per second). CPU is shown as `--`: a WebAssembly guest gives the engine no CPU accounting, so none is invented |
 | `volume create\|ls\|inspect\|rm\|prune` | named volumes: `create [--label K=V] [NAME]`, `ls [-q]`, `rm [-f]` (refused while any container mounts it), `prune [-a] [-f]` (anonymous ones; `-a` every unused one) |
+| `network create\|ls\|inspect\|rm` | `create [--label K=V] NAME` (an in-engine network, the next free `10.89+n.0.0/16`), `ls [-q]`, `inspect` (with the running containers' addresses), `rm` (refused while a container uses it; `bridge`, `none` and a class network cannot be removed) |
 | `version` | |
 
 **Volumes.** `run -v NAME:/path[:ro]` mounts a named volume (created on
@@ -162,6 +166,55 @@ these endpoints; this has not been tested with any of them yet, and
 attaching to a container (what an interactive `run` does) is not
 implemented.
 
+## Networks
+
+```console
+$ wctr network create lab
+$ wctr run -d --name web --network lab netprobe serve 80
+$ wctr run --rm --network lab netprobe get http://web/class
+hello class from 10.89.0.3:49153
+```
+
+A guest opens sockets with the **WasmEdge socket extension** of
+`wasi_snapshot_preview1` (`sock_open`, `sock_bind`, `sock_listen`,
+`sock_connect`, `sock_recv_from`, `sock_send_to`, `sock_getaddrinfo`, …, in
+its V2 form, as [stealthrocket/wasi-go](https://github.com/stealthrocket/wasi-go)
+serves it), plus preview 1's `sock_accept`, `sock_recv`, `sock_send`,
+`sock_shutdown`: a stock Go program using
+[stealthrocket/net](https://github.com/stealthrocket/net)'s `wasip1`
+package (`Listen`, `Dial`, `net/http` over them) runs unchanged. The engine's
+WASI host serves them (natively, `wctrd --wasi engine`, the default; in a
+browser, always); it never blocks inside a call — a waiting socket
+operation, or a `poll_oneoff` on sockets, hands the executor a channel to
+wait on, so the browser's engine worker keeps its event loop.
+
+- **Every network has DNS by container name.** A guest's stub resolver
+  (Go's, musl's) asks `127.0.0.1:53` when the image has no
+  `/etc/resolv.conf` (most wasm images), or `127.0.0.11:53`, Docker's
+  address: the engine answers there, from the network — A and AAAA for
+  names on it, NXDOMAIN otherwise, nothing forwarded outside, answers within
+  512 bytes (`golang.org/x/net/dns/dnsmessage`, fuzzed). A guest built with
+  stealthrocket/net's `getaddrinfo` tag resolves through `sock_getaddrinfo`
+  instead; both are tested. Unlike Docker's default bridge, `bridge` has
+  name resolution too.
+- **In-engine networks** (`bridge`, `10.88.0.0/16`; `network create`):
+  streams are in-memory and flow-controlled (64 KiB per direction: a
+  container that stops reading slows its peer), datagrams are at most
+  8 KiB and a full queue (256) drops; `127.0.0.1` is the container itself.
+  A container is reachable by its name when that is a DNS label, else by
+  its short ID.
+- **A class network**: `wctrd --relay https://relay:8443
+  --relay-join-code-file FILE [--relay-ca ca.pem]` joins a class of a
+  [relay](https://github.com/go-wasmcontainers/relay) and adds a network
+  (`class` by default, `--relay-network`) on which containers get the
+  class's addresses and names (`web`, `web.alice`, `web.alice.<domain>`),
+  under the teacher's firewall. The join code is read from a file (never on
+  the command line, refused if others can read it); the session token is
+  kept `0600` in the data root, refreshed before it expires, and reused at
+  the next start. The contract is the relay's `docs/NETWORKDRIVER.md`.
+- `--network none` (and `--wasi wazero`) gives no sockets: `sock_open`
+  fails with `ENOTSUP`. `--network host` is refused.
+
 ## Images it runs
 
 Both shapes, selected from an index by platform `wasip1/wasm`:
@@ -191,6 +244,9 @@ The module sees the container's root filesystem as its preopened `/`
 | `runtime/browser` | the browser executor (`GOOS=js`): one Web Worker per container process, its WASI calls served synchronously by the engine's worker over `SharedArrayBuffer` + `Atomics.wait`, guest memory capped and shared by rewriting the module's memory limits; `worker.js` is embedded |
 | `wasi` | the engine's WASI preview 1 host: every import Go's `wasip1` port uses, over a byte-addressed memory and the container's `rootfs` — one implementation for the native and the browser executors |
 | `wasmbin` | rewrites a module's memory limits (maximum, shared) |
+| `netdriver` | the `NetworkDriver` / `Endpoint` contract, `Local` (an in-engine network, `x/net/nettest`-conformant streams), `WithDNS` (the network's DNS server) |
+| `netdriver/relaynet` | a class network through the relay: join, connect, token refresh |
+| `network` | the named networks (`bridge`, `none`, created ones, host-provided drivers), kept in the state store |
 | `container` | lifecycle `created` → `running` → `exited` (restartable), exit codes, bounded logs, wait conditions, names, ID prefixes; checkpoints to and restores from a `state.Store` |
 | `state` | the key-value `Store` the engine persists containers in (directory, memory; IndexedDB in the playground), sealed records, content-addressed blobs |
 | `daemon` | image store + unpacked image trees + container manager; the create override rules |
@@ -272,15 +328,27 @@ open item.
   writable layer goes through the layer checks under the container's quota,
   and the browser's compiled-module cache is hashed before a module from it
   runs.
-- **Fuzzed** in CI (corpus committed under `testdata/fuzz`): the layer
+- **Network**: a container reaches only its network (no host network, no
+  outside DNS); every socket buffer in the host is bounded (64 KiB each way
+  per socket, 256 datagrams, 64 accepted connections, 8 KiB datagrams);
+  every guest pointer and length in the socket calls is bounds-checked;
+  a container's sockets close when it exits. The relay's join code and
+  session token never appear in a URL, a command line or the environment.
+- **Fuzzed** in CI (corpus committed under `testdata/fuzz`): the socket
+  calls (sequences of them on two processes of one network), the DNS
+  answerer, the layer
   unpacker and the writable-layer reader, the path resolver, the document
   parsers, the reference parser, the client's demultiplexer, and the stored
   record, log and seal decoders. `govulncheck` runs on every change.
 
 ## Limitations
 
-- No networking (the WasmEdge socket extension is a later milestone), no
-  `exec` / process spawn (WASIX subset later), no TTY, no stdin attach.
+- No `exec` / process spawn (WASIX subset later), no TTY, no stdin attach.
+- Networks: no published ports (`-p`), no `network connect` (one network
+  per container), IPv4 only on in-engine networks, no `AF_UNIX`; the DNS
+  answers on the resolver addresses shadow a container's own UDP server on
+  port 53 there; an unconnected UDP `sendto` to the resolver is not
+  answered (stub resolvers connect).
 - No `build`, compose, or Kubernetes API yet; volumes are local and named
   only (no drivers, no host bind mounts, no tmpfs).
 - A running container's writes are stored every 2 s and at exit: a crash

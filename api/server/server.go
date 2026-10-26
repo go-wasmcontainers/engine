@@ -72,6 +72,10 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("GET /containers/{id}/changes", s.containersChanges)
 	s.mux.HandleFunc("POST /images/prune", s.imagesPrune)
 	s.mux.HandleFunc("GET /system/df", s.systemDF)
+	s.mux.HandleFunc("GET /networks", s.networksList)
+	s.mux.HandleFunc("POST /networks/create", s.networksCreate)
+	s.mux.HandleFunc("GET /networks/{id}", s.networksInspect)
+	s.mux.HandleFunc("DELETE /networks/{id}", s.networksDelete)
 	return s
 }
 
@@ -375,6 +379,7 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 		Name: r.URL.Query().Get("name"), Image: req.Image,
 		Entrypoint: req.Entrypoint, Cmd: req.Cmd, Env: req.Env, WorkingDir: req.WorkingDir, Labels: req.Labels,
 		Memory: req.HostConfig.Memory, AutoRemove: req.HostConfig.AutoRemove, Binds: req.HostConfig.Binds,
+		Network: req.HostConfig.NetworkMode,
 	})
 	if err != nil {
 		writeError(w, statusOf(err), err)
@@ -412,7 +417,7 @@ func containerSummaries(list []container.Snapshot) []api.ContainerSummary {
 		cs := api.ContainerSummary{ID: c.ID, Names: []string{"/" + c.Name}, Image: c.Config.Image, ImageID: c.Config.ImageID,
 			Command: strings.Join(c.Command(), " "), Created: c.Created.Unix(), Ports: []any{}, SizeRw: c.SizeRw,
 			Labels: labels, State: string(c.State), Status: humanStatus(c, now)}
-		cs.HostConfig.NetworkMode = "none"
+		cs.HostConfig.NetworkMode = networkOf(c.Config)
 		out = append(out, cs)
 	}
 	return out
@@ -572,8 +577,14 @@ func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 			Error: sn.Error, StartedAt: rfc3339(sn.StartedAt), FinishedAt: rfc3339(sn.FinishedAt)},
 		Config: api.ContainerConfig{Image: sn.Config.Image, Cmd: sn.Config.Cmd, Entrypoint: sn.Config.Entrypoint,
 			Env: sn.Config.Env, WorkingDir: sn.Config.WorkingDir, Labels: sn.Config.Labels},
-		HostConfig: api.HostConfig{Memory: sn.Config.MemoryLimitBytes},
-		Mounts:     []api.MountPoint{},
+		HostConfig:      api.HostConfig{Memory: sn.Config.MemoryLimitBytes, NetworkMode: networkOf(sn.Config)},
+		Mounts:          []api.MountPoint{},
+		NetworkSettings: api.NetworkSettings{Networks: map[string]api.EndpointSettings{}},
+	}
+	if sn.IPAddress.IsValid() {
+		out.NetworkSettings.IPAddress = sn.IPAddress.String()
+		out.NetworkSettings.Networks[networkOf(sn.Config)] = api.EndpointSettings{IPAddress: sn.IPAddress.String(),
+			DNSNames: []string{container.DNSName(sn.Name, sn.ID)}}
 	}
 	for _, mt := range sn.Config.Mounts {
 		mode, rw := "rw", true

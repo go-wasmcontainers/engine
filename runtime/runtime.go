@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"time"
 
+	"github.com/go-wasmcontainers/engine/netdriver"
 	"github.com/go-wasmcontainers/engine/rootfs"
 )
 
@@ -38,6 +39,9 @@ type Spec struct {
 	MemoryLimitBytes int64
 	// Timeout cancels the run after this wall-clock time (0 = none).
 	Timeout time.Duration
+	// Net is the container's network endpoint (nil: no network). Only
+	// the engine's WASI host serves sockets.
+	Net netdriver.Endpoint
 }
 
 // Result is how a process ended.

@@ -15,8 +15,10 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"net/netip"
 	"time"
 
+	"github.com/go-wasmcontainers/engine/netdriver"
 	"github.com/go-wasmcontainers/engine/rootfs"
 )
 
@@ -156,6 +158,18 @@ var Funcs = []Func{
 	{"sock_recv", "iiiiii", false},
 	{"sock_send", "iiiii", false},
 	{"sock_shutdown", "ii", false},
+	// The WasmEdge socket extension (V2), in wasi_snapshot_preview1.
+	{"sock_open", "iii", false},
+	{"sock_bind", "iii", false},
+	{"sock_listen", "ii", false},
+	{"sock_connect", "iii", false},
+	{"sock_recv_from", "iiiiiiii", false},
+	{"sock_send_to", "iiiiiii", false},
+	{"sock_getsockopt", "iiiii", false},
+	{"sock_setsockopt", "iiiii", false},
+	{"sock_getlocaladdr", "iii", false},
+	{"sock_getpeeraddr", "iii", false},
+	{"sock_getaddrinfo", "iiiiiiii", false},
 }
 
 // FuncIndex maps a name to its index in Funcs.
@@ -181,6 +195,9 @@ type Config struct {
 	Now func() time.Time
 	// Rand is the randomness source (default crypto/rand).
 	Rand io.Reader
+	// Net is the container's place on a network; nil means no network
+	// (sock_open fails with ENOTSUP).
+	Net netdriver.Endpoint
 }
 
 type fdKind int
@@ -192,6 +209,7 @@ const (
 	kindPreopen
 	kindFile
 	kindDir
+	kindSocket
 )
 
 // Mount is a tree preopened at Path; ReadOnly refuses every change made
@@ -215,6 +233,7 @@ type fdEntry struct {
 	write  bool
 	read   bool
 	dirent []direntry // readdir snapshot, taken at cookie 0
+	sock   *sock
 }
 
 type direntry struct {
@@ -229,6 +248,7 @@ type Proc struct {
 	fds   map[uint32]*fdEntry
 	next  uint32
 	start time.Time
+	net   *netState
 }
 
 // MaxFDs bounds the descriptors a process may hold.
@@ -249,6 +269,7 @@ func New(cfg Config) *Proc {
 		cfg.Stderr = io.Discard
 	}
 	p := &Proc{cfg: cfg, fds: map[uint32]*fdEntry{}, next: 4, start: time.Now()}
+	p.netInit()
 	p.fds[0] = &fdEntry{kind: kindStdin, read: true}
 	p.fds[1] = &fdEntry{kind: kindStdout, write: true}
 	p.fds[2] = &fdEntry{kind: kindStderr, write: true}
@@ -285,6 +306,12 @@ type Result struct {
 	// Sleep asks the host to block the guest this long before returning
 	// (poll_oneoff on clocks). The host may cut it short on a kill.
 	Sleep time.Duration
+	// Wait, when set, asks the host to block until Wait is closed, Sleep
+	// (if not zero) has passed, or the process is killed, and then to
+	// return what Resume returns instead (which may ask to wait again).
+	// The call itself never blocks: sockets wait this way.
+	Wait   <-chan struct{}
+	Resume func(m Memory) Result
 	// Exit is set by proc_exit, with Code.
 	Exit bool
 	Code uint32
@@ -361,6 +388,10 @@ func (p *Proc) Call(fn int, args []uint64, m Memory) Result {
 		if f == nil {
 			return fail(EBADF)
 		}
+		if f.sock != nil {
+			f.sock.nonblock = a(1)&fdflagNonblock != 0
+			return ok()
+		}
 		f.append = a(1)&fdflagAppend != 0
 		if f.file != nil {
 			f.file.SetAppend(f.append)
@@ -397,8 +428,19 @@ func (p *Proc) Call(fn int, args []uint64, m Memory) Result {
 	case "fd_pwrite":
 		return p.rw(a(0), a(1), a(2), int64(args[3]), true, true, a(4), m)
 	case "fd_read":
+		if f := p.fds[a(0)]; f != nil && f.sock != nil {
+			return p.recv(a(0), a(1), a(2), 0, m, func(k uint32, _ bool, _ netip.AddrPort) Result {
+				if !writeU32(m, a(3), k) {
+					return fail(EFAULT)
+				}
+				return ok()
+			})
+		}
 		return p.rw(a(0), a(1), a(2), 0, false, false, a(3), m)
 	case "fd_write":
+		if f := p.fds[a(0)]; f != nil && f.sock != nil {
+			return p.send(a(0), a(1), a(2), netip.AddrPort{}, a(3), m)
+		}
 		return p.rw(a(0), a(1), a(2), 0, false, true, a(3), m)
 	case "fd_prestat_get":
 		f := p.fds[a(0)]
@@ -573,10 +615,61 @@ func (p *Proc) Call(fn int, args []uint64, m Memory) Result {
 			left -= uint32(len(chunk))
 		}
 		return ok()
-	case "proc_raise", "sock_recv", "sock_send":
+	case "proc_raise":
 		return fail(ENOSYS)
-	case "sock_accept", "sock_shutdown":
-		return fail(ENOTSUP)
+	case "sock_accept":
+		return p.sockAccept(a(0), a(1), a(2), m)
+	case "sock_recv":
+		// fd, ri_data, ri_data_len, ri_flags, *ro_datalen, *ro_flags
+		return p.recv(a(0), a(1), a(2), a(3), m, func(k uint32, trunc bool, _ netip.AddrPort) Result {
+			return p.recvDone(k, trunc, a(4), a(5), m)
+		})
+	case "sock_send":
+		// fd, si_data, si_data_len, si_flags, *so_datalen
+		return p.send(a(0), a(1), a(2), netip.AddrPort{}, a(4), m)
+	case "sock_shutdown":
+		return p.sockShutdown(a(0), a(1))
+	case "sock_open":
+		return p.sockOpen(a(0), a(1), a(2), m)
+	case "sock_bind":
+		return p.sockBind(a(0), a(1), a(2), m)
+	case "sock_listen":
+		return p.sockListen(a(0))
+	case "sock_connect":
+		return p.sockConnect(a(0), a(1), a(2), m)
+	case "sock_recv_from":
+		// fd, iovs, iovs_len, *address, ri_flags, *port, *nread, *ro_flags
+		return p.recv(a(0), a(1), a(2), a(4), m, func(k uint32, trunc bool, from netip.AddrPort) Result {
+			if from.IsValid() {
+				if e := writeAddr(m, a(3), from.Addr()); e != 0 {
+					return fail(e)
+				}
+				if !writeU32(m, a(5), uint32(from.Port())) {
+					return fail(EFAULT)
+				}
+			}
+			return p.recvDone(k, trunc, a(6), a(7), m)
+		})
+	case "sock_send_to":
+		// fd, iovs, iovs_len, *address, port, si_flags, *nwritten
+		addr, e := readAddr(m, a(3))
+		if e != 0 {
+			return fail(e)
+		}
+		if a(4) > 65535 {
+			return fail(EINVAL)
+		}
+		return p.send(a(0), a(1), a(2), netip.AddrPortFrom(addr, uint16(a(4))), a(6), m)
+	case "sock_getsockopt":
+		return p.sockGetOpt(a(0), a(1), a(2), a(3), a(4), m)
+	case "sock_setsockopt":
+		return p.sockSetOpt(a(0), a(1), a(2), a(3), a(4), m)
+	case "sock_getlocaladdr":
+		return p.sockAddr(a(0), a(1), a(2), false, m)
+	case "sock_getpeeraddr":
+		return p.sockAddr(a(0), a(1), a(2), true, m)
+	case "sock_getaddrinfo":
+		return p.sockGetAddrInfo(a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7), m)
 	}
 	return fail(ENOSYS)
 }
@@ -648,8 +741,19 @@ func (p *Proc) fdClose(fd uint32) Result {
 	if f.file != nil {
 		f.file.Close()
 	}
+	if f.sock != nil {
+		p.closeSock(f.sock)
+	}
 	delete(p.fds, fd)
 	return ok()
+}
+
+// sockType is a socket's preview 1 file type.
+func sockType(s *sock) uint8 {
+	if s.stype == sockDgram {
+		return ftSocketDgram
+	}
+	return ftSocketStream
 }
 
 func typeOf(in *rootfs.Info) uint8 {
@@ -675,6 +779,11 @@ func (p *Proc) fdstat(fd, ptr uint32, m Memory) Result {
 		b[0] = ftCharDev
 	case kindPreopen, kindDir:
 		b[0] = ftDirectory
+	case kindSocket:
+		b[0] = sockType(f.sock)
+		if f.sock.nonblock {
+			binary.LittleEndian.PutUint16(b[2:], fdflagNonblock)
+		}
 	default:
 		b[0] = ftRegular
 	}
@@ -712,9 +821,12 @@ func (p *Proc) fdFilestat(fd, ptr uint32, m Memory) Result {
 		return fail(EBADF)
 	}
 	switch f.kind {
-	case kindStdin, kindStdout, kindStderr:
+	case kindStdin, kindStdout, kindStderr, kindSocket:
 		var b [64]byte
 		b[16] = ftCharDev
+		if f.sock != nil {
+			b[16] = sockType(f.sock)
+		}
 		put64(b[24:], 1)
 		if !m.Write(ptr, b[:]) {
 			return fail(EFAULT)
@@ -1040,6 +1152,12 @@ func (p *Proc) readdir(fd, buf, bufLen uint32, cookie uint64, resultPtr uint32, 
 }
 
 func (p *Proc) poll(in, out, nsubs, resultPtr uint32, m Memory) Result {
+	return p.pollUntil(in, out, nsubs, resultPtr, time.Time{}, m)
+}
+
+// pollUntil is poll_oneoff; deadline, when set, is when the earliest clock
+// of a poll that is waiting on sockets fires (a resumed poll keeps it).
+func (p *Proc) pollUntil(in, out, nsubs, resultPtr uint32, deadline time.Time, m Memory) Result {
 	if nsubs == 0 {
 		return fail(EINVAL)
 	}
@@ -1056,8 +1174,12 @@ func (p *Proc) poll(in, out, nsubs, resultPtr uint32, m Memory) Result {
 		typ      uint8
 		errno    uint16
 		timeout  time.Duration
+		nbytes   uint64
+		hangup   bool
 	}
 	var ready, clocks []ev
+	sockets := false
+	wake := p.net.current() // before reading readiness: a change after it wakes us
 	now := time.Since(p.start)
 	for i := uint32(0); i < nsubs; i++ {
 		s := subs[i*48:]
@@ -1092,8 +1214,17 @@ func (p *Proc) poll(in, out, nsubs, resultPtr uint32, m Memory) Result {
 			e.timeout = d
 			clocks = append(clocks, e)
 		case eventFdRead, eventFdWrite:
-			if p.fds[le32(s[16:])] == nil {
+			f := p.fds[le32(s[16:])]
+			switch {
+			case f == nil:
 				e.errno = EBADF
+			case f.sock != nil:
+				ok, hup, nb := p.sockReady(f.sock, e.typ == eventFdWrite)
+				if !ok {
+					sockets = true
+					continue
+				}
+				e.hangup, e.nbytes = hup, nb
 			}
 			ready = append(ready, e)
 		default:
@@ -1102,6 +1233,29 @@ func (p *Proc) poll(in, out, nsubs, resultPtr uint32, m Memory) Result {
 		}
 	}
 	var sleep time.Duration
+	if len(ready) == 0 && sockets {
+		// Wait for a socket to change or the earliest clock, whichever
+		// comes first, then poll again.
+		if len(clocks) > 0 && deadline.IsZero() {
+			d := clocks[0].timeout
+			for _, c := range clocks {
+				d = min(d, c.timeout)
+			}
+			deadline = time.Now().Add(d)
+		}
+		if deadline.IsZero() || time.Now().Before(deadline) {
+			var left time.Duration
+			if !deadline.IsZero() {
+				left = max(time.Until(deadline), time.Nanosecond)
+			}
+			return Result{Wait: wake, Sleep: left, Resume: func(m Memory) Result {
+				return p.pollUntil(in, out, nsubs, resultPtr, deadline, m)
+			}}
+		}
+		for i := range clocks {
+			clocks[i].timeout = 0 // the deadline has passed: every clock fires
+		}
+	}
 	if len(ready) == 0 {
 		min := clocks[0].timeout
 		for _, c := range clocks {
@@ -1122,6 +1276,12 @@ func (p *Proc) poll(in, out, nsubs, resultPtr uint32, m Memory) Result {
 		put64(b[0:], e.userdata)
 		binary.LittleEndian.PutUint16(b[8:], e.errno)
 		b[10] = e.typ
+		if e.typ != eventClock {
+			put64(b[16:], e.nbytes)
+			if e.hangup {
+				binary.LittleEndian.PutUint16(b[24:], eventHangup)
+			}
+		}
 	}
 	if !m.Write(out, buf) || !writeU32(m, resultPtr, uint32(len(ready))) {
 		return fail(EFAULT)

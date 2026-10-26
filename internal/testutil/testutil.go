@@ -34,11 +34,15 @@ func RepoRoot() string {
 }
 
 // Wasm compiles testdata/wasm/<name> for wasip1/wasm once per process.
-func Wasm(tb testing.TB, name string) []byte {
+func Wasm(tb testing.TB, name string) []byte { return WasmTags(tb, name, "") }
+
+// WasmTags is Wasm with build tags (comma-separated).
+func WasmTags(tb testing.TB, name, tags string) []byte {
 	tb.Helper()
 	wasmMu.Lock()
 	defer wasmMu.Unlock()
-	if b, ok := wasmCache[name]; ok {
+	key := name + "|" + tags
+	if b, ok := wasmCache[key]; ok {
 		return b
 	}
 	dir, err := os.MkdirTemp("", "wasmbuild-")
@@ -47,8 +51,14 @@ func Wasm(tb testing.TB, name string) []byte {
 	}
 	defer os.RemoveAll(dir)
 	out := filepath.Join(dir, name+".wasm")
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", out, "./testdata/wasm/"+name)
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-tags="+tags, "-o", out, "./testdata/wasm/"+name)
 	cmd.Dir = RepoRoot()
+	// A guest with its own go.mod (its dependencies are not the engine's)
+	// builds in its directory.
+	if src := filepath.Join(RepoRoot(), "testdata", "wasm", name); fileExists(filepath.Join(src, "go.mod")) {
+		cmd = exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-tags="+tags, "-o", out, ".")
+		cmd.Dir = src
+	}
 	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm", "CGO_ENABLED=0", "GOWORK=off")
 	cmd.Stdin = nil
 	if msg, err := cmd.CombinedOutput(); err != nil {
@@ -58,8 +68,13 @@ func Wasm(tb testing.TB, name string) []byte {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	wasmCache[name] = b
+	wasmCache[key] = b
 	return b
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 // TarEntry is one entry of a test tar.

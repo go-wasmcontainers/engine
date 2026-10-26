@@ -26,6 +26,8 @@ import (
 	"github.com/go-wasmcontainers/engine/container"
 	"github.com/go-wasmcontainers/engine/daemon"
 	"github.com/go-wasmcontainers/engine/image"
+	"github.com/go-wasmcontainers/engine/netdriver"
+	"github.com/go-wasmcontainers/engine/network"
 	"github.com/go-wasmcontainers/engine/runtime/wazero"
 	"github.com/go-wasmcontainers/engine/state"
 )
@@ -71,6 +73,13 @@ type Config struct {
 	Insecure       []string
 	MaxContainers  int
 	ContainerQuota string
+	// WASI is the host serving wasi_snapshot_preview1: "engine" (the
+	// engine's own, with sockets) or "wazero" (wazero's, no network).
+	WASI string
+	// Relay joins a class network: the relay's API base URL, a file
+	// holding the join code (never on the command line), the network name
+	// containers use (--network NAME), and a CA certificate file to trust.
+	Relay, RelayCodeFile, RelayNetwork, RelayCA string
 }
 
 // RootCmd builds the command; ready, when not nil, receives the socket
@@ -100,6 +109,11 @@ func rootCmd(ready chan<- string) *cobra.Command {
 	f.StringSliceVar(&cfg.Insecure, "insecure-registry", nil, "registry host:port reached over plain HTTP (loopback always is)")
 	f.IntVar(&cfg.MaxContainers, "max-containers", 256, "maximum number of containers")
 	f.StringVar(&cfg.ContainerQuota, "storage-quota", "256m", "bytes one container may write to its filesystem")
+	f.StringVar(&cfg.WASI, "wasi", "engine", "WASI host: engine (with sockets: networks) or wazero (no network)")
+	f.StringVar(&cfg.Relay, "relay", "", "join a class network through this relay (https://host:port)")
+	f.StringVar(&cfg.RelayCodeFile, "relay-join-code-file", "", "file holding the class's join code (read once; the session token is kept in the data root)")
+	f.StringVar(&cfg.RelayNetwork, "relay-network", "class", "name of the class network (run --network NAME)")
+	f.StringVar(&cfg.RelayCA, "relay-ca", "", "PEM file of the CA that signed the relay's certificate (wctr-relay ca export)")
 	return cmd
 }
 
@@ -169,8 +183,24 @@ func serve(ctx context.Context, cfg Config, out io.Writer, ready chan<- string) 
 	if err != nil {
 		return fmt.Errorf("--storage-quota: %w", err)
 	}
-	exec := wazero.New(wazero.Options{DefaultMemoryLimitBytes: mem})
+	if cfg.WASI != "engine" && cfg.WASI != "wazero" {
+		return fmt.Errorf("--wasi %q: engine or wazero", cfg.WASI)
+	}
+	exec := wazero.New(wazero.Options{DefaultMemoryLimitBytes: mem, EngineWASI: cfg.WASI == "engine"})
 	defer exec.Close(context.Background())
+	var nopt network.Options
+	if cfg.Relay != "" {
+		if cfg.WASI != "engine" {
+			return errors.New("--relay needs --wasi engine (sockets)")
+		}
+		j, err := joinRelay(ctx, cfg, out)
+		if err != nil {
+			return err
+		}
+		defer j.Close()
+		nopt.Drivers = map[string]netdriver.NetworkDriver{cfg.RelayNetwork: j}
+		nopt.DriverName = "relay"
+	}
 	copt := container.Options{Executor: exec, MemoryLimitBytes: mem, Timeout: cfg.Timeout, MaxContainers: cfg.MaxContainers}
 	copt.Quota.MaxBytes = quota
 	// Containers, their logs and writable layers survive a restart.
@@ -182,6 +212,7 @@ func serve(ctx context.Context, cfg Config, out io.Writer, ready chan<- string) 
 		Root:       cfg.DataRoot,
 		Registry:   image.RegistryOptions{Insecure: cfg.Insecure, UserAgent: "wctrd/" + version},
 		Containers: copt,
+		Networks:   nopt,
 	})
 	if err != nil {
 		return err

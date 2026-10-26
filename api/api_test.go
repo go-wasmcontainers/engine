@@ -210,7 +210,7 @@ func TestServerEdges(t *testing.T) {
 		t.Fatal(status, body)
 	}
 	cs, _ := c.Containers(ctx, false)
-	if len(cs) != 1 || !strings.HasPrefix(cs[0].Status, "Up ") || cs[0].HostConfig.NetworkMode != "none" {
+	if len(cs) != 1 || !strings.HasPrefix(cs[0].Status, "Up ") || cs[0].HostConfig.NetworkMode != "bridge" {
 		t.Fatalf("%+v", cs)
 	}
 	// A wait that registers, then a kill: the wait answers 137.

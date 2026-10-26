@@ -278,10 +278,13 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		deadlineCtx := runCtx
 		timedOut = func() bool { return errors.Is(deadlineCtx.Err(), context.DeadlineExceeded) }
 	}
+	var proc *wasi.Proc
 	if e.opt.EngineWASI {
-		runCtx = withProc(runCtx, wasi.New(wasi.Config{
+		proc = wasi.New(wasi.Config{
 			Args: args, Env: spec.Env, FS: spec.FS, Mounts: WASIMounts(spec.Mounts), Stdin: stdin, Stdout: stdout, Stderr: stderr,
-		}))
+			Net: spec.Net,
+		})
+		runCtx = withProc(runCtx, proc)
 	}
 	p := &process{done: make(chan struct{}), cancel: cancel, limit: int64(pagesFor(limit)) * 65536}
 	runCtx = experimental.WithMemoryAllocator(runCtx, allocator(&p.mem))
@@ -294,6 +297,9 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		mod, err := r.InstantiateModule(runCtx, compiled, cfg)
 		if mod != nil {
 			mod.Close(context.Background())
+		}
+		if proc != nil {
+			proc.Close() // its sockets
 		}
 		p.mu.Lock()
 		killed := p.killed

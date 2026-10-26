@@ -108,14 +108,20 @@ func TestArgsEnvClockRandom(t *testing.T) {
 	if r := call(t, p, m, "proc_exit", 7); !r.Exit || r.Code != 7 {
 		t.Fatal(r)
 	}
-	for _, n := range []string{"proc_raise", "sock_recv", "sock_send"} {
+	if r := call(t, p, m, "proc_raise", 0); r.Errno != ENOSYS {
+		t.Fatal(r)
+	}
+	// Socket calls on a descriptor that is not a socket; and no network.
+	for _, n := range []string{"sock_recv", "sock_send", "sock_accept", "sock_shutdown", "sock_bind", "sock_listen",
+		"sock_connect", "sock_recv_from", "sock_send_to", "sock_getsockopt", "sock_setsockopt", "sock_getlocaladdr", "sock_getpeeraddr"} {
 		args := make([]uint64, len(Funcs[FuncIndex[n]].Params))
-		if r := call(t, p, m, n, args...); r.Errno != ENOSYS {
-			t.Fatal(n, r)
+		args[0] = 1 // stdout
+		if r := call(t, p, m, n, args...); r.Errno != ENOTSOCK && r.Errno != EFAULT && r.Errno != EINVAL {
+			t.Error(n, r)
 		}
 	}
-	if r := call(t, p, m, "sock_accept", 0, 0, 0); r.Errno != ENOTSUP {
-		t.Fatal(r)
+	if r := call(t, p, m, "sock_open", afInet4, sockStream, 0); r.Errno != ENOTSUP {
+		t.Fatal("sock_open with no network:", r)
 	}
 	if r := call(t, p, m, "sched_yield"); r.Errno != 0 {
 		t.Fatal(r)
