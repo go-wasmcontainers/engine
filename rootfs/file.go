@@ -263,6 +263,7 @@ func (h *File) writeAtLocked(p []byte, off int64) (int, error) {
 	}
 	copy(h.n.data[off:], p)
 	h.n.mtime = time.Now()
+	h.fs.written += int64(len(p))
 	return len(p), nil
 }
 

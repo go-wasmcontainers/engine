@@ -82,6 +82,16 @@ type FS struct {
 	base *node
 	// changes counts mutations (see Changes).
 	changes uint64
+	// written counts the bytes written to files, ever (see Written).
+	written int64
+}
+
+// Written is how many bytes have been written to this tree's files, over
+// its life (not what it holds: see Usage).
+func (f *FS) Written() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.written
 }
 
 // New returns an empty tree with a 0755 root directory.

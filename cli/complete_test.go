@@ -56,7 +56,7 @@ func TestCompletion(t *testing.T) {
 		words []string
 		want  string
 	}{
-		{[]string{""}, "completion,diff,events,help,images,inspect,kill,logs,ps,pull,restart,rm,rmi,run,start,stop,system,version"},
+		{[]string{""}, "completion,diff,events,help,images,inspect,kill,logs,ps,pull,restart,rm,rmi,run,start,stats,stop,system,version"},
 		{[]string{"system", ""}, "df,prune"},
 		{[]string{"r"}, "restart,rm,rmi,run"},
 		{[]string{"ru"}, "run"},

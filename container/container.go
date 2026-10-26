@@ -113,6 +113,40 @@ func (s Snapshot) Command() []string {
 	return append(append([]string{}, s.Config.Entrypoint...), s.Config.Cmd...)
 }
 
+// Stats is what a container uses now. CPU time is not in it: a wasm guest
+// gives the engine no CPU accounting (its wall-clock time includes the
+// time it waits on the host), and an estimate would be a guess.
+type Stats struct {
+	Read    time.Time
+	Running bool
+	// MemoryBytes is the guest's linear memory (0 when not running);
+	// MemoryLimitBytes the most it may grow to.
+	MemoryBytes, MemoryLimitBytes int64
+	// WrittenBytes is everything written to its filesystem, ever;
+	// SizeRw what its writable layer holds now.
+	WrittenBytes, SizeRw int64
+	// LogBytes is the output kept.
+	LogBytes int64
+}
+
+// DefaultMemoryLimit is the memory limit of containers that set none.
+func (m *Manager) DefaultMemoryLimit() int64 { return m.opt.MemoryLimitBytes }
+
+// Stats measures the container now.
+func (c *Container) Stats() Stats {
+	c.mu.Lock()
+	p, running := c.proc, c.state == Running
+	limit := c.cfg.MemoryLimitBytes
+	c.mu.Unlock()
+	s := Stats{Read: time.Now().UTC(), Running: running, MemoryLimitBytes: limit, WrittenBytes: c.fs.Written(), LogBytes: c.logs.bytes()}
+	s.SizeRw, _ = c.fs.Usage()
+	if r, ok := p.(runtime.StatsReporter); ok && running && p != nil {
+		rs := r.Stats()
+		s.MemoryBytes, s.MemoryLimitBytes = rs.MemoryBytes, rs.MemoryLimitBytes
+	}
+	return s
+}
+
 // Snapshot returns the container's current state.
 func (c *Container) Snapshot() Snapshot {
 	c.mu.Lock()

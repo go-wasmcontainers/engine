@@ -208,9 +208,26 @@ type process struct {
 	res    runtime.Result
 	killed bool
 	timer  *time.Timer
+
+	mu    sync.Mutex
+	mem   js.Value // the guest's shared memory, once its worker sent it
+	limit int64
 }
 
 func (p *process) Wait() runtime.Result { <-p.done; return p.res }
+
+// Stats implements runtime.StatsReporter: the shared memory's current
+// length (a grow replaces its buffer, so it is fetched each time).
+func (p *process) Stats() runtime.Stats {
+	p.mu.Lock()
+	m := p.mem
+	p.mu.Unlock()
+	s := runtime.Stats{MemoryLimitBytes: p.limit}
+	if !m.IsUndefined() && !m.IsNull() {
+		s.MemoryBytes = int64(m.Get("buffer").Get("byteLength").Float())
+	}
+	return s
+}
 
 func (p *process) finish(r runtime.Result) {
 	p.once.Do(func() {
@@ -260,7 +277,7 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	ctlU8 := js.Global().Get("Uint8Array").New(ctl, 0, 192)
 	atomics := js.Global().Get("Atomics")
 	worker := js.Global().Get("Worker").New(e.opt.WorkerURL)
-	p := &process{worker: worker, done: make(chan struct{})}
+	p := &process{worker: worker, done: make(chan struct{}), mem: js.Undefined(), limit: int64(pagesFor(limit)) * 65536}
 	mem := jsMemory{mem: js.Undefined()}
 	ctlBuf := make([]byte, 192)
 
@@ -269,6 +286,9 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		switch data.Get("t").String() {
 		case "memory":
 			mem = jsMemory{mem: data.Get("memory")}
+			p.mu.Lock()
+			p.mem = mem.mem
+			p.mu.Unlock()
 		case "call":
 			js.CopyBytesToGo(ctlBuf, ctlU8)
 			fn := int(int32(binary.LittleEndian.Uint32(ctlBuf[4:])))

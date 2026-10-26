@@ -34,6 +34,13 @@ func newLogs(max int) *Logs {
 	return &Logs{max: max, changed: make(chan struct{})}
 }
 
+// bytes is the output kept.
+func (l *Logs) bytes() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return int64(l.size)
+}
+
 func (l *Logs) append(stream byte, p []byte) {
 	if len(p) == 0 {
 		return

@@ -98,6 +98,18 @@ type Process interface {
 	Kill()
 }
 
+// Stats is what an executor can measure of a running process.
+type Stats struct {
+	// MemoryBytes is the guest's linear memory now (it never shrinks);
+	// MemoryLimitBytes the most it may grow to.
+	MemoryBytes, MemoryLimitBytes int64
+}
+
+// StatsReporter is implemented by processes that can report Stats.
+type StatsReporter interface {
+	Stats() Stats
+}
+
 // Executor starts processes.
 type Executor interface {
 	// Start validates and compiles the module, then runs it in the

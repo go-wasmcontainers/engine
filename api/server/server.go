@@ -56,6 +56,7 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("POST /containers/{id}/wait", s.containersWait)
 	s.mux.HandleFunc("POST /containers/{id}/kill", s.containersKill)
 	s.mux.HandleFunc("GET /containers/{id}/logs", s.containersLogs)
+	s.mux.HandleFunc("GET /containers/{id}/stats", s.containersStats)
 	s.mux.HandleFunc("GET /containers/{id}/json", s.containersInspect)
 	s.mux.HandleFunc("DELETE /containers/{id}", s.containersDelete)
 	s.mux.HandleFunc("POST /containers/prune", s.containersPrune)

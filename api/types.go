@@ -218,6 +218,65 @@ type EventMessage struct {
 	TimeNano int64      `json:"timeNano"`
 }
 
+// ContainerStats is one reading of GET /containers/{id}/stats, in
+// Docker's shape: memory_stats usage/limit, blkio writes, pids. CPU fields
+// are present and zero: a wasm guest gives the engine no CPU accounting,
+// which Wctr.CPU says rather than leaving it to be read as idle.
+type ContainerStats struct {
+	Read        string        `json:"read"`
+	Preread     string        `json:"preread"`
+	Name        string        `json:"name"`
+	ID          string        `json:"id"`
+	PidsStats   PidsStats     `json:"pids_stats"`
+	MemoryStats MemoryStats   `json:"memory_stats"`
+	CPUStats    CPUStats      `json:"cpu_stats"`
+	PreCPUStats CPUStats      `json:"precpu_stats"`
+	BlkioStats  BlkioStats    `json:"blkio_stats"`
+	Wctr        WctrStatsInfo `json:"wctr"`
+}
+
+// PidsStats is the process count: 1 while running, else 0.
+type PidsStats struct {
+	Current uint64 `json:"current"`
+}
+
+// MemoryStats is the guest's linear memory and its limit.
+type MemoryStats struct {
+	Usage uint64 `json:"usage"`
+	Limit uint64 `json:"limit"`
+}
+
+// CPUStats is Docker's CPU block, left at zero here.
+type CPUStats struct {
+	CPUUsage struct {
+		TotalUsage uint64 `json:"total_usage"`
+	} `json:"cpu_usage"`
+	SystemCPUUsage uint64 `json:"system_cpu_usage"`
+	OnlineCPUs     uint32 `json:"online_cpus"`
+}
+
+// BlkioStats carries the bytes written to the container's filesystem.
+type BlkioStats struct {
+	IOServiceBytesRecursive []BlkioEntry `json:"io_service_bytes_recursive"`
+}
+
+// BlkioEntry is one blkio counter.
+type BlkioEntry struct {
+	Major uint64 `json:"major"`
+	Minor uint64 `json:"minor"`
+	Op    string `json:"op"`
+	Value uint64 `json:"value"`
+}
+
+// WctrStatsInfo is this engine's addition to a stats reading.
+type WctrStatsInfo struct {
+	Running  bool  `json:"running"`
+	SizeRw   int64 `json:"size_rw"`
+	LogBytes int64 `json:"log_bytes"`
+	// CPU says why the CPU fields are zero.
+	CPU string `json:"cpu"`
+}
+
 // SystemDataUsage is GET /system/df.
 type SystemDataUsage struct {
 	LayersSize int64              `json:"LayersSize"`
