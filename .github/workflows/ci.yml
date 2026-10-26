@@ -46,7 +46,8 @@ jobs:
       - name: go vet
         shell: bash
         run: |
-          go vet $(go list ./... | grep -v '/runtime/wazero$')
+          mapfile -t pkgs < <(go list ./... | grep -v '/runtime/wazero$')
+          go vet "${pkgs[@]}"
           go vet -stdmethods=false ./runtime/wazero
       - run: CGO_ENABLED=0 go build ./...
       - name: go test -race, with coverage
