@@ -46,8 +46,9 @@ jobs:
       - name: go vet
         shell: bash
         run: |
-          mapfile -t pkgs < <(go list ./... | grep -v '/runtime/wazero$')
-          go vet "${pkgs[@]}"
+          # macOS ships bash 3.2 (no mapfile); package paths have no spaces.
+          # shellcheck disable=SC2046
+          go vet $(go list ./... | grep -v '/runtime/wazero$')
           go vet -stdmethods=false ./runtime/wazero
       - run: CGO_ENABLED=0 go build ./...
       - name: go test -race, with coverage
