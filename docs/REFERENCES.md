@@ -91,6 +91,16 @@ Read from the module source `github.com/tetratelabs/wazero@v1.12.0`.
 - `imports/wasi_snapshot_preview1`: `Instantiate` the host module once per
   runtime; `sys.ExitError.ExitCode` carries `proc_exit`.
 
+## Docker reference normalisation and display helpers
+
+- `github.com/distribution/reference@v0.6.0`, `normalize.go`
+  (`splitDockerDomain`, `defaultDomain = "docker.io"`, `officialRepoPrefix =
+  "library/"`, `legacyDefaultDomain = "index.docker.io"`, the note that Docker
+  Hub is actually served by `registry-1.docker.io`): `image/reference.go`.
+- `github.com/docker/go-units@v0.5.0`, `duration.go` (`HumanDuration`) and
+  `size.go` (`HumanSizeWithPrecision`, `RAMInBytes`): imported as is by the
+  CLI and the server for the CREATED / STATUS / SIZE columns and `--memory`.
+
 ## Go `wasip1` port
 
 Read from `$(go env GOROOT)/src/syscall/fs_wasip1.go` (go1.27): the initial
