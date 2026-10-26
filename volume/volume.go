@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -221,9 +222,13 @@ const (
 	maxRecord  = 64 << 10
 )
 
-// recordKey names a volume's record; volume names may hold capitals,
-// which keys may not, so the name is hex-encoded.
-func recordKey(name string) string { return recordKind + "/" + hex.EncodeToString([]byte(name)) }
+// recordKey names a volume's record. Volume names may hold capitals and
+// be 128 bytes long, which keys may not, so the key is the name's sha256
+// (the record holds the name, and Restore checks they agree).
+func recordKey(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return recordKind + "/" + hex.EncodeToString(sum[:])
+}
 
 type record struct {
 	Name      string            `json:"name"`
