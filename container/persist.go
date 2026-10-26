@@ -42,6 +42,7 @@ type record struct {
 	Labels     map[string]string `json:"labels,omitempty"`
 	Memory     int64             `json:"memory,omitempty"`
 	AutoRemove bool              `json:"autoRemove,omitempty"`
+	Mounts     []Mount           `json:"mounts,omitempty"`
 	State      State             `json:"state"`
 	ExitCode   int               `json:"exitCode"`
 	Error      string            `json:"error,omitempty"`
@@ -73,7 +74,7 @@ func (r *record) check() error {
 	case len(r.Entrypoint)+len(r.Cmd) == 0:
 		return errors.New("no command")
 	}
-	return nil
+	return checkMounts(r.Mounts)
 }
 
 // DecodeRecord reads a stored container record; it is exported for the
@@ -282,7 +283,7 @@ func (m *Manager) checkpointLocked(c *Container) error {
 	r := record{
 		ID: c.id, Name: c.name, Created: c.created, Image: c.cfg.Image, ImageID: c.cfg.ImageID,
 		Entrypoint: c.cfg.Entrypoint, Cmd: c.cfg.Cmd, Env: c.cfg.Env, WorkingDir: c.cfg.WorkingDir,
-		Labels: c.cfg.Labels, Memory: c.cfg.MemoryLimitBytes, AutoRemove: c.cfg.AutoRemove,
+		Labels: c.cfg.Labels, Memory: c.cfg.MemoryLimitBytes, AutoRemove: c.cfg.AutoRemove, Mounts: c.cfg.Mounts,
 		State: sn.State, ExitCode: sn.ExitCode, Error: sn.Error, TimedOut: sn.TimedOut,
 		StartedAt: sn.StartedAt, FinishedAt: sn.FinishedAt, Path: sn.Path,
 		Logs: logsKey, Diff: diffKey, Usage: usage, SavedAt: time.Now().UTC(),
@@ -429,7 +430,7 @@ func (m *Manager) Restore(lower func(imageID string) (*rootfs.FS, error), lim ro
 		c := &Container{
 			id: r.ID, name: r.Name, created: r.Created,
 			cfg: Config{Image: r.Image, ImageID: r.ImageID, Entrypoint: r.Entrypoint, Cmd: r.Cmd, Env: r.Env,
-				WorkingDir: r.WorkingDir, Labels: r.Labels, MemoryLimitBytes: r.Memory, AutoRemove: r.AutoRemove},
+				WorkingDir: r.WorkingDir, Labels: r.Labels, MemoryLimitBytes: r.Memory, AutoRemove: r.AutoRemove, Mounts: r.Mounts},
 			fs: low.Clone(m.opt.Quota), logs: newLogs(m.opt.MaxLogBytes),
 			state: r.State, exitCode: r.ExitCode, errMsg: r.Error, timedOut: r.TimedOut,
 			startedAt: r.StartedAt, finishedAt: r.FinishedAt, path: r.Path, changed: make(chan struct{}),

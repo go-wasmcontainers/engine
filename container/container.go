@@ -59,6 +59,31 @@ type Config struct {
 	MemoryLimitBytes int64 `json:"-"`
 	// AutoRemove removes the container when it exits (run --rm).
 	AutoRemove bool `json:"-"`
+	// Mounts are the volumes it mounts (run -v NAME:/path[:ro]).
+	Mounts []Mount `json:"-"`
+}
+
+// Mount is a volume mounted at Target.
+type Mount struct {
+	Volume   string `json:"volume"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"readOnly,omitempty"`
+}
+
+// checkMounts refuses targets that are not absolute and clean, the root,
+// or used twice.
+func checkMounts(ms []Mount) error {
+	seen := map[string]bool{}
+	for _, mt := range ms {
+		if mt.Volume == "" || !strings.HasPrefix(mt.Target, "/") || path.Clean(mt.Target) != mt.Target || mt.Target == "/" || len(mt.Target) > 4096 {
+			return fmt.Errorf("%w: invalid mount %s:%s (the target must be an absolute, clean path other than /)", ErrInvalid, mt.Volume, mt.Target)
+		}
+		if seen[mt.Target] {
+			return fmt.Errorf("%w: duplicate mount point: %s", ErrInvalid, mt.Target)
+		}
+		seen[mt.Target] = true
+	}
+	return nil
 }
 
 // Container is one container. Read it through Snapshot.
@@ -193,6 +218,8 @@ type Options struct {
 	// destroy and prune, with Docker's attributes (image, name, labels,
 	// exitCode).
 	Events *events.Bus
+	// Volume finds a volume's tree by name, for Config.Mounts.
+	Volume func(name string) (*rootfs.FS, error)
 }
 
 // emit publishes a container event.
@@ -298,6 +325,9 @@ func (m *Manager) create(o CreateOptions) (*Container, error) {
 	if len(o.Config.Entrypoint)+len(o.Config.Cmd) == 0 {
 		return nil, fmt.Errorf("%w: no command specified", ErrInvalid)
 	}
+	if err := checkMounts(o.Config.Mounts); err != nil {
+		return nil, err
+	}
 	name := strings.TrimPrefix(o.Name, "/")
 	if name != "" && (!nameRE.MatchString(name) || len(name) > 128) {
 		return nil, fmt.Errorf("%w: invalid container name %q, only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed", ErrInvalid, o.Name)
@@ -325,9 +355,32 @@ func (m *Manager) create(o CreateOptions) (*Container, error) {
 		fs: o.Lower.Clone(m.opt.Quota), logs: newLogs(m.opt.MaxLogBytes),
 		state: Created, changed: make(chan struct{}),
 	}
+	// The mount points, so the guest sees them in their parent directory.
+	for _, mt := range o.Config.Mounts {
+		if err := c.fs.MkdirAll(mt.Target, 0o755); err != nil {
+			return nil, fmt.Errorf("%w: mount point %s: %v", ErrInvalid, mt.Target, err)
+		}
+	}
 	m.byID[c.id] = c
 	m.byName[name] = c
 	return c, nil
+}
+
+// UsesVolume lists the containers, in any state, that mount a volume.
+func (m *Manager) UsesVolume(name string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var ids []string
+	for id, c := range m.byID {
+		for _, mt := range c.cfg.Mounts {
+			if mt.Volume == name {
+				ids = append(ids, id)
+				break
+			}
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // Get finds a container by full ID, name, or unique ID prefix.
@@ -468,6 +521,20 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 		ID: c.id, FS: c.fs, Path: c.path, Args: argv, Env: env,
 		Stdout: logWriter{c.logs, Stdout}, Stderr: logWriter{c.logs, Stderr},
 		MemoryLimitBytes: mem, Timeout: m.opt.Timeout,
+	}
+	for _, mt := range c.cfg.Mounts {
+		var vfs *rootfs.FS
+		var err error
+		if m.opt.Volume == nil {
+			err = errors.New("no volumes in this engine")
+		} else {
+			vfs, err = m.opt.Volume(mt.Volume)
+		}
+		if err != nil {
+			c.mu.Unlock()
+			return fmt.Errorf("%w: volume %s: %v", ErrInvalid, mt.Volume, err)
+		}
+		spec.Mounts = append(spec.Mounts, runtime.Mount{Path: mt.Target, FS: vfs, ReadOnly: mt.ReadOnly})
 	}
 	c.state = Running
 	c.startedAt = time.Now().UTC()
