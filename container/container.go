@@ -79,7 +79,10 @@ type Container struct {
 	removed    bool
 	path       string
 	proc       runtime.Process
-	changed    chan struct{}
+	// killPending is a kill that arrived while running but before proc
+	// was attached; Start delivers it.
+	killPending bool
+	changed     chan struct{}
 
 	persisted persisted // guarded by Manager.pmu
 	queued    bool      // guarded by Manager.qmu
@@ -430,7 +433,12 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 	}
 	c.mu.Lock()
 	c.proc = proc
+	pending := c.killPending
+	c.killPending = false
 	c.mu.Unlock()
+	if pending {
+		proc.Kill() // a kill arrived before the process existed
+	}
 	go m.checkpointWhileRunning(c)
 	m.exits.Add(1)
 	go func() {
@@ -501,6 +509,7 @@ func (c *Container) finish(r runtime.Result) {
 	c.timedOut = r.TimedOut
 	c.finishedAt = time.Now().UTC()
 	c.proc = nil
+	c.killPending = false
 	c.exits++
 	c.notifyLocked()
 }
@@ -511,17 +520,30 @@ func (m *Manager) Kill(ref string) error {
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	p := c.proc
-	running := c.state == Running
-	c.mu.Unlock()
-	if !running {
+	if !c.kill() {
 		return ErrNotRunning
 	}
+	return nil
+}
+
+// kill ends c if it is running, and reports whether it was. Between Start
+// marking it running and its process being attached there is no process
+// to kill yet: the kill is then kept and delivered on attachment.
+func (c *Container) kill() bool {
+	c.mu.Lock()
+	if c.state != Running {
+		c.mu.Unlock()
+		return false
+	}
+	p := c.proc
+	if p == nil {
+		c.killPending = true
+	}
+	c.mu.Unlock()
 	if p != nil {
 		p.Kill()
 	}
-	return nil
+	return true
 }
 
 // WaitCondition is a /containers/{id}/wait condition.
@@ -581,15 +603,13 @@ func (m *Manager) Remove(ctx context.Context, ref string, force bool) error {
 		return err
 	}
 	c.mu.Lock()
-	running, p := c.state == Running, c.proc
+	running := c.state == Running
 	c.mu.Unlock()
 	if running {
 		if !force {
 			return fmt.Errorf("%w: stop the container before removing it or force remove", ErrRunning)
 		}
-		if p != nil {
-			p.Kill()
-		}
+		c.kill()
 		if _, err := c.Wait(ctx, WaitNotRunning); err != nil {
 			return err
 		}
@@ -646,11 +666,7 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	}
 	m.mu.Unlock()
 	for _, c := range cs {
-		c.mu.Lock()
-		p := c.proc
-		c.mu.Unlock()
-		if p != nil {
-			p.Kill()
+		if c.kill() { // also one still being attached
 			c.Wait(ctx, WaitNotRunning)
 		}
 	}
