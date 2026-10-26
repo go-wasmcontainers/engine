@@ -40,7 +40,16 @@ jobs:
         run: |
           out=$(gofmt -l .)
           if [ -n "$out" ]; then echo "::error::not gofmt-ed:"; echo "$out"; exit 1; fi
-      - run: go vet ./...
+      # runtime/wazero implements wazero's experimental/sys.File, whose
+      # Seek returns an Errno, not an error: vet's stdmethods check is off
+      # for that package only.
+      - name: go vet
+        shell: bash
+        run: |
+          # macOS ships bash 3.2 (no mapfile); package paths have no spaces.
+          # shellcheck disable=SC2046
+          go vet $(go list ./... | grep -v '/runtime/wazero$')
+          go vet -stdmethods=false ./runtime/wazero
       - run: CGO_ENABLED=0 go build ./...
       - name: go test -race, with coverage
         shell: bash
@@ -101,7 +110,7 @@ jobs:
       - uses: actions/setup-go@v7
         with: { go-version: '1.27.3' }
       - run: go version
-      - run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build ./image/... ./rootfs/...
+      - run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build ./image/... ./rootfs/... ./runtime ./container/...
 
   cross:
     name: cross ${{ matrix.goos }}/${{ matrix.goarch }}
