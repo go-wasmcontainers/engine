@@ -78,9 +78,10 @@ type entry struct {
 
 // Manager holds the engine's networks.
 type Manager struct {
-	opt Options
-	mu  sync.Mutex
-	by  map[string]*entry
+	opt    Options
+	mu     sync.Mutex
+	by     map[string]*entry
+	hosted []string // added by AddDriver
 }
 
 type record struct {
@@ -300,6 +301,41 @@ func (m *Manager) Attach(ctx context.Context, network, name string) (netdriver.E
 		return nil, nil
 	}
 	return e.drv.Attach(ctx, name)
+}
+
+// AddDriver adds a host-provided network at run time (a class joined from
+// a page); driverName describes it in `network ls`. RemoveDriver hands it
+// back; Remove refuses it.
+func (m *Manager) AddDriver(name, driverName string, d netdriver.NetworkDriver) (Network, error) {
+	if !nameRE.MatchString(name) || name == Host || d == nil {
+		return Network{}, fmt.Errorf("%w: driver name %q", ErrInvalid, name)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.by[name] != nil {
+		return Network{}, fmt.Errorf("%w: network with name %s already exists", ErrExists, name)
+	}
+	n := Network{Name: name, ID: idFor(name), Driver: driverName, Created: time.Now().UTC(), Builtin: true}
+	m.by[name] = &entry{n, d}
+	m.hosted = append(m.hosted, name)
+	return n, nil
+}
+
+// RemoveDriver takes a network added by AddDriver away and returns its
+// driver (the caller closes it): containers on it keep their sockets until
+// they exit, and a later start of one fails with "network not found".
+func (m *Manager) RemoveDriver(name string) (netdriver.NetworkDriver, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, h := range m.hosted {
+		if h == name {
+			e := m.by[name]
+			delete(m.by, name)
+			m.hosted = append(m.hosted[:i], m.hosted[i+1:]...)
+			return e.drv, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s was not added at run time", ErrNotFound, name)
 }
 
 // Close closes every network.

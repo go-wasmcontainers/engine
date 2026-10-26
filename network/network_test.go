@@ -102,4 +102,28 @@ func TestHostDrivers(t *testing.T) {
 	if _, err := m.Create("class", nil); !errors.Is(err, ErrExists) {
 		t.Fatal(err)
 	}
+	// At run time: add, attach, remove (the driver comes back, open).
+	d2, _ := netdriver.NewLocal(netdriver.DefaultPrefix)
+	if _, err := m.AddDriver("class", "relay", d2); !errors.Is(err, ErrExists) {
+		t.Fatal(err)
+	}
+	if n, err := m.AddDriver("joined", "relay", d2); err != nil || n.Driver != "relay" || !n.Builtin {
+		t.Fatal(n, err)
+	}
+	if ep, err := m.Attach(context.Background(), "joined", "web"); err != nil || ep == nil {
+		t.Fatal(ep, err)
+	}
+	if err := m.Remove("joined", nil); !errors.Is(err, ErrInvalid) {
+		t.Fatal("Remove took a run-time driver:", err)
+	}
+	if _, err := m.RemoveDriver("class"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("RemoveDriver took a start-time driver:", err)
+	}
+	if got, err := m.RemoveDriver("joined"); err != nil || got != d2 {
+		t.Fatal(got, err)
+	}
+	if _, err := m.Attach(context.Background(), "joined", "web"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	d2.Close()
 }
