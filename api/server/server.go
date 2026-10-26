@@ -58,6 +58,10 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("GET /containers/{id}/logs", s.containersLogs)
 	s.mux.HandleFunc("GET /containers/{id}/json", s.containersInspect)
 	s.mux.HandleFunc("DELETE /containers/{id}", s.containersDelete)
+	s.mux.HandleFunc("POST /containers/prune", s.containersPrune)
+	s.mux.HandleFunc("GET /containers/{id}/changes", s.containersChanges)
+	s.mux.HandleFunc("POST /images/prune", s.imagesPrune)
+	s.mux.HandleFunc("GET /system/df", s.systemDF)
 	return s
 }
 
@@ -208,6 +212,82 @@ func (s *server) imagesList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, imageSummaries(imgs))
+}
+
+func (s *server) systemDF(w http.ResponseWriter, r *http.Request) {
+	u, err := s.d.DiskUsage()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	st := u.Storage
+	writeJSON(w, http.StatusOK, api.SystemDataUsage{
+		LayersSize: u.LayersSize, Images: imageSummaries(u.Images), Containers: containerSummaries(u.Containers),
+		Volumes: []any{}, BuildCache: []any{},
+		Storage: &api.StorageUsage{Kind: st.Kind, Usage: st.Usage, Quota: st.Quota, Persistent: st.Persistent, Error: st.Error},
+	})
+}
+
+func (s *server) containersChanges(w http.ResponseWriter, r *http.Request) {
+	c, err := s.d.Containers().Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	out := []api.FilesystemChange{}
+	for _, ch := range c.FS().Diff() {
+		out = append(out, api.FilesystemChange{Path: ch.Path, Kind: ch.Kind})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *server) containersPrune(w http.ResponseWriter, r *http.Request) {
+	ids, n := s.d.Containers().Prune()
+	if ids == nil {
+		ids = []string{}
+	}
+	writeJSON(w, http.StatusOK, api.ContainerPruneResponse{ContainersDeleted: ids, SpaceReclaimed: n})
+}
+
+// imagesPrune honours the dangling filter (all unused images when it is
+// false); other filters are refused rather than ignored.
+func (s *server) imagesPrune(w http.ResponseWriter, r *http.Request) {
+	all := false
+	if f := r.URL.Query().Get("filters"); f != "" {
+		var filters map[string][]string
+		if err := json.Unmarshal([]byte(f), &filters); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid filters: %v", err))
+			return
+		}
+		for k, v := range filters {
+			if k != "dangling" || len(v) != 1 {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported prune filter %q", k))
+				return
+			}
+			switch v[0] {
+			case "false", "0":
+				all = true
+			case "true", "1":
+			default:
+				writeError(w, http.StatusBadRequest, fmt.Errorf("invalid dangling value %q", v[0]))
+				return
+			}
+		}
+	}
+	items, n, err := s.d.PruneImages(all)
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	out := make([]api.ImageDeleteResponseItem, len(items))
+	for i, it := range items {
+		out[i] = api.ImageDeleteResponseItem{Untagged: it.Untagged, Deleted: it.Deleted}
+	}
+	writeJSON(w, http.StatusOK, api.ImagePruneResponse{ImagesDeleted: out, SpaceReclaimed: n})
+}
+
+func imageSummaries(imgs []daemon.ImageInfo) []api.ImageSummary {
 	out := make([]api.ImageSummary, 0, len(imgs))
 	for _, i := range imgs {
 		labels := i.Labels
@@ -221,7 +301,7 @@ func (s *server) imagesList(w http.ResponseWriter, r *http.Request) {
 		out = append(out, api.ImageSummary{ID: string(i.ID), RepoTags: i.RepoTags, RepoDigests: rd, Created: i.Created.Unix(),
 			Size: i.Size, SharedSize: -1, Labels: labels, Containers: int64(i.Containers)})
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
 
 func (s *server) imagesInspect(w http.ResponseWriter, r *http.Request) {
@@ -308,10 +388,13 @@ func humanStatus(s container.Snapshot, now time.Time) string {
 }
 
 func (s *server) containersList(w http.ResponseWriter, r *http.Request) {
-	all := boolParam(r, "all")
+	writeJSON(w, http.StatusOK, containerSummaries(s.d.Containers().List(boolParam(r, "all"))))
+}
+
+func containerSummaries(list []container.Snapshot) []api.ContainerSummary {
 	now := time.Now()
 	out := []api.ContainerSummary{}
-	for _, c := range s.d.Containers().List(all) {
+	for _, c := range list {
 		labels := c.Config.Labels
 		if labels == nil {
 			labels = map[string]string{}
@@ -322,7 +405,7 @@ func (s *server) containersList(w http.ResponseWriter, r *http.Request) {
 		cs.HostConfig.NetworkMode = "none"
 		out = append(out, cs)
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
 
 func (s *server) containersStart(w http.ResponseWriter, r *http.Request) {

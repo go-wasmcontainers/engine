@@ -249,6 +249,7 @@ func (h *File) writeAtLocked(p []byte, off int64) (int, error) {
 	if off < 0 || off > math.MaxInt64-int64(len(p)) {
 		return 0, pathErr("write", h.name, fs.ErrInvalid)
 	}
+	h.fs.changes++
 	end := off + int64(len(p))
 	cur := int64(len(h.n.data))
 	if end > cur {
@@ -328,6 +329,7 @@ func (h *File) Truncate(size int64) error {
 	if size < 0 {
 		return pathErr("truncate", h.name, fs.ErrInvalid)
 	}
+	h.fs.changes++
 	cur := int64(len(h.n.data))
 	switch {
 	case size > cur:
@@ -359,6 +361,7 @@ func (h *File) Chtimes(mtime time.Time) error {
 	if h.n.owner != h.fs.gen {
 		return pathErr("chtimes", h.name, ErrReadOnly)
 	}
+	h.fs.changes++
 	h.n.mtime = mtime
 	return nil
 }

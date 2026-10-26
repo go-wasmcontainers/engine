@@ -86,8 +86,22 @@ not have.
 | `rmi IMAGE...` | `-f/--force` |
 | `inspect NAME\|ID...` | containers, then images |
 | `kill CONTAINER...` | |
+| `start CONTAINER...` | starts stopped containers (they keep their files and logs) |
+| `diff CONTAINER` | the files it added (`A`), changed (`C`) or deleted (`D`) |
 | `version` | |
 | `completion bash\|zsh\|fish\|powershell` | prints a shell completion script |
+| `system df` | `-v/--verbose`; images, containers' writable layers, and the state store (kind, bytes, quota) |
+| `system prune` | `-a/--all` (every image no container uses), `-f/--force` (no question) |
+
+**Containers survive a restart.** `wctrd` keeps every container — its
+configuration, state, exit code, bounded logs and writable layer — under
+`--data-root`/`containers`; the playground keeps them in IndexedDB. A
+container that was running when the engine stopped comes back exited with
+status 137; a `--rm` one is removed, as it would have been. Each container
+is a small sealed record (sha256-checked) naming content-addressed blobs for
+its logs and its layer (an OCI-style tar changeset), written blobs first, so
+an interrupted write leaves the previous state; a record or blob that fails
+its check is dropped and reported at start (`wctrd: repaired: …`).
 
 **Shell completion.** `source <(wctr completion bash)` (or `zsh`, `fish`,
 `powershell`; see `wctr completion bash --help` to install it for good).
@@ -161,7 +175,8 @@ The module sees the container's root filesystem as its preopened `/`
 | `runtime/browser` | the browser executor (`GOOS=js`): one Web Worker per container process, its WASI calls served synchronously by the engine's worker over `SharedArrayBuffer` + `Atomics.wait`, guest memory capped and shared by rewriting the module's memory limits; `worker.js` is embedded |
 | `wasi` | the engine's WASI preview 1 host: every import Go's `wasip1` port uses, over a byte-addressed memory and the container's `rootfs` — one implementation for the native and the browser executors |
 | `wasmbin` | rewrites a module's memory limits (maximum, shared) |
-| `container` | lifecycle `created` → `running` → `exited` (restartable), exit codes, bounded logs, wait conditions, names, ID prefixes |
+| `container` | lifecycle `created` → `running` → `exited` (restartable), exit codes, bounded logs, wait conditions, names, ID prefixes; checkpoints to and restores from a `state.Store` |
+| `state` | the key-value `Store` the engine persists containers in (directory, memory; IndexedDB in the playground), sealed records, content-addressed blobs |
 | `daemon` | image store + unpacked image trees + container manager; the create override rules |
 | `api`, `api/server`, `api/inproc` | the API: types, client, multiplexed stream; the HTTP server; an in-memory transport for an in-process client (the browser has no sockets) |
 | `cli` | the `wctr` command tree, importable (the playground runs it in-process) |
@@ -180,6 +195,16 @@ how the memory limit is enforced there). The same `wasi` package is run
 natively by every guest test (`runtime/wazero`, `EngineWASI`), so the
 browser path's file-system semantics are tested without a browser.
 
+The browser executor can keep compiled modules across page loads
+(`Options.CodeCache`: Cache Storage plus `WebAssembly.compileStreaming`,
+the only path V8's code cache serves; a hit is checked byte for byte
+against the module derived from the verified image). Measured in Chromium
+on a 2.8 MB Go module, it does not pay: the compile call takes 8.4 ms from
+Cache Storage against 1.5 ms from bytes (V8 compiles lazily), and a
+CPU-bound guest after a reload runs in the same time either way (111–113
+ms against 111.5 ms). The playground therefore leaves it off by default,
+and its e2e keeps measuring both (`?codecache=1`).
+
 ## Performance
 
 Measured on an Apple M4 Max, one core (`-cpu 1`), go1.27.3; benchmarks are
@@ -192,6 +217,8 @@ committed (`go test -run '^$' -bench . -cpu 1 ./image ./rootfs ./runtime/wazero`
 | `BenchmarkClone` | a container's copy-on-write root plus its first write | 2.2 µs |
 | `BenchmarkStartCold` | first container of an image: wazero compiles the 2.4 MB Go module, runs it to exit | 610 ms |
 | `BenchmarkStartWarm` | every later container: compiled module from the per-digest cache | 3.4 ms |
+| `BenchmarkWriteDiff` | one checkpoint of a writable layer holding 8 MiB in 64 files (then sha256 of the blob, ≈4 ms) | 0.25 ms (load 17: indicative) |
+| `BenchmarkApplyDiff` | restoring that layer at start | 0.47 ms (load 17: indicative) |
 
 The daemon also keeps each image's unpacked tree (bounded, 16 images), so a
 `wctr run` of a pulled image pays neither the unpack nor the compile again.
@@ -222,17 +249,24 @@ open item.
   bodies are bounded (1 MiB) and header reads time out. Whoever can open the
   socket can make the daemon read any OCI layout the daemon's user can read
   and contact any registry — that is the socket's owner, by construction.
+- **Stored state** is read back as untrusted: records are sealed with their
+  kind and sha256, blobs are checked against their content-addressed keys, a
+  writable layer goes through the layer checks under the container's quota,
+  and the browser's compiled-module cache is hashed before a module from it
+  runs.
 - **Fuzzed** in CI (corpus committed under `testdata/fuzz`): the layer
-  unpacker, the path resolver, the document parsers, the reference parser,
-  and the client's demultiplexer. `govulncheck` runs on every change.
+  unpacker and the writable-layer reader, the path resolver, the document
+  parsers, the reference parser, the client's demultiplexer, and the stored
+  record, log and seal decoders. `govulncheck` runs on every change.
 
 ## Limitations
 
 - No networking (the WasmEdge socket extension is a later milestone), no
   `exec` / process spawn (WASIX subset later), no TTY, no stdin attach.
 - No `build`, volumes, compose, or Kubernetes API yet.
-- Containers live in the daemon's memory: they do not survive a `wctrd`
-  restart (images do).
+- A running container's writes are stored every 2 s and at exit: a crash
+  loses at most the last 2 s of them. Hard links to an unchanged image file
+  come back as copies.
 - Layers: `tar+zstd` is not supported yet; hard links from image layers are
   separate copies once a container writes to them (as overlayfs does without
   its index feature).

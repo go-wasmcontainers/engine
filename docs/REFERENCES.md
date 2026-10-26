@@ -61,6 +61,18 @@ Read from the OpenAPI document `https://docs.docker.com/reference/api/engine/ver
   2 stderr, size big-endian (`api/stdcopy.go`).
 - `POST /containers/{id}/wait` (`condition` defaults to `not-running`),
   `DELETE /containers/{id}` (`force`; 409 for a running container).
+- `GET /system/df` (`SystemDataUsageResponse`: `LayersSize`, `Images`
+  [`ImageSummary`], `Containers` [`ContainerSummary`], `Volumes`,
+  `BuildCache`); `POST /containers/prune` (`ContainersDeleted`,
+  `SpaceReclaimed`); `POST /images/prune` with `filters` `dangling=<bool>`
+  (`false`: every unused image) answering `ImagesDeleted`
+  [`ImageDeleteResponseItem`] and `SpaceReclaimed`. Unsupported filters are
+  refused, not ignored.
+- CLI reference, `docker system df` (columns `TYPE TOTAL ACTIVE SIZE
+  RECLAIMABLE`; `-v` lists images, containers, volumes) and `docker system
+  prune` (stopped containers and dangling images; `-a` every image without
+  a container; the `Are you sure you want to continue? [y/N]` question
+  unless `-f`; `Total reclaimed space:`).
 
 ## CNCF TAG-Runtime: Wasm OCI Artifact layout
 
@@ -162,3 +174,22 @@ the browser executor fetches `buffer` on every access.
 - MDN, `WebAssembly.Module`: a compiled module can be posted to workers and
   instantiated several times; the executor compiles once per digest and
   memory limit and posts the module to each container's worker.
+- V8 blog, "Code caching for WebAssembly developers" (v8.dev/blog/
+  wasm-code-caching): only `compileStreaming`/`instantiateStreaming` are
+  cached, keyed by the response's URL, for modules over 128 kB, written once
+  TurboFan has finished; a new `200` for the URL or a new V8 version
+  invalidates it. The article speaks of the HTTP cache only, so whether a
+  `Response` from Cache Storage reaches the code cache is measured, not
+  assumed (`runtime/browser` reports each compile's source and time).
+- MDN, Storage quotas and eviction criteria: best-effort data is evicted
+  LRU under pressure, all of an origin at once; `navigator.storage.persist()`
+  prompts in Firefox and is decided by heuristics in Chromium and Safari;
+  `estimate()` is an estimate; IndexedDB and Cache Storage writes over quota
+  fail with `QuotaExceededError` (mapped to `state.ErrNoSpace`).
+- MDN, Web Locks API: per-origin named locks, across tabs and workers,
+  held until the callback's promise settles; `ifAvailable` fails at once
+  instead of queueing, `steal` takes it over.
+- web.dev, "The service worker lifecycle": an updated worker (byte
+  different) installs, then waits while the old one controls a page;
+  `registration.waiting`, `updatefound`, `controllerchange`; `skipWaiting()`
+  activates at once, which is why the playground asks before switching.

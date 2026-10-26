@@ -27,6 +27,7 @@ import (
 	"github.com/go-wasmcontainers/engine/daemon"
 	"github.com/go-wasmcontainers/engine/image"
 	"github.com/go-wasmcontainers/engine/runtime/wazero"
+	"github.com/go-wasmcontainers/engine/state"
 )
 
 var (
@@ -172,6 +173,11 @@ func serve(ctx context.Context, cfg Config, out io.Writer, ready chan<- string) 
 	defer exec.Close(context.Background())
 	copt := container.Options{Executor: exec, MemoryLimitBytes: mem, Timeout: cfg.Timeout, MaxContainers: cfg.MaxContainers}
 	copt.Quota.MaxBytes = quota
+	// Containers, their logs and writable layers survive a restart.
+	stateDir := filepath.Join(cfg.DataRoot, "containers")
+	if copt.Store, err = state.OpenDir(stateDir); err != nil {
+		return err
+	}
 	d, err := daemon.New(daemon.Options{
 		Root:       cfg.DataRoot,
 		Registry:   image.RegistryOptions{Insecure: cfg.Insecure, UserAgent: "wctrd/" + version},
@@ -179,6 +185,12 @@ func serve(ctx context.Context, cfg Config, out io.Writer, ready chan<- string) 
 	})
 	if err != nil {
 		return err
+	}
+	if r := d.Restored(); r.Restored > 0 || len(r.Repaired) > 0 {
+		fmt.Fprintf(out, "wctrd: restored %d containers (%d were running and are now exited), removed %d --rm containers\n", r.Restored, r.Stopped, len(r.Removed))
+		for _, m := range r.Repaired {
+			fmt.Fprintln(out, "wctrd: repaired:", m)
+		}
 	}
 	l, err := listenUnix(u.Path)
 	if err != nil {

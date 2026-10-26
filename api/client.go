@@ -259,6 +259,39 @@ func (c *Client) Inspect(ctx context.Context, id string) (json.RawMessage, error
 	return out, err
 }
 
+// Changes lists what a container changed in its filesystem.
+func (c *Client) Changes(ctx context.Context, id string) ([]FilesystemChange, error) {
+	var out []FilesystemChange
+	err := c.getJSON(ctx, http.MethodGet, "/containers/"+url.PathEscape(id)+"/changes", nil, nil, &out)
+	return out, err
+}
+
+// DiskUsage is GET /system/df.
+func (c *Client) DiskUsage(ctx context.Context) (SystemDataUsage, error) {
+	var out SystemDataUsage
+	err := c.getJSON(ctx, http.MethodGet, "/system/df", nil, nil, &out)
+	return out, err
+}
+
+// PruneContainers removes every stopped container.
+func (c *Client) PruneContainers(ctx context.Context) (ContainerPruneResponse, error) {
+	var out ContainerPruneResponse
+	err := c.getJSON(ctx, http.MethodPost, "/containers/prune", nil, nil, &out)
+	return out, err
+}
+
+// PruneImages removes dangling images, or with all every image no
+// container uses.
+func (c *Client) PruneImages(ctx context.Context, all bool) (ImagePruneResponse, error) {
+	q := url.Values{}
+	if all {
+		q.Set("filters", `{"dangling":["false"]}`)
+	}
+	var out ImagePruneResponse
+	err := c.getJSON(ctx, http.MethodPost, "/images/prune", q, nil, &out)
+	return out, err
+}
+
 // Remove removes a container.
 func (c *Client) Remove(ctx context.Context, id string, force bool) error {
 	q := url.Values{}

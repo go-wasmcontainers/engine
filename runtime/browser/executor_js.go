@@ -26,6 +26,12 @@ type Options struct {
 	DefaultMemoryLimitBytes int64
 	// MaxCompiled bounds the compiled-module cache (default 32).
 	MaxCompiled int
+	// CodeCache names a Cache Storage cache that keeps modules across
+	// page loads, under CodeCacheURL + <sha256>.wasm (same origin), so the
+	// browser can reuse its compiled code; "" disables it.
+	CodeCache, CodeCacheURL string
+	// OnCompile, when set, is told about each module the executor got.
+	OnCompile func(CompileStat)
 }
 
 // Executor runs each container process in a Web Worker.
@@ -115,11 +121,15 @@ func pagesFor(bytes int64) uint32 {
 
 func (e *Executor) compile(pages uint32, wasm []byte) (js.Value, error) {
 	key := cacheKey{pages, image.FromBytes(wasm)}
+	t0 := time.Now()
 	e.mu.Lock()
 	e.tick++
 	if c, ok := e.compiled[key]; ok {
 		c.used = e.tick
 		e.mu.Unlock()
+		if e.opt.OnCompile != nil {
+			e.opt.OnCompile(CompileStat{Source: "memory", Bytes: len(wasm), Took: time.Since(t0)})
+		}
 		return c.mod, nil
 	}
 	e.mu.Unlock()
@@ -129,9 +139,13 @@ func (e *Executor) compile(pages uint32, wasm []byte) (js.Value, error) {
 	if err != nil {
 		return js.Value{}, fmt.Errorf("%w: %v", runtime.ErrInvalid, err)
 	}
-	mod, err := await(js.Global().Get("WebAssembly").Call("compile", uint8Array(patched)))
+	mod, st, err := e.compileCached(key, patched)
 	if err != nil {
 		return js.Value{}, fmt.Errorf("%w: %v", runtime.ErrInvalid, err)
+	}
+	st.Took = time.Since(t0)
+	if e.opt.OnCompile != nil {
+		e.opt.OnCompile(st)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

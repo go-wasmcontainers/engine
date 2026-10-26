@@ -108,6 +108,7 @@ func RootCmd(o Options) *cobra.Command {
 	root.AddCommand(
 		pullCmd(client), imagesCmd(client), runCmd(client, o.LookupEnv), psCmd(client), logsCmd(client),
 		rmCmd(client), rmiCmd(client), inspectCmd(client), killCmd(client), versionCmd(client, o.Version),
+		systemCmd(client), startCmd(client), diffCmd(client),
 	)
 	root.CompletionOptions.DisableDefaultCmd = o.NoCompletionCommand
 	(&completer{client: client, opt: o}).install(root)
@@ -557,6 +558,53 @@ func killCmd(client clientFunc) *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), id)
 				return nil
 			})
+		},
+	}
+}
+
+func startCmd(client clientFunc) *cobra.Command {
+	return &cobra.Command{
+		Use:   "start CONTAINER [CONTAINER...]",
+		Short: "Start one or more stopped containers",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client()
+			if err != nil {
+				return err
+			}
+			return each(cmd, args, func(id string) error {
+				if err := c.Start(cmd.Context(), id); err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), id)
+				return nil
+			})
+		},
+	}
+}
+
+func diffCmd(client clientFunc) *cobra.Command {
+	return &cobra.Command{
+		Use:   "diff CONTAINER",
+		Short: "List the files a container added (A), changed (C) or deleted (D)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client()
+			if err != nil {
+				return err
+			}
+			changes, err := c.Changes(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			for _, ch := range changes {
+				k := "?"
+				if ch.Kind >= 0 && ch.Kind < 3 {
+					k = string("CAD"[ch.Kind])
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), k, ch.Path)
+			}
+			return nil
 		},
 	}
 }

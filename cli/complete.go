@@ -213,14 +213,14 @@ func (c *completer) install(root *cobra.Command) {
 			sub.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 				return filter(c.images(cmd), toComplete, used(args)), noFiles
 			}
-		case "logs":
+		case "logs", "diff":
 			sub.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 				if len(args) > 0 {
 					return nil, noFiles
 				}
 				return filter(c.containers(cmd, true, toComplete), toComplete, nil), noFiles
 			}
-		case "rm":
+		case "rm", "start":
 			sub.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 				return filter(c.containers(cmd, true, toComplete), toComplete, used(args)), noFiles
 			}

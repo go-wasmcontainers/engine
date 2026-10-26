@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/runtime"
+	"github.com/go-wasmcontainers/engine/state"
 )
 
 // State is a container's lifecycle state.
@@ -54,6 +55,8 @@ type Config struct {
 	Labels     map[string]string `json:"Labels"`
 	// MemoryLimitBytes bounds linear memory (0 = manager default).
 	MemoryLimitBytes int64 `json:"-"`
+	// AutoRemove removes the container when it exits (run --rm).
+	AutoRemove bool `json:"-"`
 }
 
 // Container is one container. Read it through Snapshot.
@@ -77,6 +80,9 @@ type Container struct {
 	path       string
 	proc       runtime.Process
 	changed    chan struct{}
+
+	persisted persisted // guarded by Manager.pmu
+	queued    bool      // guarded by Manager.qmu
 }
 
 // Snapshot is a consistent copy of a container's state.
@@ -138,15 +144,32 @@ type Options struct {
 	MaxLogBytes int
 	// MaxContainers bounds how many containers exist (default 256).
 	MaxContainers int
+	// Store, when set, keeps containers across restarts: their state,
+	// logs and writable layers (see Restore).
+	Store state.Store
+	// CheckpointEvery is how often a running container's changes are
+	// stored (default 2s; negative: only at state changes).
+	CheckpointEvery time.Duration
 }
 
 // Manager owns every container of a daemon.
 type Manager struct {
 	opt Options
 
-	mu     sync.Mutex
-	byID   map[string]*Container
-	byName map[string]*Container
+	mu         sync.Mutex
+	byID       map[string]*Container
+	byName     map[string]*Container
+	persistErr error
+
+	pmu   sync.Mutex     // serialises writes to opt.Store
+	exits sync.WaitGroup // exits not yet stored (or --rm removals not done)
+
+	// The writer: containers whose state changed, stored in the
+	// background so no command waits on storage (see persister).
+	qmu      sync.Mutex
+	queue    []*Container
+	flushers []chan struct{}
+	wake     chan struct{}
 }
 
 // NewManager returns a manager running modules on opt.Executor.
@@ -163,7 +186,11 @@ func NewManager(opt Options) *Manager {
 	if opt.Quota.MaxFiles == 0 {
 		opt.Quota.MaxFiles = 1 << 16
 	}
-	return &Manager{opt: opt, byID: map[string]*Container{}, byName: map[string]*Container{}}
+	m := &Manager{opt: opt, byID: map[string]*Container{}, byName: map[string]*Container{}, wake: make(chan struct{}, 1)}
+	if opt.Store != nil {
+		go m.persister()
+	}
+	return m
 }
 
 // nameRE is Docker's restricted name grammar.
@@ -198,6 +225,14 @@ type CreateOptions struct {
 
 // Create makes a container in the created state.
 func (m *Manager) Create(o CreateOptions) (*Container, error) {
+	c, err := m.create(o)
+	if err == nil {
+		m.schedule(c)
+	}
+	return c, err
+}
+
+func (m *Manager) create(o CreateOptions) (*Container, error) {
 	if o.Lower == nil {
 		return nil, fmt.Errorf("%w: no root filesystem", ErrInvalid)
 	}
@@ -381,6 +416,7 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 	c.errMsg, c.exitCode, c.timedOut = "", 0, false
 	c.notifyLocked()
 	c.mu.Unlock()
+	m.schedule(c)
 
 	proc, err := m.opt.Executor.Start(ctx, spec)
 	if err != nil {
@@ -389,13 +425,71 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 			code = runtime.ExitMissing
 		}
 		c.finish(runtime.Result{ExitCode: code, Error: err.Error()})
+		m.exited(c)
 		return err
 	}
 	c.mu.Lock()
 	c.proc = proc
 	c.mu.Unlock()
-	go func() { c.finish(proc.Wait()) }()
+	go m.checkpointWhileRunning(c)
+	m.exits.Add(1)
+	go func() {
+		defer m.exits.Done()
+		c.finish(proc.Wait())
+		m.exited(c)
+	}()
 	return nil
+}
+
+// exited stores an exit, or removes a --rm container.
+func (m *Manager) exited(c *Container) {
+	if c.cfg.AutoRemove {
+		m.removeNow(c)
+		return
+	}
+	m.schedule(c)
+}
+
+// removeNow takes a container that is not running out of the manager and
+// the store.
+func (m *Manager) removeNow(c *Container) {
+	m.mu.Lock()
+	if m.byID[c.id] == c {
+		delete(m.byID, c.id)
+		delete(m.byName, c.name)
+	}
+	m.mu.Unlock()
+	m.schedule(c) // no longer live: the writer deletes it
+	c.mu.Lock()
+	c.removed = true
+	c.notifyLocked()
+	c.mu.Unlock()
+}
+
+// Prune removes every container that is not running and returns their IDs
+// and the bytes their writable layers held.
+func (m *Manager) Prune() ([]string, int64) {
+	var ids []string
+	var bytes int64
+	for _, s := range m.List(true) {
+		if s.State == Running {
+			continue
+		}
+		c, err := m.Get(s.ID)
+		if err != nil {
+			continue
+		}
+		c.mu.Lock()
+		running := c.state == Running
+		c.mu.Unlock()
+		if running {
+			continue
+		}
+		m.removeNow(c)
+		ids = append(ids, s.ID)
+		bytes += s.SizeRw
+	}
+	return ids, bytes
 }
 
 func (c *Container) finish(r runtime.Result) {
@@ -500,16 +594,7 @@ func (m *Manager) Remove(ctx context.Context, ref string, force bool) error {
 			return err
 		}
 	}
-	m.mu.Lock()
-	if m.byID[c.id] == c {
-		delete(m.byID, c.id)
-		delete(m.byName, c.name)
-	}
-	m.mu.Unlock()
-	c.mu.Lock()
-	c.removed = true
-	c.notifyLocked()
-	c.mu.Unlock()
+	m.removeNow(c)
 	return nil
 }
 
@@ -569,4 +654,13 @@ func (m *Manager) Shutdown(ctx context.Context) {
 			c.Wait(ctx, WaitNotRunning)
 		}
 	}
+	// Their exits are stored (or --rm ones removed) before Shutdown
+	// returns, so the next engine on the same store sees them settled.
+	done := make(chan struct{})
+	go func() { m.exits.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+	m.Flush(ctx)
 }

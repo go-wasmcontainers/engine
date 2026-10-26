@@ -77,6 +77,11 @@ type FS struct {
 	quota  Quota
 	bytes  int64
 	files  int
+	// base is the root this tree was cloned from (nil if not a clone),
+	// which WriteDiff compares against.
+	base *node
+	// changes counts mutations (see Changes).
+	changes uint64
 }
 
 // New returns an empty tree with a 0755 root directory.
@@ -113,7 +118,7 @@ func (f *FS) Clone(q Quota) *FS {
 	if !f.frozen {
 		f.gen = genSeq.Add(1)
 	}
-	return &FS{root: f.root, gen: genSeq.Add(1), quota: q}
+	return &FS{root: f.root, base: f.root, gen: genSeq.Add(1), quota: q}
 }
 
 // Usage returns the bytes and entries this tree has added.
@@ -213,6 +218,7 @@ func (f *FS) mutDirLocked(comps []string) (*node, error) {
 	if f.frozen {
 		return nil, ErrReadOnly
 	}
+	f.changes++
 	if f.root.owner != f.gen {
 		f.root = f.copyUp(f.root)
 	}
@@ -710,6 +716,7 @@ func (f *FS) modify(op, p string, follow bool, fn func(*node)) error {
 		if f.frozen {
 			return pathErr(op, p, ErrReadOnly)
 		}
+		f.changes++
 		if f.root.owner != f.gen {
 			f.root = f.copyUp(f.root)
 		}
