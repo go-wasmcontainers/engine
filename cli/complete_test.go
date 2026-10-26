@@ -73,7 +73,9 @@ func TestCompletion(t *testing.T) {
 		{[]string{"logs", "done", ""}, ""},
 		{[]string{"kill", ""}, "spinning"},
 		{[]string{"rm", "spinning", ""}, "done"},
-		{[]string{"inspect", "d"}, "done"},
+		// "do", not "d": a random hex ID may begin with d, and would
+		// rightly be offered too.
+		{[]string{"inspect", "do"}, "done"},
 		{[]string{"ps", ""}, ""},
 	} {
 		c := comp(tc.words...)
