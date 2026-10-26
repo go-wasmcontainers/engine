@@ -82,6 +82,7 @@ type Container struct {
 	changed    chan struct{}
 
 	persisted persisted // guarded by Manager.pmu
+	queued    bool      // guarded by Manager.qmu
 }
 
 // Snapshot is a consistent copy of a container's state.
@@ -162,6 +163,13 @@ type Manager struct {
 
 	pmu   sync.Mutex     // serialises writes to opt.Store
 	exits sync.WaitGroup // exits not yet stored (or --rm removals not done)
+
+	// The writer: containers whose state changed, stored in the
+	// background so no command waits on storage (see persister).
+	qmu      sync.Mutex
+	queue    []*Container
+	flushers []chan struct{}
+	wake     chan struct{}
 }
 
 // NewManager returns a manager running modules on opt.Executor.
@@ -178,7 +186,11 @@ func NewManager(opt Options) *Manager {
 	if opt.Quota.MaxFiles == 0 {
 		opt.Quota.MaxFiles = 1 << 16
 	}
-	return &Manager{opt: opt, byID: map[string]*Container{}, byName: map[string]*Container{}}
+	m := &Manager{opt: opt, byID: map[string]*Container{}, byName: map[string]*Container{}, wake: make(chan struct{}, 1)}
+	if opt.Store != nil {
+		go m.persister()
+	}
+	return m
 }
 
 // nameRE is Docker's restricted name grammar.
@@ -215,7 +227,7 @@ type CreateOptions struct {
 func (m *Manager) Create(o CreateOptions) (*Container, error) {
 	c, err := m.create(o)
 	if err == nil {
-		m.checkpoint(c)
+		m.schedule(c)
 	}
 	return c, err
 }
@@ -404,7 +416,7 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 	c.errMsg, c.exitCode, c.timedOut = "", 0, false
 	c.notifyLocked()
 	c.mu.Unlock()
-	m.checkpoint(c)
+	m.schedule(c)
 
 	proc, err := m.opt.Executor.Start(ctx, spec)
 	if err != nil {
@@ -435,7 +447,7 @@ func (m *Manager) exited(c *Container) {
 		m.removeNow(c)
 		return
 	}
-	m.checkpoint(c)
+	m.schedule(c)
 }
 
 // removeNow takes a container that is not running out of the manager and
@@ -447,7 +459,7 @@ func (m *Manager) removeNow(c *Container) {
 		delete(m.byName, c.name)
 	}
 	m.mu.Unlock()
-	m.forget(c)
+	m.schedule(c) // no longer live: the writer deletes it
 	c.mu.Lock()
 	c.removed = true
 	c.notifyLocked()
@@ -650,4 +662,5 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+	m.Flush(ctx)
 }

@@ -85,7 +85,12 @@ func TestPersistAndRestore(t *testing.T) {
 	}
 
 	// A second engine on the same store, as after a reload: m1 never shut
-	// down, as when a tab is closed.
+	// down, as when a tab is closed (its writer has caught up).
+	waitStored(t, store, wrote.ID(), Exited)
+	waitStored(t, store, failed.ID(), Exited)
+	if err := m1.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
 	m2 := manager(t, Options{Store: store})
 	rep, err := m2.Restore(lowerOf(img), restoreLimits)
 	if err != nil {
@@ -142,6 +147,7 @@ func TestPersistAndRestore(t *testing.T) {
 	if err := m2.Remove(ctx, "failed", false); err != nil {
 		t.Fatal(err)
 	}
+	m2.Flush(ctx)
 	if _, err := store.Get("container/" + failed.ID()); !errors.Is(err, state.ErrNotFound) {
 		t.Fatal("record kept")
 	}
@@ -166,6 +172,7 @@ func TestPersistAndRestore(t *testing.T) {
 	if len(ids) != 3 {
 		t.Fatal(ids)
 	}
+	m3.Flush(ctx)
 	if ks, _ := store.Keys(""); len(ks) != 0 {
 		t.Fatalf("left in the store: %v", ks)
 	}
@@ -180,6 +187,8 @@ func TestRestoreRepairs(t *testing.T) {
 		c, _ := runToExit(t, m1, CreateOptions{Name: n, Lower: img, Config: probe("fs")})
 		ids = append(ids, c.ID())
 	}
+	m1.exits.Wait()
+	m1.Flush(context.Background())
 	get := func(id string) *record {
 		v, _ := store.Get("container/" + id)
 		r, err := DecodeRecord(v)

@@ -139,7 +139,7 @@ func (e *Executor) compile(pages uint32, wasm []byte) (js.Value, error) {
 	if err != nil {
 		return js.Value{}, fmt.Errorf("%w: %v", runtime.ErrInvalid, err)
 	}
-	mod, st, err := e.compileCached(patched)
+	mod, st, err := e.compileCached(key, patched)
 	if err != nil {
 		return js.Value{}, fmt.Errorf("%w: %v", runtime.ErrInvalid, err)
 	}

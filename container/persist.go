@@ -2,6 +2,7 @@ package container
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -143,23 +144,87 @@ type persisted struct {
 	saved            bool
 }
 
-// checkpoint stores c: blobs that changed, then its record. Without a
-// store it does nothing. A failure (a full store) leaves the previous
-// checkpoint in place and is reported by PersistError.
-func (m *Manager) checkpoint(c *Container) {
+// schedule asks the writer to store c's current state (or to delete it,
+// once it is removed). Many changes before the writer gets to it are one
+// write: only the latest state matters.
+func (m *Manager) schedule(c *Container) {
 	if m.opt.Store == nil {
 		return
 	}
-	m.pmu.Lock()
-	defer m.pmu.Unlock()
+	m.qmu.Lock()
+	if !c.queued {
+		c.queued = true
+		m.queue = append(m.queue, c)
+	}
+	m.qmu.Unlock()
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
+}
+
+// persister is the one writer: commands never wait on storage (an
+// IndexedDB transaction, an fsync), and writes stay in order.
+func (m *Manager) persister() {
+	for range m.wake {
+		for {
+			m.qmu.Lock()
+			batch := m.queue
+			m.queue = nil
+			for _, c := range batch {
+				c.queued = false
+			}
+			if len(batch) == 0 {
+				for _, f := range m.flushers {
+					close(f)
+				}
+				m.flushers = nil
+				m.qmu.Unlock()
+				break
+			}
+			m.qmu.Unlock()
+			for _, c := range batch {
+				m.checkpoint(c)
+			}
+		}
+	}
+}
+
+// Flush waits until every change made so far is stored.
+func (m *Manager) Flush(ctx context.Context) error {
+	if m.opt.Store == nil {
+		return nil
+	}
+	f := make(chan struct{})
+	m.qmu.Lock()
+	m.flushers = append(m.flushers, f)
+	m.qmu.Unlock()
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
+	select {
+	case <-f:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// checkpoint stores c — blobs that changed, then its record — or deletes
+// it if it was removed. A failure (a full store) leaves the previous
+// checkpoint in place and is reported by PersistError.
+func (m *Manager) checkpoint(c *Container) {
 	m.mu.Lock()
 	live := m.byID[c.id] == c
 	m.mu.Unlock()
 	if !live {
-		return // removed meanwhile
+		m.forget(c)
+		return
 	}
-	err := m.checkpointLocked(c)
-	m.setPersistErr(err)
+	m.pmu.Lock()
+	defer m.pmu.Unlock()
+	m.setPersistErr(m.checkpointLocked(c))
 }
 
 func (m *Manager) setPersistErr(err error) {
@@ -300,7 +365,7 @@ func (m *Manager) checkpointWhileRunning(c *Container) {
 			dirty := seq != c.persisted.logsSeq || c.fs.Changes() != c.persisted.diffChanges
 			m.pmu.Unlock()
 			if dirty {
-				m.checkpoint(c)
+				m.schedule(c)
 			}
 		case <-ch:
 		}
