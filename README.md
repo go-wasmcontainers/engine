@@ -13,11 +13,11 @@ training labs, which will run entirely in a web browser (see
 M1 runs natively on Linux and macOS, with [wazero](https://wazero.io) as the
 executor, so the whole core is testable in CI.
 
-> **Status: M1 in progress.** This first part lands the OCI content side:
-> pulling images from an OCI image layout or an OCI distribution registry
-> into a verified content store, and unpacking layers into the container
-> root filesystem. The executor, the container lifecycle, the Docker API
-> subset and the `docker` / `dockerd` commands follow.
+> **Status: M1 in progress.** Landed: the OCI content side (pulling images
+> from an OCI image layout or an OCI distribution registry into a verified
+> content store, unpacking layers into the container root filesystem), the
+> executor (wazero, WASI preview 1) and the container lifecycle. The Docker
+> API subset and the `docker` / `dockerd` commands follow.
 
 ## Packages
 
@@ -25,6 +25,9 @@ executor, so the whole core is testable in CI.
 |---|---|
 | `image` | OCI content store (content-addressed, every blob sha256-verified), manifests, indexes, configs; pull from an OCI image layout (`oci:<dir>[:<ref.name>]`) or a registry's `/v2` API with Docker token auth; platform selection `wasip1/wasm` |
 | `rootfs` | in-memory root filesystem: layers applied per the OCI layer spec (whiteouts, opaque whiteouts), frozen as a shared read-only lower, cloned copy-on-write per container |
+| `runtime` | the `Executor` interface (no WebAssembly runtime type in it, so a browser executor can implement it too) |
+| `runtime/wazero` | the native executor: wazero, WASI preview 1, the container's root mounted writable as the guest's `/`, `PWD` set to the working directory, linear memory bounded (256 MiB default), wall-clock timeout, compiled modules cached per sha256 |
+| `container` | lifecycle `created` → `running` → `exited` (restartable), exit codes, bounded logs (stdout/stderr records), wait conditions `not-running` / `next-exit` / `removed`, names, ID prefixes |
 
 ## Images it runs
 
