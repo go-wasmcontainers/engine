@@ -106,4 +106,46 @@ Read from the module source `github.com/tetratelabs/wazero@v1.12.0`.
 Read from `$(go env GOROOT)/src/syscall/fs_wasip1.go` (go1.27): the initial
 working directory of a `wasip1` Go program is taken from `$PWD`, otherwise
 the first preopen. The engine therefore sets `PWD` to the image's
-`WorkingDir`.
+`WorkingDir`. The same file's `openat` derives `path_open` rights from the
+open mode (`fd_write` only when writing) and retries a directory with
+`OFLAG_DIRECTORY`; package `wasi` follows those rights.
+
+The import list package `wasi` implements is every
+`//go:wasmimport wasi_snapshot_preview1` in go1.27's `runtime`
+(`os_wasip1.go`, `lock_wasip1.go`), `syscall` (`fs_wasip1.go`,
+`syscall_wasip1.go`, `os_wasip1.go`, `net_wasip1.go`) and
+`internal/syscall/unix` (`at_wasip1.go`, `utimes_wasip1.go`), plus the rest
+of the snapshot's functions (answered `ENOSYS`/`ENOTSUP`).
+
+## WASI preview 1 (wasi_snapshot_preview1)
+
+Read from `https://raw.githubusercontent.com/WebAssembly/WASI/snapshot-01/phases/snapshot/docs.md`
+(the `main` branch no longer carries it): every function signature, the
+`errno` enum in order (success = 0 … notcapable = 76), `rights` bits,
+`filetype`, `fdflags`, `oflags`, `lookupflags`, `fstflags`, `whence`, and
+the layouts of `iovec` (8), `fdstat` (24), `filestat` (64), `dirent` (24,
+name follows, the last entry may be truncated), `prestat` (8),
+`subscription` (48, union contents at 16) and `event` (32). Package `wasi`
+is written against it.
+
+## Threads proposal: shared memory and its binary encoding
+
+Read from `https://raw.githubusercontent.com/WebAssembly/threads/main/proposals/threads/Overview.md`:
+limits flags `0x00 min`, `0x01 min max`, `0x03 min max shared` (a shared
+memory always has a maximum); in the JS API a shared memory requires
+`maximum`, and its `buffer` is a new `SharedArrayBuffer` whenever the size
+changed. `wasmbin.LimitMemory` writes `0x03` with the container's limit, and
+the browser executor fetches `buffer` on every access.
+
+## Browser platform
+
+- MDN, `SharedArrayBuffer` (security requirements): shared memory needs a
+  secure, cross-origin isolated context; without the COOP/COEP headers the
+  constructor is hidden and `postMessage` throws for it.
+- MDN, `Atomics.wait`: only on an `Int32Array`/`BigInt64Array` over a
+  `SharedArrayBuffer`, never on the main thread; returns `ok`, `not-equal`
+  or `timed-out`. The container worker blocks there while the engine
+  serves its WASI call, and sleeps there for `poll_oneoff`.
+- MDN, `WebAssembly.Module`: a compiled module can be posted to workers and
+  instantiated several times; the executor compiles once per digest and
+  memory limit and posts the module to each container's worker.

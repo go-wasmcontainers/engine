@@ -1,0 +1,9 @@
+go test fuzz v1
+byte(31)
+uint64(3)
+uint64(1)
+uint64(0)
+uint64(8)
+uint64(1)
+uint64(2)
+[]byte("etc/motd")

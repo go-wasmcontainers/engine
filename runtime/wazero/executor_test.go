@@ -67,7 +67,7 @@ func start(t *testing.T, e *Executor, spec runtime.Spec) run {
 
 func TestRunPrograms(t *testing.T) {
 	img := lower(t, "hello", "greet", "probe")
-	e := New(Options{})
+	e := New(opts())
 	defer e.Close(context.Background())
 	fsys := img.Clone(rootfs.Quota{})
 
@@ -111,7 +111,7 @@ func TestRunPrograms(t *testing.T) {
 
 func TestFilesystemThroughWASI(t *testing.T) {
 	img := lower(t, "probe")
-	e := New(Options{})
+	e := New(opts())
 	defer e.Close(context.Background())
 	fsys := img.Clone(rootfs.Quota{})
 	r := start(t, e, runtime.Spec{FS: fsys, Path: "/bin/probe.wasm", Args: []string{"probe", "fs"}})
@@ -140,7 +140,7 @@ func TestFilesystemThroughWASI(t *testing.T) {
 
 func TestLimits(t *testing.T) {
 	img := lower(t, "probe")
-	e := New(Options{})
+	e := New(opts())
 	defer e.Close(context.Background())
 	fsys := img.Clone(rootfs.Quota{})
 
@@ -231,7 +231,7 @@ func TestStartErrors(t *testing.T) {
 
 func TestConcurrentContainers(t *testing.T) {
 	img := lower(t, "greet")
-	e := New(Options{})
+	e := New(opts())
 	defer e.Close(context.Background())
 	var wg sync.WaitGroup
 	errs := make(chan error, 16)

@@ -27,8 +27,11 @@ var ErrNoSuchImage = errors.New("no such image")
 
 // Options configures a daemon.
 type Options struct {
-	// Root holds the image store (default: none, required).
+	// Root holds the image store on disk. One of Root and Backend is
+	// required.
 	Root string
+	// Backend holds the image store elsewhere (memory, IndexedDB).
+	Backend image.Backend
 	// Limits bound pulls; zero means image.DefaultLimits.
 	Limits image.Limits
 	// Unpack bounds layer unpacking; zero means rootfs.DefaultLimits.
@@ -59,7 +62,7 @@ type lowerEntry struct {
 
 // New opens the store under opt.Root.
 func New(opt Options) (*Daemon, error) {
-	if opt.Root == "" {
+	if opt.Root == "" && opt.Backend == nil {
 		return nil, errors.New("daemon: no data root")
 	}
 	if opt.Containers.Executor == nil {
@@ -74,7 +77,13 @@ func New(opt Options) (*Daemon, error) {
 	if opt.MaxLowers <= 0 {
 		opt.MaxLowers = 16
 	}
-	st, err := image.OpenStore(filepath.Join(opt.Root, "images"))
+	var st *image.Store
+	var err error
+	if opt.Backend != nil {
+		st, err = image.NewStore(opt.Backend)
+	} else {
+		st, err = image.OpenStore(filepath.Join(opt.Root, "images"))
+	}
 	if err != nil {
 		return nil, err
 	}
