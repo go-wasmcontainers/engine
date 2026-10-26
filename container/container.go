@@ -526,6 +526,64 @@ func (m *Manager) Kill(ref string) error {
 	return nil
 }
 
+// Stop ends a running container and waits until it has exited. A wasm
+// guest has no signal to catch, so there is no grace period: stopping is
+// killing (docker stop's SIGKILL after the timeout, at once).
+func (m *Manager) Stop(ctx context.Context, ref string) error {
+	c, err := m.Get(ref)
+	if err != nil {
+		return err
+	}
+	if !c.kill() {
+		return ErrNotRunning
+	}
+	_, err = c.Wait(ctx, WaitNotRunning)
+	return err
+}
+
+// Restart stops the container if it runs, then starts it.
+func (m *Manager) Restart(ctx context.Context, ref string) error {
+	if err := m.Stop(ctx, ref); err != nil && !errors.Is(err, ErrNotRunning) {
+		return err
+	}
+	return m.Start(ctx, ref)
+}
+
+// Attach streams to fn what the container writes from now on (with logs,
+// what it wrote before too) until its next exit — of the run in progress,
+// or of the next start when it is not running — or its removal.
+func (c *Container) Attach(ctx context.Context, logs bool, fn func(Record) error) error {
+	c.mu.Lock()
+	startExits := c.exits
+	c.mu.Unlock()
+	seq := 0
+	if !logs {
+		_, seq, _ = c.logs.since(0)
+	}
+	for {
+		c.mu.Lock()
+		done := c.exits > startExits || c.removed
+		stateCh := c.changed
+		c.mu.Unlock()
+		recs, next, logCh := c.logs.since(seq)
+		for _, r := range recs {
+			if err := fn(r); err != nil {
+				return err
+			}
+		}
+		seq = next
+		if done {
+			return nil
+		}
+		select {
+		case <-logCh:
+		case <-stateCh:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 // kill ends c if it is running, and reports whether it was. Between Start
 // marking it running and its process being attached there is no process
 // to kill yet: the kill is then kept and delivered on attachment.

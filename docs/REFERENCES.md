@@ -61,6 +61,13 @@ Read from the OpenAPI document `https://docs.docker.com/reference/api/engine/ver
   2 stderr, size big-endian (`api/stdcopy.go`).
 - `POST /containers/{id}/wait` (`condition` defaults to `not-running`),
   `DELETE /containers/{id}` (`force`; 409 for a running container).
+- `POST /containers/{id}/start` (204, 304 when already started),
+  `POST /containers/{id}/stop` (204, 304 when already stopped; `signal` and
+  `t` — a wasm guest has no signals, so stop kills at once),
+  `POST /containers/{id}/restart` (204). `POST /containers/{id}/attach`
+  (`stream`, `stdout`, `stderr`, `logs`): Docker hijacks the connection;
+  without stdin to carry, this engine answers an ordinary streamed
+  multiplexed response, which `start -a` reads.
 - `GET /system/df` (`SystemDataUsageResponse`: `LayersSize`, `Images`
   [`ImageSummary`], `Containers` [`ContainerSummary`], `Volumes`,
   `BuildCache`); `POST /containers/prune` (`ContainersDeleted`,

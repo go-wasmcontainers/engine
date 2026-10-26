@@ -59,6 +59,9 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("GET /containers/{id}/json", s.containersInspect)
 	s.mux.HandleFunc("DELETE /containers/{id}", s.containersDelete)
 	s.mux.HandleFunc("POST /containers/prune", s.containersPrune)
+	s.mux.HandleFunc("POST /containers/{id}/stop", s.containersStop)
+	s.mux.HandleFunc("POST /containers/{id}/restart", s.containersRestart)
+	s.mux.HandleFunc("POST /containers/{id}/attach", s.containersAttach)
 	s.mux.HandleFunc("GET /containers/{id}/changes", s.containersChanges)
 	s.mux.HandleFunc("POST /images/prune", s.imagesPrune)
 	s.mux.HandleFunc("GET /system/df", s.systemDF)
@@ -418,6 +421,54 @@ func (s *server) containersStart(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func (s *server) containersStop(w http.ResponseWriter, r *http.Request) {
+	err := s.d.Containers().Stop(r.Context(), r.PathValue("id"))
+	switch {
+	case errors.Is(err, container.ErrNotRunning):
+		w.WriteHeader(http.StatusNotModified)
+	case err != nil:
+		writeError(w, statusOf(err), err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (s *server) containersRestart(w http.ResponseWriter, r *http.Request) {
+	if err := s.d.Containers().Restart(context.WithoutCancel(r.Context()), r.PathValue("id")); err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// containersAttach streams the container's output from now (with logs=1,
+// from the start of its log) until its next exit, multiplexed as logs are.
+// Docker hijacks the connection for attach; this engine has no stdin to
+// carry, so it answers an ordinary streamed response (which also works
+// over the in-process transport).
+func (s *server) containersAttach(w http.ResponseWriter, r *http.Request) {
+	stdout, stderr := boolParam(r, "stdout"), boolParam(r, "stderr")
+	if !boolParam(r, "stream") || (!stdout && !stderr) {
+		writeError(w, http.StatusBadRequest, errors.New("bad parameters: attach needs stream=1 and stdout=1 or stderr=1"))
+		return
+	}
+	c, err := s.d.Containers().Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.docker.multiplexed-stream")
+	w.WriteHeader(http.StatusOK)
+	fw := newFlushWriter(w)
+	fw.rc.Flush()
+	c.Attach(r.Context(), boolParam(r, "logs"), func(rec container.Record) error {
+		if (rec.Stream == container.Stdout && !stdout) || (rec.Stream == container.Stderr && !stderr) {
+			return nil
+		}
+		return api.WriteFrame(fw, rec.Stream, rec.Data)
+	})
 }
 
 func (s *server) containersKill(w http.ResponseWriter, r *http.Request) {

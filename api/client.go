@@ -197,6 +197,28 @@ func (c *Client) Start(ctx context.Context, id string) error {
 	return c.getJSON(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/start", nil, nil, nil)
 }
 
+// Stop stops a running container and returns once it has exited; a
+// container that is not running is not an error (the daemon answers 304).
+func (c *Client) Stop(ctx context.Context, id string) error {
+	return c.getJSON(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/stop", nil, nil, nil)
+}
+
+// Restart stops a container if it runs, then starts it.
+func (c *Client) Restart(ctx context.Context, id string) error {
+	return c.getJSON(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/restart", nil, nil, nil)
+}
+
+// Attach streams a container's output from now until its next exit,
+// multiplexed (see Demux). Attach before Start so nothing is missed.
+func (c *Client) Attach(ctx context.Context, id string) (io.ReadCloser, error) {
+	q := url.Values{"stream": {"1"}, "stdout": {"1"}, "stderr": {"1"}}
+	resp, err := c.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/attach", q, nil)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
 // Kill kills a running container.
 func (c *Client) Kill(ctx context.Context, id string) error {
 	return c.getJSON(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/kill", nil, nil, nil)
