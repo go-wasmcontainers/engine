@@ -53,16 +53,21 @@ func TestSlowSubscriberIsCutOff(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	got := 0
+	ack := make(chan struct{}, 1)
 	go func() {
 		defer wg.Done()
 		for range fast.C {
 			got++
+			ack <- struct{}{}
 		}
 	}()
 	done := make(chan struct{})
 	go func() {
+		// Paced by the fast reader, so only the one that never reads can
+		// fall behind, however slow the machine.
 		for i := 0; i < Queue*4; i++ {
 			b.Publish(Event{Type: Container, Action: "x"})
+			<-ack
 		}
 		close(done)
 	}()
