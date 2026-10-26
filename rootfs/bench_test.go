@@ -21,6 +21,20 @@ func BenchmarkUnpackGzipLayer(b *testing.B) {
 	}
 }
 
+// BenchmarkUnpackZstdLayer is the same layer as tar+zstd (default level),
+// through the bounded, single-threaded decoder.
+func BenchmarkUnpackZstdLayer(b *testing.B) {
+	mod := testutil.Wasm(b, "hello")
+	layer := zstdOf(b, testutil.Tar(E{Name: "bin/hello.wasm", Body: mod, Mode: 0o755}, E{Name: "etc/motd", Body: []byte("hi\n")}))
+	b.SetBytes(int64(len(mod)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := New().ApplyLayer(bytes.NewReader(layer), mtTarZstd, "", NewBudget(DefaultLimits)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkClone measures what a container create pays for its root: a
 // copy-on-write clone, then one write that copies up a directory chain.
 func BenchmarkClone(b *testing.B) {

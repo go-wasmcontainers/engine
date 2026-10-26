@@ -11,6 +11,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // Layer media types (kept here so the package does not import image).
@@ -18,6 +20,9 @@ const (
 	mtTar      = "application/vnd.oci.image.layer.v1.tar"
 	mtTarGz    = "application/vnd.oci.image.layer.v1.tar+gzip"
 	mtDockerGz = "application/vnd.docker.image.rootfs.diff.tar.gzip"
+	mtTarZstd  = "application/vnd.oci.image.layer.v1.tar+zstd"
+	// pkgx bottles (go-pkgx/packages) carry their tarball as is.
+	mtPkgxZstd = "application/vnd.pkgx.bottle.layer.v1.tar+zstd"
 	mtWasm     = "application/wasm"
 )
 
@@ -126,11 +131,38 @@ func (f *FS) ApplyLayer(r io.Reader, mediaType, title string, b *Budget) error {
 		}
 		defer zr.Close()
 		return f.ApplyTar(&ratioReader{r: zr, in: in, ratio: b.MaxRatio}, b)
+	case mtTarZstd, mtPkgxZstd:
+		in := &countingReader{r: r}
+		// One decoder, no goroutines (a browser worker has one thread to
+		// give), its window and memory bounded: the library's defaults
+		// (512 MB, 64 GiB) are for trusted input.
+		zr, err := zstd.NewReader(in, zstd.WithDecoderConcurrency(1), zstd.WithDecoderLowmem(true),
+			zstd.WithDecoderMaxWindow(MaxZstdWindow), zstd.WithDecoderMaxMemory(MaxZstdWindow))
+		if err != nil {
+			return layerErr("zstd: %v", err)
+		}
+		defer zr.Close()
+		return f.ApplyTar(&ratioReader{r: zstdErrs{zr}, in: in, ratio: b.MaxRatio}, b)
 	case mtWasm:
 		_, err := f.ApplyWasm(r, title, b)
 		return err
 	}
 	return layerErr("unsupported layer media type %q", mediaType)
+}
+
+// MaxZstdWindow bounds a zstd layer's window, which is what the decoder
+// allocates: zstd's levels 1-19 use at most 8 MiB, --long up to 128 MiB.
+const MaxZstdWindow = 64 << 20
+
+// zstdErrs marks the decoder's errors as layer errors.
+type zstdErrs struct{ r io.Reader }
+
+func (z zstdErrs) Read(p []byte) (int, error) {
+	n, err := z.r.Read(p)
+	if err != nil && err != io.EOF {
+		err = layerErr("zstd: %v", err)
+	}
+	return n, err
 }
 
 // wasmMagic opens every WebAssembly binary.
