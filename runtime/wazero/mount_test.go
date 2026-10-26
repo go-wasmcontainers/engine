@@ -49,11 +49,15 @@ func TestMountsThroughWASI(t *testing.T) {
 	if r := start(t, e, spec("write", "/ro/x", "no")); r.res.ExitCode != 1 || !strings.Contains(strings.ToLower(r.stderr), "read-only file system") {
 		t.Fatalf("read-only write: %+v", r)
 	}
-	// Across trees the rename fails: Go's wasip1 port refuses a rename
-	// between two preopens itself ("not implemented"), and the hosts would
-	// answer EXDEV (package wasi's tests check that); nothing moves.
-	if r := start(t, e, spec("mv", "/etc/motd", "/data/motd")); r.res.ExitCode != 1 {
-		t.Fatalf("rename across: %+v", r)
+	// Across trees the rename fails and nothing moves: the engine's WASI
+	// answers EXDEV, wazero's ENOSYS (its path_rename does not handle
+	// renames across filesystems).
+	want := "not implemented"
+	if engineWASI {
+		want = "cross-device"
+	}
+	if r := start(t, e, spec("mv", "/etc/motd", "/data/motd")); r.res.ExitCode != 1 || !strings.Contains(strings.ToLower(r.stderr), want) {
+		t.Fatalf("rename across, want %q: %+v", want, r)
 	}
 	if _, err := vol.Stat("/motd"); err == nil {
 		t.Fatal("a rename across mounts moved the file")

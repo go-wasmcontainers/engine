@@ -91,7 +91,20 @@ not have.
 | `diff CONTAINER` | the files it added (`A`), changed (`C`) or deleted (`D`) |
 | `events` | `--since`, `--until` (Unix seconds, RFC 3339, or a duration such as `10m`), `-f/--filter` `type=`, `event=`, `container=`, `image=`, `volume=`, `label=`; streams container `create start die kill stop restart destroy prune` and image `pull untag delete prune` (`GET /events`; the last 1024 events are kept for `--since`) |
 | `stats [CONTAINER...]` | `--no-stream`, `-a/--all`; linear memory against its limit, bytes written, pids (`GET /containers/{id}/stats`, one reading or one per second). CPU is shown as `--`: a WebAssembly guest gives the engine no CPU accounting, so none is invented |
+| `volume create\|ls\|inspect\|rm\|prune` | named volumes: `create [--label K=V] [NAME]`, `ls [-q]`, `rm [-f]` (refused while any container mounts it), `prune [-a] [-f]` (anonymous ones; `-a` every unused one) |
 | `version` | |
+
+**Volumes.** `run -v NAME:/path[:ro]` mounts a named volume (created on
+first use); two containers mounting it share one tree, and it outlives
+them, across restarts and reloads too. Host paths are refused: a
+WebAssembly engine has no host filesystem to share. A volume is a WASI
+preopen at its path — the way `wasmtime --dir host::guest` mounts — served
+by both executors (natively by wazero's WASI or the engine's, in a browser
+by the engine's): a guest resolves an absolute path against the longest
+matching preopen, writes through `:ro` fail with EROFS, and a rename
+across trees fails (EXDEV from the engine's WASI, as across mounts on
+Linux; ENOSYS from wazero's, which does not handle it yet). Each volume is bounded (64 MiB, 16384 entries by default) and
+stored like a container's writable layer.
 | `completion bash\|zsh\|fish\|powershell` | prints a shell completion script |
 | `system df` | `-v/--verbose`; images, containers' writable layers, and the state store (kind, bytes, quota) |
 | `system prune` | `-a/--all` (every image no container uses), `-f/--force` (no question) |
@@ -266,7 +279,8 @@ open item.
 
 - No networking (the WasmEdge socket extension is a later milestone), no
   `exec` / process spawn (WASIX subset later), no TTY, no stdin attach.
-- No `build`, volumes, compose, or Kubernetes API yet.
+- No `build`, compose, or Kubernetes API yet; volumes are local and named
+  only (no drivers, no host bind mounts, no tmpfs).
 - A running container's writes are stored every 2 s and at exit: a crash
   loses at most the last 2 s of them. Hard links to an unchanged image file
   come back as copies.

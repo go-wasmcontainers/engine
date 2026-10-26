@@ -74,6 +74,24 @@ Read from the OpenAPI document `https://docs.docker.com/reference/api/engine/ver
   `type`, `event`, `container`, `image`, `volume`, `label`; others are
   refused, not ignored. `since`/`until` take Unix seconds (with a
   fraction), RFC 3339, or a duration back from now.
+- `GET /containers/{id}/stats` (`stream`, `one-shot`): `memory_stats`
+  `usage`/`limit`, `cpu_stats`/`precpu_stats` (left at zero: not measured),
+  `blkio_stats.io_service_bytes_recursive`, `pids_stats.current`.
+- Volumes: `Volume` (`Name`, `Driver`, `Mountpoint`, `CreatedAt`, `Labels`,
+  `Scope`, `Options`, `UsageData{Size, RefCount}` in `/system/df` only),
+  `VolumeCreateOptions`, `VolumeListResponse` (filters `name`, `dangling`),
+  `DELETE /volumes/{name}` (`force`; 409 while in use),
+  `POST /volumes/prune` (`all=true`: every unused volume, not only
+  anonymous ones), `HostConfig.Binds`, an inspected container's `Mounts`
+  (`MountPoint`: `Type`, `Name`, `Source`, `Destination`, `Mode`, `RW`).
+- wasmtime `--dir HOST::GUEST` and WASI preview 1 `fd_prestat_get` /
+  `fd_prestat_dir_name`: each preopen names its guest path. Go's wasip1
+  port (`syscall/fs_wasip1.go`, go1.27.3: `preparePath`) resolves an
+  absolute path against the longest matching preopen, and its `Rename`
+  passes the two descriptors to `path_rename` as they are. wazero v1.12.0's
+  `path_rename` (`imports/wasi_snapshot_preview1/fs.go`) answers ENOSYS
+  across filesystems ("TODO: handle renames across filesystems"); the
+  engine's WASI answers EXDEV, as Linux does across mounts.
 - `GET /system/df` (`SystemDataUsageResponse`: `LayersSize`, `Images`
   [`ImageSummary`], `Containers` [`ContainerSummary`], `Volumes`,
   `BuildCache`); `POST /containers/prune` (`ContainersDeleted`,
