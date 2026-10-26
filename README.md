@@ -98,6 +98,17 @@ Tab then completes subcommands and flags, image names for `run`, `pull`,
 the daemon, through cobra's hidden `__complete` command — the same code the
 playground's terminal calls in-process (`cli.Complete`).
 
+**Line editor for embedders.** `cli/lineedit` is wctr's interactive line
+editor as a pure model (no terminal, DOM or widget type): `New(Options)`,
+`Key(ctx, Key) Event` (editing keys, history Up/Down and Ctrl-P/N, Ctrl-A/E/
+B/F/U/K/W/L/C/D, reverse search Ctrl-R, Tab completion — unique match,
+longest common prefix, second Tab lists, "Display all N possibilities?"
+past 100), `State()` (prompt, line, cursor), `History`/`SetHistory`;
+`WctrCompleter(cli.Options, builtins)` completes through `__complete`;
+`ParseKeys` reads terminal input and `Renderer` writes ANSI for a terminal,
+both optional. The playground's terminal and the dashboard's terminal
+widget drive the same model.
+
 Exit status of `wctr run`: the container's, or 125 (the CLI or daemon
 failed), 126 (not a WebAssembly module), 127 (module not found), 137 (killed
 or wall-clock timeout), 134 (the module trapped).
