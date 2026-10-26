@@ -195,6 +195,16 @@ how the memory limit is enforced there). The same `wasi` package is run
 natively by every guest test (`runtime/wazero`, `EngineWASI`), so the
 browser path's file-system semantics are tested without a browser.
 
+The browser executor can keep compiled modules across page loads
+(`Options.CodeCache`: Cache Storage plus `WebAssembly.compileStreaming`,
+the only path V8's code cache serves; a hit is checked byte for byte
+against the module derived from the verified image). Measured in Chromium
+on a 2.8 MB Go module, it does not pay: the compile call takes 8.4 ms from
+Cache Storage against 1.5 ms from bytes (V8 compiles lazily), and a
+CPU-bound guest after a reload runs in the same time either way (111–113
+ms against 111.5 ms). The playground therefore leaves it off by default,
+and its e2e keeps measuring both (`?codecache=1`).
+
 ## Performance
 
 Measured on an Apple M4 Max, one core (`-cpu 1`), go1.27.3; benchmarks are
