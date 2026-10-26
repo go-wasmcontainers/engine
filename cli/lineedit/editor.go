@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-wasmcontainers/engine/cli"
 )
@@ -94,13 +95,31 @@ func (e *Editor) SetCols(n int) {
 // History returns the history, oldest first (to persist it).
 func (e *Editor) History() []string { return append([]string(nil), e.history...) }
 
-// SetHistory replaces the history (a restored one), bounded.
+// SetHistory replaces the history (a restored one), bounded. A restored
+// history is untrusted (browser storage, a file): an entry that a user
+// could not have typed — invalid UTF-8 or a non-printable rune, which the
+// renderer would otherwise write to the terminal as is — is dropped.
 func (e *Editor) SetHistory(h []string) {
 	e.history = nil
 	for _, l := range h {
-		e.addHistory(l)
+		if typable(l) {
+			e.addHistory(l)
+		}
 	}
 	e.hist = len(e.history)
+}
+
+// typable reports whether the editor could have produced l.
+func typable(l string) bool {
+	if !utf8.ValidString(l) {
+		return false
+	}
+	for _, r := range l {
+		if r != ' ' && !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Editor) addHistory(l string) {

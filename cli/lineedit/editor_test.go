@@ -122,6 +122,12 @@ func TestHistory(t *testing.T) {
 	if h := strings.Join(e.History(), ","); h != "b,c,d" {
 		t.Fatal(h)
 	}
+	// A restored history is untrusted: what nobody could type is dropped
+	// before the renderer can write it.
+	e.SetHistory([]string{"ok", "\x1b]52;c;ZXZpbA==\a", "bad\xff", "tab\there", "café ü"})
+	if h := strings.Join(e.History(), ","); h != "ok,café ü" {
+		t.Fatalf("%q", h)
+	}
 }
 
 func TestReverseSearch(t *testing.T) {
