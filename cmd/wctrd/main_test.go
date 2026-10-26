@@ -27,6 +27,12 @@ func shortDir(t *testing.T) string {
 func TestServeAndSocket(t *testing.T) {
 	dir := shortDir(t)
 	sock := filepath.Join(dir, "run", "d.sock")
+	if err := os.Mkdir(filepath.Dir(sock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := listenUnix(filepath.Join(dir, "missing", "d.sock")); err == nil {
+		t.Fatal("listened in a directory that does not exist")
+	}
 	ready := make(chan string, 1)
 	cmd := rootCmd(ready)
 	var out bytes.Buffer
@@ -48,8 +54,12 @@ func TestServeAndSocket(t *testing.T) {
 	if st.Mode().Perm() != 0o600 || st.Mode()&os.ModeSocket == 0 {
 		t.Fatalf("socket mode %v", st.Mode())
 	}
-	if st, _ := os.Stat(filepath.Dir(sock)); st.Mode().Perm() != 0o700 {
-		t.Fatalf("socket dir mode %v", st.Mode())
+	// The parent directory is left as it was, and no staging dir remains.
+	if st, _ := os.Stat(filepath.Dir(sock)); st.Mode().Perm() != 0o755 {
+		t.Fatalf("socket dir mode changed to %v", st.Mode())
+	}
+	if ents, _ := os.ReadDir(filepath.Dir(sock)); len(ents) != 1 {
+		t.Fatalf("staging left behind: %v", ents)
 	}
 	// A second daemon on the same socket refuses.
 	if _, err := listenUnix(sock); err == nil || !strings.Contains(err.Error(), "another daemon") {
@@ -109,7 +119,7 @@ func TestListenRefusals(t *testing.T) {
 	code := -1
 	osExit = func(c int) { code = c }
 	defer func() { osExit = os.Exit }()
-	os.Args = []string{"dockerd", "-H", "tcp://x"}
+	os.Args = []string{"wctrd", "-H", "tcp://x"}
 	main()
 	if code != 1 {
 		t.Fatal(code)
@@ -124,14 +134,14 @@ func TestListenRefusals(t *testing.T) {
 }
 
 // TestAcceptance is the README demo, end to end, with the real binaries:
-// dockerd in the background, then docker pull, run, ps, logs, rm.
+// wctrd in the background, then wctr pull, run, ps, logs, rm.
 func TestAcceptance(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the binaries")
 	}
 	dir := shortDir(t)
 	bin := filepath.Join(dir, "bin")
-	for _, c := range []string{"docker", "dockerd"} {
+	for _, c := range []string{"wctr", "wctrd"} {
 		b := exec.Command("go", "build", "-o", filepath.Join(bin, c), "./cmd/"+c)
 		b.Dir = testutil.RepoRoot()
 		b.Env = append(os.Environ(), "CGO_ENABLED=0", "GOWORK=off")
@@ -147,7 +157,7 @@ func TestAcceptance(t *testing.T) {
 	))
 	sock := filepath.Join(dir, "d.sock")
 	var dlog bytes.Buffer
-	d := exec.Command(filepath.Join(bin, "dockerd"), "-H", "unix://"+sock, "--data-root", filepath.Join(dir, "data"))
+	d := exec.Command(filepath.Join(bin, "wctrd"), "-H", "unix://"+sock, "--data-root", filepath.Join(dir, "data"))
 	d.Stdout, d.Stderr, d.Stdin = &dlog, &dlog, nil
 	if err := d.Start(); err != nil {
 		t.Fatal(err)
@@ -162,15 +172,15 @@ func TestAcceptance(t *testing.T) {
 			break
 		}
 		if i > 200 {
-			t.Fatalf("dockerd did not come up: %s", dlog.String())
+			t.Fatalf("wctrd did not come up: %s", dlog.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	var transcript strings.Builder
 	sh := func(want int, args ...string) string {
 		t.Helper()
-		c := exec.Command(filepath.Join(bin, "docker"), args...)
-		c.Env = append(os.Environ(), "DOCKER_HOST=unix://"+sock)
+		c := exec.Command(filepath.Join(bin, "wctr"), args...)
+		c.Env = append(os.Environ(), "WCTR_HOST=unix://"+sock)
 		var out, errb bytes.Buffer
 		c.Stdout, c.Stderr, c.Stdin = &out, &errb, nil
 		err := c.Run()
@@ -181,9 +191,9 @@ func TestAcceptance(t *testing.T) {
 			t.Fatal(err)
 		}
 		shown := strings.ReplaceAll(strings.Join(args, " "), layout, "./layout")
-		transcript.WriteString("$ docker " + shown + "\n" + out.String() + errb.String())
+		transcript.WriteString("$ wctr " + shown + "\n" + out.String() + errb.String())
 		if code != want {
-			t.Fatalf("docker %s: exit %d, want %d\n%s%s", shown, code, want, out.String(), errb.String())
+			t.Fatalf("wctr %s: exit %d, want %d\n%s%s", shown, code, want, out.String(), errb.String())
 		}
 		return out.String() + errb.String()
 	}

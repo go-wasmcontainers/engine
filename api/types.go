@@ -1,10 +1,10 @@
-// Package api is the engine's subset of the Docker Engine API (v1.47):
-// the HTTP server dockerd serves on a unix socket, and the client the
-// docker command speaks it with. Shapes follow the v1.47 OpenAPI document
+// Package api is the engine's API, compatible with a subset of the Docker
+// Engine API (v1.47): what wctrd serves on a unix socket, and the client
+// wctr speaks it with. Shapes follow the v1.47 OpenAPI document
 // (see docs/REFERENCES.md); only the fields the engine fills are present.
 //
 // The client side (types, Client, stdcopy) imports neither the daemon nor
-// wazero, so the docker command builds for wasip1.
+// wazero, so the wctr command builds for wasip1.
 package api
 
 import (

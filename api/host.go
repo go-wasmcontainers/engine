@@ -1,29 +1,18 @@
 package api
 
-import (
-	"os"
-	"path/filepath"
-)
+import "os"
 
-// DefaultSocket is where dockerd listens and docker connects when neither
-// -H nor DOCKER_HOST says otherwise: $XDG_RUNTIME_DIR/wasmcontainers/
-// dockerd.sock, else ~/.wasmcontainers/dockerd.sock. It is deliberately not
-// /var/run/docker.sock, so the engine never collides with a real Docker.
-func DefaultSocket() string {
-	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
-		return filepath.Join(d, "wasmcontainers", "dockerd.sock")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, ".wasmcontainers", "dockerd.sock")
-}
+// DefaultSocket is where wctrd listens and wctr connects when neither -H
+// nor WCTR_HOST says otherwise.
+const DefaultSocket = "/var/run/wctr.sock"
 
-// DefaultHost is DOCKER_HOST if set, else unix:// + DefaultSocket().
+// HostEnv names the environment variable that overrides the daemon host.
+const HostEnv = "WCTR_HOST"
+
+// DefaultHost is $WCTR_HOST if set, else unix:// + DefaultSocket.
 func DefaultHost() string {
-	if h := os.Getenv("DOCKER_HOST"); h != "" {
+	if h := os.Getenv(HostEnv); h != "" {
 		return h
 	}
-	return "unix://" + DefaultSocket()
+	return "unix://" + DefaultSocket
 }

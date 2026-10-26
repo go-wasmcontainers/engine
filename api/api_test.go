@@ -81,18 +81,13 @@ func TestStrSlice(t *testing.T) {
 }
 
 func TestDefaultHost(t *testing.T) {
-	t.Setenv("DOCKER_HOST", "unix:///x.sock")
+	t.Setenv("WCTR_HOST", "unix:///x.sock")
 	if api.DefaultHost() != "unix:///x.sock" {
 		t.Fatal(api.DefaultHost())
 	}
-	t.Setenv("DOCKER_HOST", "")
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1")
-	if api.DefaultHost() != "unix:///run/user/1/wasmcontainers/dockerd.sock" {
+	t.Setenv("WCTR_HOST", "")
+	if api.DefaultHost() != "unix:///var/run/wctr.sock" {
 		t.Fatal(api.DefaultHost())
-	}
-	t.Setenv("XDG_RUNTIME_DIR", "")
-	if !strings.HasSuffix(api.DefaultSocket(), ".wasmcontainers/dockerd.sock") {
-		t.Fatal(api.DefaultSocket())
 	}
 	if _, err := api.NewClient("tcp://1.2.3.4:2375"); err == nil {
 		t.Fatal("tcp accepted")

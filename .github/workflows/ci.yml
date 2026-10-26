@@ -112,8 +112,8 @@ jobs:
         with: { go-version: '1.27.3' }
       - run: go version
       - run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build ./image/... ./rootfs/... ./runtime ./container/... ./api
-      - name: the docker CLI builds for wasip1/wasm
-        run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -o docker.wasm ./cmd/docker && ls -l docker.wasm
+      - name: the wctr CLI builds for wasip1/wasm
+        run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -o wctr.wasm ./cmd/wctr && ls -l wctr.wasm
 
   cross:
     name: cross ${{ matrix.goos }}/${{ matrix.goarch }}

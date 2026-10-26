@@ -1,5 +1,7 @@
-// Command docker is the engine's client: a subset of the Docker CLI that
-// speaks the engine's Docker Engine API over a unix socket.
+// Command wctr is the engine's client. Its subcommands follow the familiar
+// container CLI grammar (pull, run, ps, logs, rm, rmi, inspect, images),
+// and it talks to wctrd over a unix socket with an API compatible with the
+// Docker Engine API.
 //
 // It imports no runtime and nothing native, so it also builds for
 // GOOS=wasip1 (it will run inside the browser sandbox).
@@ -61,12 +63,12 @@ func main() {
 	}
 }
 
-// report prints err the way docker does and returns the exit status.
+// report prints err and returns the exit status.
 func report(w io.Writer, err error) int {
 	var ee *exitError
 	if errors.As(err, &ee) {
 		if ee.err != nil {
-			fmt.Fprintln(w, "docker:", ee.err)
+			fmt.Fprintln(w, "wctr:", ee.err)
 		}
 		return ee.code
 	}
@@ -78,13 +80,13 @@ func report(w io.Writer, err error) int {
 func RootCmd() *cobra.Command {
 	var host string
 	root := &cobra.Command{
-		Use:           "docker",
+		Use:           "wctr",
 		Short:         "Run WebAssembly (wasip1) containers with the go-wasmcontainers engine",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
 	}
-	root.PersistentFlags().StringVarP(&host, "host", "H", api.DefaultHost(), "daemon socket to connect to (unix:///path)")
+	root.PersistentFlags().StringVarP(&host, "host", "H", api.DefaultHost(), "daemon socket to connect to (unix:///path; default $"+api.HostEnv+", else unix://"+api.DefaultSocket+")")
 	client := func() (*api.Client, error) { return api.NewClient(host) }
 
 	root.AddCommand(
@@ -202,7 +204,7 @@ func imagesCmd(client clientFunc) *cobra.Command {
 }
 
 // envFlags resolves -e entries: "KEY=value" as is, a bare "KEY" from this
-// process's environment (dropped when unset), as docker does.
+// process's environment (dropped when unset).
 func envFlags(in []string) []string {
 	var out []string
 	for _, e := range in {
@@ -408,7 +410,7 @@ func logsCmd(client clientFunc) *cobra.Command {
 }
 
 // each runs fn on every argument, printing what succeeds, reporting what
-// fails, and failing at the end if anything did — as docker rm does.
+// fails, and failing at the end if anything did.
 func each(cmd *cobra.Command, args []string, fn func(string) error) error {
 	failed := 0
 	for _, a := range args {
