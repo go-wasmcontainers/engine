@@ -347,6 +347,7 @@ type EndpointSettings struct {
 // JSONMessage is one line of the POST /images/create progress stream.
 type JSONMessage struct {
 	Status      string        `json:"status,omitempty"`
+	Stream      string        `json:"stream,omitempty"`
 	ID          string        `json:"id,omitempty"`
 	Error       string        `json:"error,omitempty"`
 	ErrorDetail *JSONMsgError `json:"errorDetail,omitempty"`

@@ -30,6 +30,10 @@ const maxBody = 1 << 20
 type Info struct {
 	Version   string
 	GitCommit string
+	// MaxUploadBytes bounds POST /images/load and PUT
+	// /containers/{id}/archive bodies (default DefaultMaxUploadBytes);
+	// every other request body is bounded at 1 MiB.
+	MaxUploadBytes int64
 }
 
 type server struct {
@@ -73,6 +77,9 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("POST /images/prune", s.imagesPrune)
 	s.mux.HandleFunc("GET /system/df", s.systemDF)
 	s.mux.HandleFunc("POST /commit", s.commit)
+	s.mux.HandleFunc("POST /images/load", s.imagesLoad)
+	s.mux.HandleFunc("PUT /containers/{id}/archive", s.containersArchivePut)
+	s.mux.HandleFunc("GET /containers/{id}/archive", s.containersArchiveGet)
 	s.mux.HandleFunc("POST /images/{rest...}", s.imagesPost)
 	s.mux.HandleFunc("GET /networks", s.networksList)
 	s.mux.HandleFunc("POST /networks/create", s.networksCreate)
@@ -95,8 +102,26 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Api-Version", api.APIVersion)
 	w.Header().Set("Server", "go-wasmcontainers-engine/"+s.info.Version)
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	r.Body = http.MaxBytesReader(w, r.Body, s.bodyLimit(r))
 	s.mux.ServeHTTP(w, r)
+}
+
+// DefaultMaxUploadBytes bounds an image load or an archive upload when
+// Info.MaxUploadBytes is not set.
+const DefaultMaxUploadBytes = 1 << 30
+
+// bodyLimit is a request's body bound: 1 MiB, except for the two routes
+// that upload content (an image layout, a container archive).
+func (s *server) bodyLimit(r *http.Request) int64 {
+	upload := r.Method == http.MethodPost && r.URL.Path == "/images/load" ||
+		r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/containers/") && strings.HasSuffix(r.URL.Path, "/archive")
+	if !upload {
+		return maxBody
+	}
+	if s.info.MaxUploadBytes > 0 {
+		return s.info.MaxUploadBytes
+	}
+	return DefaultMaxUploadBytes
 }
 
 func versionInRange(maj, min string) bool {

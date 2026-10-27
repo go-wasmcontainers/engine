@@ -100,6 +100,18 @@ not have.
 | `network create\|ls\|inspect\|rm` | `create [--label K=V] NAME` (an in-engine network, the next free `10.89+n.0.0/16`), `ls [-q]`, `inspect` (with the running containers' addresses), `rm` (refused while a container uses it; `bridge`, `none` and a class network cannot be removed) |
 | `version` | |
 
+**For builders** (API only for now): `POST /images/load` takes an OCI image
+layout as a tar (each `index.json` entry named by `io.containerd.image.name`
+or `org.opencontainers.image.ref.name`, else `<none>`; checked as a pull is,
+nothing read from the host); `PUT /containers/{id}/archive?path=DIR` extracts
+a tar into a container (relative clean names only, no devices, hard links
+inside, paths resolved inside the container, its quota applies;
+`noOverwriteDirNonDir=1`) and `GET` returns a tar of a path. Those two
+uploads are bounded by `server.Info.MaxUploadBytes` (1 GiB by default),
+every other request at 1 MiB. `GET /images/{name}/json` shows the full config,
+the history, and `RootFS.Layers` as diff_ids. Other modules add commands to
+`wctr` through `cli.Options.Extra` (each receives the engine `-H` names).
+
 **Volumes.** `run -v NAME:/path[:ro]` mounts a named volume (created on
 first use); two containers mounting it share one tree, and it outlives
 them, across restarts and reloads too. Host paths are refused: a

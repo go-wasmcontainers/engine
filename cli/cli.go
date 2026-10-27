@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	nethttp "net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,28 @@ type Options struct {
 	// NoCompletionCommand removes cobra's `completion` command (scripts
 	// for a shell the host does not have, as in the browser).
 	NoCompletionCommand bool
+	// Extra adds commands from other modules (`wctr build`, `wctr
+	// compose`) to the tree. Each is made once per RootCmd and receives a
+	// way to reach the engine selected by -H: Engine returns its HTTP
+	// client and base URL (or an *api.Client through Client).
+	Extra []func(Engine) *cobra.Command
+}
+
+// Engine is how an extra command reaches the engine -H names.
+type Engine struct {
+	// Client connects through the CLI's own -H handling.
+	Client func() (*api.Client, error)
+}
+
+// HTTP returns the engine's HTTP client and base URL (requests go to
+// base + "/v1.47/…" or unversioned paths).
+func (e Engine) HTTP() (*nethttp.Client, string, error) {
+	c, err := e.Client()
+	if err != nil {
+		return nil, "", err
+	}
+	hc, base := c.HTTP()
+	return hc, base, nil
 }
 
 // exitError carries a process exit status through cobra.
@@ -112,6 +135,11 @@ func RootCmd(o Options) *cobra.Command {
 		eventsCmd(client), statsCmd(client), volumeCmd(client), networkCmd(client),
 		commitCmd(client), tagCmd(client),
 	)
+	for _, mk := range o.Extra {
+		if c := mk(Engine{Client: client}); c != nil {
+			root.AddCommand(c)
+		}
+	}
 	root.CompletionOptions.DisableDefaultCmd = o.NoCompletionCommand
 	(&completer{client: client, opt: o}).install(root)
 	return root

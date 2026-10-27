@@ -20,6 +20,11 @@ type Client struct {
 	base string
 }
 
+// HTTP returns the client's HTTP client and the engine's base URL, API
+// version included ("http://wctr/v1.47"), for a caller that speaks the API
+// itself (a builder streaming a context).
+func (c *Client) HTTP() (*http.Client, string) { return c.http, c.base }
+
 // ErrDaemon is wrapped by every error reply of the daemon.
 type ErrDaemon struct {
 	Status  int
@@ -77,6 +82,26 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	return c.send(req)
+}
+
+// doRaw sends a raw body (a tar) with its content type.
+func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, body io.Reader, contentType string) (*http.Response, error) {
+	u := c.base + path
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	if err != nil {
+		return nil, err
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	return c.send(req)
+}
+
+func (c *Client) send(req *http.Request) (*http.Response, error) {
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to the daemon: %w", err)
@@ -400,6 +425,51 @@ func (c *Client) Commit(ctx context.Context, o CommitOptions) (string, error) {
 	var out CommitResponse
 	err := c.getJSON(ctx, http.MethodPost, "/commit", q, body, &out)
 	return out.ID, err
+}
+
+// ImageLoad sends an OCI image layout tar (POST /images/load) and returns
+// the "Loaded image…" lines.
+func (c *Client) ImageLoad(ctx context.Context, layoutTar io.Reader) ([]string, error) {
+	resp, err := c.doRaw(ctx, http.MethodPost, "/images/load", nil, layoutTar, "application/x-tar")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out []string
+	dec := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	for {
+		var m JSONMessage
+		if err := dec.Decode(&m); err == io.EOF {
+			return out, nil
+		} else if err != nil {
+			return out, err
+		}
+		if m.Error != "" {
+			return out, &ErrDaemon{Status: resp.StatusCode, Message: m.Error}
+		}
+		out = append(out, strings.TrimSpace(m.Stream))
+	}
+}
+
+// CopyTo extracts a tar into the container's directory dir (PUT
+// /containers/{id}/archive).
+func (c *Client) CopyTo(ctx context.Context, container, dir string, tarball io.Reader) error {
+	resp, err := c.doRaw(ctx, http.MethodPut, "/containers/"+url.PathEscape(container)+"/archive", url.Values{"path": {dir}}, tarball, "application/x-tar")
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// CopyFrom returns a tar of the container's path p (GET
+// /containers/{id}/archive); the caller closes it.
+func (c *Client) CopyFrom(ctx context.Context, container, p string) (io.ReadCloser, error) {
+	resp, err := c.doRaw(ctx, http.MethodGet, "/containers/"+url.PathEscape(container)+"/archive", url.Values{"path": {p}}, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
 }
 
 // ImageTag names an image repo[:tag].
