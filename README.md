@@ -211,7 +211,10 @@ wait on, so the browser's engine worker keeps its event loop.
   under the teacher's firewall. The join code is read from a file (never on
   the command line, refused if others can read it); the session token is
   kept `0600` in the data root, refreshed before it expires, and reused at
-  the next start. The contract is the relay's `docs/NETWORKDRIVER.md`.
+  the next start. The contract is the relay's `docs/NETWORKDRIVER.md`. A
+  host may also add and remove such a network at run time
+  (`network.Manager.AddDriver` / `RemoveDriver`): the playground's
+  "Join class" does.
 - `--network none` (and `--wasi wazero`) gives no sockets: `sock_open`
   fails with `ENOTSUP`. `--network host` is refused.
 

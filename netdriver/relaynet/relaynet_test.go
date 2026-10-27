@@ -85,7 +85,7 @@ func TestClassNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		p, err := e.Start(ctx, runtime.Spec{ID: name, FS: img.Clone(rootfs.Quota{}), Path: "/bin/netprobe.wasm",
-			Args: append([]string{"netprobe"}, args...), Net: netdriver.WithDNS(ep), Stdout: out, Stderr: out, Timeout: time.Minute})
+			Args: append([]string{"netprobe"}, args...), Net: netdriver.WithDNS(ep), Stdout: out, Stderr: out}) // no wall-clock limit: the server lives for the test
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -17,6 +17,10 @@ func background(t *testing.T, e *Executor, spec runtime.Spec) (*syncBuf, runtime
 	t.Helper()
 	var out syncBuf
 	spec.Stdout, spec.Stderr = &out, &out
+	// A server lives as long as the test (killed at cleanup), however
+	// slow the machine: a wall-clock limit made it vanish mid-test on a
+	// loaded CI runner.
+	spec.Timeout = 0
 	p, err := e.Start(context.Background(), spec)
 	if err != nil {
 		t.Fatal(err)
