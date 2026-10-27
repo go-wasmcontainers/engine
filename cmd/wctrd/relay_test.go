@@ -75,7 +75,9 @@ func wctr(t *testing.T, host string, want int, args ...string) string {
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
 	cmd.SetArgs(append([]string{"-H", host}, args...))
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// A first run compiles the 8 MB guest cold, which under -race on a CI
+	// runner took more than a minute.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	code := 0
 	if err := cmd.ExecuteContext(ctx); err != nil {
