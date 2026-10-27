@@ -61,10 +61,53 @@ type ImageInspect struct {
 	Architecture string           `json:"Architecture"`
 	Os           string           `json:"Os"`
 	Size         int64            `json:"Size"`
-	Config       ContainerConfig  `json:"Config"`
+	Config       ImageConfig      `json:"Config"`
 	RootFS       map[string]any   `json:"RootFS"`
+	History      []ImageHistory   `json:"History,omitempty"`
 	Metadata     map[string]any   `json:"Metadata,omitempty"`
 	Descriptor   *json.RawMessage `json:"Descriptor,omitempty"`
+}
+
+// ImageConfig is an image's run configuration as Docker's API shows it
+// (inspect Config) and takes it (the POST /commit body).
+type ImageConfig struct {
+	User         string              `json:"User,omitempty"`
+	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
+	Env          []string            `json:"Env,omitempty"`
+	Cmd          StrSlice            `json:"Cmd,omitempty"`
+	Entrypoint   StrSlice            `json:"Entrypoint,omitempty"`
+	Volumes      map[string]struct{} `json:"Volumes,omitempty"`
+	WorkingDir   string              `json:"WorkingDir,omitempty"`
+	Labels       map[string]string   `json:"Labels,omitempty"`
+	StopSignal   string              `json:"StopSignal,omitempty"`
+	ArgsEscaped  bool                `json:"ArgsEscaped,omitempty"`
+	Shell        []string            `json:"Shell,omitempty"`
+	OnBuild      []string            `json:"OnBuild,omitempty"`
+	Healthcheck  *HealthConfig       `json:"Healthcheck,omitempty"`
+}
+
+// HealthConfig is a HEALTHCHECK (durations in nanoseconds).
+type HealthConfig struct {
+	Test          []string `json:"Test,omitempty"`
+	Interval      int64    `json:"Interval,omitempty"`
+	Timeout       int64    `json:"Timeout,omitempty"`
+	StartPeriod   int64    `json:"StartPeriod,omitempty"`
+	StartInterval int64    `json:"StartInterval,omitempty"`
+	Retries       int      `json:"Retries,omitempty"`
+}
+
+// ImageHistory is one entry of an image's history.
+type ImageHistory struct {
+	Created    string `json:"created,omitempty"`
+	CreatedBy  string `json:"created_by,omitempty"`
+	Author     string `json:"author,omitempty"`
+	Comment    string `json:"comment,omitempty"`
+	EmptyLayer bool   `json:"empty_layer,omitempty"`
+}
+
+// CommitResponse is the reply to POST /commit.
+type CommitResponse struct {
+	ID string `json:"Id"`
 }
 
 // ImageDeleteResponseItem is one entry of DELETE /images/{name}.

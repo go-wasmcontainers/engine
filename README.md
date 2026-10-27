@@ -87,6 +87,8 @@ not have.
 | `logs CONTAINER` | `-f/--follow` |
 | `rm CONTAINER...` | `-f/--force` |
 | `rmi IMAGE...` | `-f/--force` |
+| `commit CONTAINER [REPO[:TAG]]` | `-m/--message`, `-a/--author`, `-c/--change` (`CMD`, `ENTRYPOINT`, `ENV`, `EXPOSE`, `LABEL`, `ONBUILD`, `STOPSIGNAL`, `USER`, `VOLUME`, `WORKDIR`): the container's changes as one OCI layer (OCI whiteouts) on the parent's, a history entry (`empty_layer` when nothing changed); without a name, a `<none>` image addressable by ID (`POST /commit`) |
+| `tag SOURCE TARGET` | another name for an image; a tag that moves leaves the old image as `<none>` (`POST /images/{name}/tag`) |
 | `inspect NAME\|ID...` | containers, then images |
 | `kill CONTAINER...` | |
 | `start CONTAINER...` | starts stopped containers (they keep their files and logs); `-a/--attach` (one container) prints this run's output and exits with its status |

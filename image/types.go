@@ -95,6 +95,31 @@ type ExecConfig struct {
 	WorkingDir   string              `json:"WorkingDir,omitempty"`
 	Labels       map[string]string   `json:"Labels,omitempty"`
 	StopSignal   string              `json:"StopSignal,omitempty"`
+	// Docker's extensions to the OCI config, kept so that an image built
+	// elsewhere round-trips and `commit` can set them.
+	ArgsEscaped bool          `json:"ArgsEscaped,omitempty"`
+	Shell       []string      `json:"Shell,omitempty"`
+	OnBuild     []string      `json:"OnBuild,omitempty"`
+	Healthcheck *HealthConfig `json:"Healthcheck,omitempty"`
+}
+
+// HealthConfig is Docker's HEALTHCHECK (durations in nanoseconds).
+type HealthConfig struct {
+	Test          []string `json:"Test,omitempty"`
+	Interval      int64    `json:"Interval,omitempty"`
+	Timeout       int64    `json:"Timeout,omitempty"`
+	StartPeriod   int64    `json:"StartPeriod,omitempty"`
+	StartInterval int64    `json:"StartInterval,omitempty"`
+	Retries       int      `json:"Retries,omitempty"`
+}
+
+// History is one entry of an image's history (image-spec config.md).
+type History struct {
+	Created    string `json:"created,omitempty"`
+	CreatedBy  string `json:"created_by,omitempty"`
+	Author     string `json:"author,omitempty"`
+	Comment    string `json:"comment,omitempty"`
+	EmptyLayer bool   `json:"empty_layer,omitempty"`
 }
 
 // RootFS lists the layers' uncompressed digests.
@@ -114,6 +139,7 @@ type Config struct {
 	Variant      string     `json:"variant,omitempty"`
 	Config       ExecConfig `json:"config"`
 	RootFS       RootFS     `json:"rootfs"`
+	History      []History  `json:"history,omitempty"`
 
 	// LayerDigests is the wasm artifact's list of layer digests.
 	LayerDigests []string `json:"layerDigests,omitempty"`
@@ -134,3 +160,17 @@ type Image struct {
 
 // ID is the image ID in Docker's sense: the config digest.
 func (i *Image) ID() Digest { return i.ConfigDigest }
+
+// DiffIDs are the layers' uncompressed digests: the config's rootfs list,
+// or, for a wasm artifact (whose layer is stored uncompressed), the layer
+// digests themselves.
+func (i *Image) DiffIDs() []string {
+	if len(i.Config.RootFS.DiffIDs) > 0 {
+		return i.Config.RootFS.DiffIDs
+	}
+	out := make([]string, 0, len(i.Manifest.Layers))
+	for _, l := range i.Manifest.Layers {
+		out = append(out, string(l.Digest))
+	}
+	return out
+}

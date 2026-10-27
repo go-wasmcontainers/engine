@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -120,11 +121,50 @@ func (s *Store) Ingest(desc Descriptor, r io.Reader) error {
 	return s.b.PutBlob(desc.Digest.Encoded(), NewVerifyingReader(r, desc.Digest, desc.Size))
 }
 
-// Tag points name at a manifest.
+// danglingPrefix marks a name-table entry that keeps an image with no name
+// (a commit without a repository, an image whose tag moved away): "@"
+// followed by the manifest digest. No reference can have that form.
+const danglingPrefix = "@"
+
+// IsDangling reports a name-table entry that only keeps an unnamed image.
+func IsDangling(name string) bool { return strings.HasPrefix(name, danglingPrefix) }
+
+func (s *Store) referencedLocked(m Digest) bool {
+	for n, r := range s.refs {
+		if r.Manifest == m && !IsDangling(n) {
+			return true
+		}
+	}
+	return false
+}
+
+// Tag points name at a manifest. The manifest stops being dangling; the
+// image name pointed at before becomes dangling if no other name has it,
+// as Docker leaves a `<none>` image behind.
 func (s *Store) Tag(name string, r Ref) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	old, had := s.refs[name]
 	s.refs[name] = r
+	delete(s.refs, danglingPrefix+string(r.Manifest))
+	if had && old.Manifest != r.Manifest && !s.referencedLocked(old.Manifest) {
+		s.refs[danglingPrefix+string(old.Manifest)] = Ref{Manifest: old.Manifest}
+	}
+	return s.saveLocked()
+}
+
+// KeepDangling keeps an unnamed image (by its manifest) from the GC, unless
+// a name already has it.
+func (s *Store) KeepDangling(m Digest) error {
+	if _, err := ParseDigest(string(m)); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.referencedLocked(m) {
+		return nil
+	}
+	s.refs[danglingPrefix+string(m)] = Ref{Manifest: m}
 	return s.saveLocked()
 }
 

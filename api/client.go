@@ -375,6 +375,42 @@ func (c *Client) VolumesPrune(ctx context.Context, all bool) (VolumePruneRespons
 	return out, err
 }
 
+// CommitOptions is POST /commit's query; Config, when set, is the body.
+type CommitOptions struct {
+	Container, Repo, Tag, Comment, Author string
+	Changes                               []string
+	Config                                *ImageConfig
+}
+
+// Commit makes an image of a container's changes; it returns the image ID.
+func (c *Client) Commit(ctx context.Context, o CommitOptions) (string, error) {
+	q := url.Values{"container": {o.Container}}
+	for k, v := range map[string]string{"repo": o.Repo, "tag": o.Tag, "comment": o.Comment, "author": o.Author} {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	for _, ch := range o.Changes {
+		q.Add("changes", ch)
+	}
+	var body any
+	if o.Config != nil {
+		body = o.Config
+	}
+	var out CommitResponse
+	err := c.getJSON(ctx, http.MethodPost, "/commit", q, body, &out)
+	return out.ID, err
+}
+
+// ImageTag names an image repo[:tag].
+func (c *Client) ImageTag(ctx context.Context, source, repo, tag string) error {
+	q := url.Values{"repo": {repo}}
+	if tag != "" {
+		q.Set("tag", tag)
+	}
+	return c.getJSON(ctx, http.MethodPost, "/images/"+source+"/tag", q, nil, nil)
+}
+
 // NetworkCreate makes an in-engine network.
 func (c *Client) NetworkCreate(ctx context.Context, o NetworkCreateRequest) (NetworkCreateResponse, error) {
 	var out NetworkCreateResponse

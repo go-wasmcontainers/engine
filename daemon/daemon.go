@@ -231,6 +231,9 @@ func (d *Daemon) Images() ([]ImageInfo, error) {
 			info.Containers = len(d.mgr.UsesImage(string(img.ID())))
 			byID[img.ID()] = info
 		}
+		if image.IsDangling(nr.Name) {
+			continue // kept with no name: <none>
+		}
 		info.RepoTags = append(info.RepoTags, nr.Name)
 		if nr.RepoDigest != "" {
 			repo := nr.Name
@@ -561,7 +564,9 @@ func (d *Daemon) removeImage(ref, name string, img *image.Image, force bool) ([]
 		if _, err := d.store.Untag(n); err != nil {
 			return out, err
 		}
-		out = append(out, DeleteItem{Untagged: n})
+		if !image.IsDangling(n) {
+			out = append(out, DeleteItem{Untagged: n})
+		}
 	}
 	// Still named elsewhere? Then nothing is deleted.
 	for _, nr := range d.store.Names() {

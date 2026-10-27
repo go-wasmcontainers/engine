@@ -80,6 +80,8 @@ jobs:
           # A guest's DNS queries, answered by the network's DNS server.
           - { target: FuzzAnswer, pkg: ./netdriver }
           - { target: FuzzLimitMemory, pkg: ./wasmbin }
+          # commit --change instructions, from the API's query string.
+          - { target: FuzzApplyChanges, pkg: ./daemon }
           # Keys and lines a user types; a front end feeds them raw.
           - { target: FuzzEditor, pkg: ./cli/lineedit }
           - { target: FuzzSplitPartial, pkg: ./cli/lineedit }
