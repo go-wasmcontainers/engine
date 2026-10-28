@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"math"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/go-wasmcontainers/engine/netdriver"
@@ -206,6 +207,22 @@ type Config struct {
 	Caps []string
 	// Parent is the process that started this one, if any.
 	Parent *Proc
+	// FDs, when set, is the initial descriptor table (a spawned child's,
+	// from CloneFDs) instead of stdio, "/" and the mounts.
+	FDs *FDTable
+	// Group is the container's process tree (pids, limits, kill); nil
+	// makes a group of this process alone.
+	Group *Group
+	// Spawner starts child processes (the executor's); nil refuses them.
+	Spawner Spawner
+	// Terminal describes the container's terminal, if any.
+	Terminal *Terminal
+	// MemoryLimitBytes is this process's linear-memory limit, reserved
+	// in the group's memory budget.
+	MemoryLimitBytes int64
+	// Admitted says Group.Admit already reserved this process's room (a
+	// Spawner sets it).
+	Admitted bool
 }
 
 type fdKind int
@@ -218,6 +235,7 @@ const (
 	kindFile
 	kindDir
 	kindSocket
+	kindPipe
 )
 
 // Mount is a tree preopened at Path; ReadOnly refuses every change made
@@ -242,6 +260,18 @@ type fdEntry struct {
 	read   bool
 	dirent []direntry // readdir snapshot, taken at cookie 0
 	sock   *sock
+	// root is the guest path of the preopen a file or directory was
+	// opened under (path is relative to its tree).
+	root string
+	// desc is shared by the copies of this descriptor (dup2, a child's
+	// table); nil while it is the only one.
+	desc *desc
+	// pipe is a pipe end (kindPipe), its write end when pipeW.
+	pipe  *pipe
+	pipeW bool
+	// nonblock and cloexec are per-descriptor flags (fd_fdstat_set_flags,
+	// the WASIX fd flags); a dup2 copies nonblock and clears cloexec.
+	nonblock, cloexec bool
 }
 
 type direntry struct {
@@ -258,6 +288,12 @@ type Proc struct {
 	start time.Time
 	net   *netState
 	host  *hostState
+	pid   uint32
+
+	childMu   sync.Mutex
+	children  []*Child
+	childWake chan struct{} // closed and replaced at each child exit
+	closed    bool
 }
 
 // MaxFDs bounds the descriptors a process may hold.
@@ -279,14 +315,29 @@ func New(cfg Config) *Proc {
 	}
 	p := &Proc{cfg: cfg, fds: map[uint32]*fdEntry{}, next: 4, start: time.Now(), host: newHostState(cfg.Modules)}
 	p.netInit()
-	p.fds[0] = &fdEntry{kind: kindStdin, read: true}
-	p.fds[1] = &fdEntry{kind: kindStdout, write: true}
-	p.fds[2] = &fdEntry{kind: kindStderr, write: true}
-	p.fds[3] = &fdEntry{kind: kindPreopen, fs: cfg.FS, name: "/", path: "/", read: true}
-	for _, mt := range cfg.Mounts {
-		p.fds[p.next] = &fdEntry{kind: kindPreopen, fs: mt.FS, ro: mt.ReadOnly, name: mt.Path, path: "/", read: true}
-		p.next++
+	p.childWake = make(chan struct{})
+	if cfg.FDs != nil {
+		p.fds, p.next = cfg.FDs.fds, cfg.FDs.next
+		cfg.FDs.fds = nil // the table now belongs to the process
+	} else {
+		p.fds[0] = &fdEntry{kind: kindStdin, read: true}
+		p.fds[1] = &fdEntry{kind: kindStdout, write: true}
+		p.fds[2] = &fdEntry{kind: kindStderr, write: true}
+		p.fds[3] = &fdEntry{kind: kindPreopen, fs: cfg.FS, name: "/", path: "/", read: true}
+		for _, mt := range cfg.Mounts {
+			p.fds[p.next] = &fdEntry{kind: kindPreopen, fs: mt.FS, ro: mt.ReadOnly, name: mt.Path, path: "/", read: true}
+			p.next++
+		}
 	}
+	if p.cfg.Group == nil {
+		p.cfg.Group = NewGroup(GroupLimits{})
+	}
+	for _, f := range p.fds {
+		if f.kind == kindPreopen && f.root == "" {
+			f.root = f.name
+		}
+	}
+	p.pid = p.cfg.Group.register(p, cfg.Admitted)
 	return p
 }
 
@@ -410,6 +461,10 @@ func (p *Proc) Call(fn int, args []uint64, m Memory) Result {
 			f.sock.nonblock = a(1)&fdflagNonblock != 0
 			return ok()
 		}
+		f.nonblock = a(1)&fdflagNonblock != 0
+		if f.pipe != nil {
+			return ok()
+		}
 		f.append = a(1)&fdflagAppend != 0
 		if f.file != nil {
 			f.file.SetAppend(f.append)
@@ -491,9 +546,10 @@ func (p *Proc) Call(fn int, args []uint64, m Memory) Result {
 		if f == nil || p.fds[to] == nil {
 			return fail(EBADF)
 		}
-		if old := p.fds[to]; old.file != nil {
-			old.file.Close()
+		if from == to {
+			return ok()
 		}
+		p.release(p.fds[to])
 		p.fds[to] = f
 		delete(p.fds, from)
 		return ok()
@@ -756,12 +812,7 @@ func (p *Proc) fdClose(fd uint32) Result {
 	if f == nil {
 		return fail(EBADF)
 	}
-	if f.file != nil {
-		f.file.Close()
-	}
-	if f.sock != nil {
-		p.closeSock(f.sock)
-	}
+	p.release(f)
 	delete(p.fds, fd)
 	return ok()
 }
@@ -786,28 +837,37 @@ func typeOf(in *rootfs.Info) uint8 {
 	return ftUnknown
 }
 
+// fileType is a descriptor's preview 1 file type. A pipe end is
+// "unknown": preview 1 has no FIFO type.
+func fileType(f *fdEntry) uint8 {
+	switch f.kind {
+	case kindStdin, kindStdout, kindStderr:
+		return ftCharDev
+	case kindPreopen, kindDir:
+		return ftDirectory
+	case kindSocket:
+		return sockType(f.sock)
+	case kindPipe:
+		return ftUnknown
+	}
+	return ftRegular
+}
+
 func (p *Proc) fdstat(fd, ptr uint32, m Memory) Result {
 	f := p.fds[fd]
 	if f == nil {
 		return fail(EBADF)
 	}
 	var b [24]byte
-	switch f.kind {
-	case kindStdin, kindStdout, kindStderr:
-		b[0] = ftCharDev
-	case kindPreopen, kindDir:
-		b[0] = ftDirectory
-	case kindSocket:
-		b[0] = sockType(f.sock)
-		if f.sock.nonblock {
-			binary.LittleEndian.PutUint16(b[2:], fdflagNonblock)
-		}
-	default:
-		b[0] = ftRegular
-	}
+	b[0] = fileType(f)
+	var flags uint16
 	if f.append {
-		binary.LittleEndian.PutUint16(b[2:], fdflagAppend)
+		flags |= fdflagAppend
 	}
+	if f.nonblock || f.sock != nil && f.sock.nonblock {
+		flags |= fdflagNonblock
+	}
+	binary.LittleEndian.PutUint16(b[2:], flags)
 	put64(b[8:], allRights)
 	put64(b[16:], allRights)
 	if !m.Write(ptr, b[:]) {
@@ -839,12 +899,9 @@ func (p *Proc) fdFilestat(fd, ptr uint32, m Memory) Result {
 		return fail(EBADF)
 	}
 	switch f.kind {
-	case kindStdin, kindStdout, kindStderr, kindSocket:
+	case kindStdin, kindStdout, kindStderr, kindSocket, kindPipe:
 		var b [64]byte
-		b[16] = ftCharDev
-		if f.sock != nil {
-			b[16] = sockType(f.sock)
-		}
+		b[16] = fileType(f)
 		put64(b[24:], 1)
 		if !m.Write(ptr, b[:]) {
 			return fail(EFAULT)
@@ -878,6 +935,12 @@ func (p *Proc) rw(fd, iovs, n uint32, off int64, positional, write bool, resultP
 	}
 	if write && !f.write || !write && !f.read {
 		return fail(EBADF)
+	}
+	if f.pipe != nil {
+		if positional {
+			return fail(ESPIPE)
+		}
+		return p.pipeRW(f, iovs, n, write, resultPtr, m)
 	}
 	if positional && (f.file == nil || off < 0) {
 		if f.file == nil {
@@ -1046,14 +1109,33 @@ func (p *Proc) open(dirfd, lookup, ptr, n, oflags uint32, rightsBase uint64, fdf
 	if e != 0 {
 		return fail(e)
 	}
-	write := rightsBase&rightFdWrite != 0
+	ent, e := openEntry(d, path, lookup, oflags, rightsBase&rightFdWrite != 0, rightsBase&rightFdRead != 0, fdflags)
+	if e != 0 {
+		return fail(e)
+	}
+	fd := p.next
+	for p.fds[fd] != nil {
+		fd++
+	}
+	p.next = fd + 1
+	if !writeU32(m, resultPtr, fd) {
+		ent.file.Close()
+		return fail(EFAULT)
+	}
+	p.fds[fd] = ent
+	return ok()
+}
+
+// openEntry opens path in directory descriptor d's tree, as path_open
+// does, and returns the new descriptor (not yet placed in a table).
+func openEntry(d *fdEntry, path string, lookup, oflags uint32, write, readRight bool, fdflags uint32) (*fdEntry, uint32) {
 	if d.ro && (write || oflags&(oflagCreat|oflagTrunc) != 0) {
-		return fail(EROFS)
+		return nil, EROFS
 	}
 	var fl rootfs.Flag
 	if write {
 		fl = rootfs.O_RDWR
-		if rightsBase&rightFdRead == 0 {
+		if !readRight {
 			fl = rootfs.O_WRONLY
 		}
 	}
@@ -1077,24 +1159,19 @@ func (p *Proc) open(dirfd, lookup, ptr, n, oflags uint32, rightsBase uint64, fdf
 	}
 	h, err := d.fs.OpenFile(path, fl, 0o644)
 	if err != nil {
-		return fail(errno(err))
+		return nil, errno(err)
 	}
-	ent := &fdEntry{kind: kindFile, fs: d.fs, ro: d.ro, file: h, read: fl&rootfs.O_ACCMODE != rootfs.O_WRONLY, write: write, append: fdflags&fdflagAppend != 0}
+	ent := &fdEntry{kind: kindFile, fs: d.fs, ro: d.ro, file: h, read: fl&rootfs.O_ACCMODE != rootfs.O_WRONLY, write: write,
+		append: fdflags&fdflagAppend != 0, nonblock: fdflags&fdflagNonblock != 0}
+	ent.root = d.root
+	if d.kind == kindPreopen {
+		ent.root = d.name
+	}
 	if h.IsDir() {
 		ent.kind = kindDir
 		ent.path = canonical(path)
 	}
-	fd := p.next
-	for p.fds[fd] != nil {
-		fd++
-	}
-	p.next = fd + 1
-	if !writeU32(m, resultPtr, fd) {
-		h.Close()
-		return fail(EFAULT)
-	}
-	p.fds[fd] = ent
-	return ok()
+	return ent, 0
 }
 
 // canonical cleans a path for use as a directory descriptor's base. The
@@ -1198,6 +1275,7 @@ func (p *Proc) pollUntil(in, out, nsubs, resultPtr uint32, deadline time.Time, m
 	var ready, clocks []ev
 	sockets := false
 	wake := p.net.current() // before reading readiness: a change after it wakes us
+	var pipeWakes []<-chan struct{}
 	now := time.Since(p.start)
 	for i := uint32(0); i < nsubs; i++ {
 		s := subs[i*48:]
@@ -1243,6 +1321,18 @@ func (p *Proc) pollUntil(in, out, nsubs, resultPtr uint32, deadline time.Time, m
 					continue
 				}
 				e.hangup, e.nbytes = hup, nb
+			case f.pipe != nil:
+				if (e.typ == eventFdWrite) != f.pipeW {
+					e.errno = EBADF
+					break
+				}
+				ok, hup, nb, wk := f.pipe.readiness(f.pipeW)
+				if !ok {
+					sockets = true
+					pipeWakes = append(pipeWakes, wk)
+					continue
+				}
+				e.hangup, e.nbytes = hup, nb
 			}
 			ready = append(ready, e)
 		default:
@@ -1266,12 +1356,24 @@ func (p *Proc) pollUntil(in, out, nsubs, resultPtr uint32, deadline time.Time, m
 			if !deadline.IsZero() {
 				left = max(time.Until(deadline), time.Nanosecond)
 			}
+			if len(pipeWakes) > 0 {
+				wake = anyOf(append(pipeWakes, wake))
+			}
 			return Result{Wait: wake, Sleep: left, Resume: func(m Memory) Result {
 				return p.pollUntil(in, out, nsubs, resultPtr, deadline, m)
 			}}
 		}
 		for i := range clocks {
 			clocks[i].timeout = 0 // the deadline has passed: every clock fires
+		}
+	}
+	if len(ready) > 0 {
+		// A clock that has already expired is reported with the
+		// descriptors that are ready, never dropped.
+		for _, c := range clocks {
+			if c.timeout <= 0 {
+				ready = append(ready, c)
+			}
 		}
 	}
 	if len(ready) == 0 {

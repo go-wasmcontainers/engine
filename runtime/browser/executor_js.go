@@ -230,6 +230,7 @@ type process struct {
 	mem   js.Value // the guest's shared memory, once its worker sent it
 	limit int64
 	proc  *wasi.Proc
+	onEnd func(runtime.Result)
 }
 
 func (p *process) Wait() runtime.Result { <-p.done; return p.res }
@@ -255,7 +256,12 @@ func (p *process) finish(r runtime.Result) {
 		p.worker.Call("terminate")
 		p.res = r
 		close(p.done)
-		go p.proc.Close() // its sockets
+		go func() {
+			p.proc.Close() // its descriptors, sockets, host modules
+			if p.onEnd != nil {
+				p.onEnd(r)
+			}
+		}()
 		// Release the callbacks after the current one returns.
 		go func() {
 			for _, f := range p.funcs {
@@ -297,15 +303,32 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	if err != nil {
 		return nil, err
 	}
+	group := wasi.NewGroup(spec.Processes)
+	mem := int64(pagesFor(limit)) * 65536
+	sp := &spawner{e: e, pages: pagesFor(limit), spec: spec, imports: imports, group: group, mem: mem}
 	proc := wasi.New(wasi.Config{Args: args, Env: spec.Env, FS: spec.FS, Mounts: mounts, Stdin: spec.Stdin, Stdout: spec.Stdout, Stderr: spec.Stderr, Net: spec.Net,
-		Modules: e.opt.HostModules, Caps: spec.Caps})
+		Modules: e.opt.HostModules, Caps: spec.Caps, Group: group, Spawner: sp, Terminal: spec.Terminal, MemoryLimitBytes: mem})
+	p := e.run(mod, proc, imports, limit, func(runtime.Result) {
+		group.Kill() // a container ends with its first process
+	})
+	if spec.Timeout > 0 {
+		p.timer = time.AfterFunc(spec.Timeout, func() {
+			p.finish(runtime.Result{ExitCode: runtime.ExitKilled, TimedOut: true, Error: "wall-clock timeout"})
+		})
+	}
+	context.AfterFunc(ctx, p.Kill)
+	return p, nil
+}
 
+// run starts proc's module in a new worker; onEnd runs once it has ended
+// and its descriptors are released.
+func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, limit int64, onEnd func(runtime.Result)) *process {
 	ctl := js.Global().Get("SharedArrayBuffer").New(ctlSize)
 	i32 := js.Global().Get("Int32Array").New(ctl)
 	ctlU8 := js.Global().Get("Uint8Array").New(ctl, 0, ctlSize)
 	atomics := js.Global().Get("Atomics")
 	worker := js.Global().Get("Worker").New(e.opt.WorkerURL)
-	p := &process{worker: worker, done: make(chan struct{}), mem: js.Undefined(), limit: int64(pagesFor(limit)) * 65536, proc: proc}
+	p := &process{worker: worker, done: make(chan struct{}), mem: js.Undefined(), limit: int64(pagesFor(limit)) * 65536, proc: proc, onEnd: onEnd}
 	mem := jsMemory{mem: js.Undefined()}
 	ctlBuf := make([]byte, ctlSize)
 	// pending is the continuation of a host call waiting for the guest's
@@ -442,12 +465,5 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	msg.Set("ctl", ctl)
 	msg.Set("funcs", js.ValueOf(funcs))
 	worker.Call("postMessage", msg)
-
-	if spec.Timeout > 0 {
-		p.timer = time.AfterFunc(spec.Timeout, func() {
-			p.finish(runtime.Result{ExitCode: runtime.ExitKilled, TimedOut: true, Error: "wall-clock timeout"})
-		})
-	}
-	context.AfterFunc(ctx, p.Kill)
-	return p, nil
+	return p
 }
