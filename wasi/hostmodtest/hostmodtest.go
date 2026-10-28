@@ -12,9 +12,11 @@ import (
 	"github.com/go-wasmcontainers/engine/wasi"
 )
 
-// Module is the test module. Opened and Closed count instances.
+// Module is the test module. Opened and Closed count instances; Label is
+// the label of the last process that opened it.
 type Module struct {
 	Opened, Closed atomic.Int32
+	Label          atomic.Value
 }
 
 // Module implements wasi.HostModule.
@@ -37,6 +39,7 @@ func (*Module) Funcs() []wasi.HostFunc {
 // Open implements wasi.HostModule.
 func (m *Module) Open(p *wasi.Proc) wasi.Instance {
 	m.Opened.Add(1)
+	m.Label.Store(p.Label())
 	return &instance{m: m, gpu: p.HasCap("gpu")}
 }
 
