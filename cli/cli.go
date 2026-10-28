@@ -133,7 +133,7 @@ func RootCmd(o Options) *cobra.Command {
 		rmCmd(client), rmiCmd(client), inspectCmd(client), killCmd(client), versionCmd(client, o.Version),
 		systemCmd(client), startCmd(client), diffCmd(client), stopCmd(client, false), stopCmd(client, true),
 		eventsCmd(client), statsCmd(client), volumeCmd(client), networkCmd(client),
-		commitCmd(client), tagCmd(client),
+		commitCmd(client), tagCmd(client), execCmd(client, o.LookupEnv),
 	)
 	for _, mk := range o.Extra {
 		if c := mk(Engine{Client: client}); c != nil {
