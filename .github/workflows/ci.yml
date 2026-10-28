@@ -78,6 +78,8 @@ jobs:
           - { target: FuzzDemux, pkg: ./api }
           # A guest's WASI calls are hostile input to the engine's host.
           - { target: FuzzCall, pkg: ./wasi }
+          # The WASIX process calls: spawn lists, fd ops, join, tty.
+          - { target: FuzzWASIX, pkg: ./wasi }
           # Sequences of socket calls on two processes of one network.
           - { target: FuzzSockets, pkg: ./wasi }
           # The block a guest's cabi_realloc hands a host module.
