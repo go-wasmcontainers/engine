@@ -241,6 +241,8 @@ wait on, so the browser's engine worker keeps its event loop.
   `GET /volumes` (`label`, `name`, `dangling`) and `POST /networks/prune`
   (`label`) honour Docker's filters (`k`, `k=v`, `k!=v` for labels; both
   JSON forms); any other filter is refused with 400 rather than ignored.
+  `api.Client`'s `Containers`, `Networks` and `Volumes` take optional
+  `api.Filters` (several are merged).
 - **A class network**: `wctrd --relay https://relay:8443
   --relay-join-code-file FILE [--relay-ca ca.pem]` joins a class of a
   [relay](https://github.com/go-wasmcontainers/relay) and adds a network
