@@ -288,10 +288,17 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		timedOut = func() bool { return errors.Is(deadlineCtx.Err(), context.DeadlineExceeded) }
 	}
 	var proc *wasi.Proc
+	var group *wasi.Group
 	if e.opt.EngineWASI {
+		group = wasi.NewGroup(spec.Processes)
+		mem := int64(pagesFor(limit)) * pageSize
+		cspec := spec
+		cspec.Stdin, cspec.Stdout, cspec.Stderr = stdin, stdout, stderr
+		sp := &spawner{e: e, r: r, pages: pagesFor(limit), spec: cspec, ctx: runCtx, group: group, mem: mem}
 		proc = wasi.New(wasi.Config{
 			Args: args, Env: spec.Env, FS: spec.FS, Mounts: WASIMounts(spec.Mounts), Stdin: stdin, Stdout: stdout, Stderr: stderr,
 			Net: spec.Net, Modules: e.opt.HostModules, Caps: spec.Caps,
+			Group: group, Spawner: sp, Terminal: spec.Terminal, MemoryLimitBytes: mem,
 		})
 		runCtx = withProc(runCtx, proc)
 	}
@@ -308,7 +315,8 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 			mod.Close(context.Background())
 		}
 		if proc != nil {
-			proc.Close() // its sockets
+			proc.Close() // its descriptors, sockets, host modules
+			group.Kill() // a container ends with its first process
 		}
 		p.mu.Lock()
 		killed := p.killed

@@ -178,18 +178,26 @@ func (p *Proc) netInit() {
 // it when the process ends.
 func (p *Proc) Close() {
 	p.host.closeAll()
+	p.childMu.Lock()
+	if p.closed {
+		p.childMu.Unlock()
+		return
+	}
+	p.closed = true
+	p.childMu.Unlock()
+	p.cfg.Group.unregister(p)
 	n := p.net
 	n.cancel()
 	n.mu.Lock()
-	var socks []*sock
+	all := make([]*fdEntry, 0, len(p.fds))
 	for _, f := range p.fds {
-		if f.sock != nil {
-			socks = append(socks, f.sock)
-		}
+		all = append(all, f)
 	}
 	n.mu.Unlock()
-	for _, s := range socks {
-		p.closeSock(s)
+	// Every descriptor goes: a pipe's other end sees end of file or
+	// EPIPE, a shared file closes with its last descriptor.
+	for _, f := range all {
+		p.release(f)
 	}
 }
 
