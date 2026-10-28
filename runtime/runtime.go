@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-wasmcontainers/engine/netdriver"
 	"github.com/go-wasmcontainers/engine/rootfs"
+	"github.com/go-wasmcontainers/engine/wasi"
 )
 
 // Spec is everything needed to run one container process.
@@ -45,6 +46,12 @@ type Spec struct {
 	// Caps are capabilities granted to the process ("gpu", from run
 	// --gpu); host modules read them through the engine's WASI host.
 	Caps []string
+	// Terminal is the container's terminal (run -t), if any; the engine's
+	// WASI host reports it to the guest's processes.
+	Terminal *wasi.Terminal
+	// Processes bounds the processes the container may spawn (the
+	// engine's WASI host only; zero values are its defaults).
+	Processes wasi.GroupLimits
 }
 
 // Result is how a process ended.
@@ -56,6 +63,18 @@ type Result struct {
 	Killed bool
 	// Error describes an abnormal end (a trap), empty on a normal exit.
 	Error string
+}
+
+// ExitStatus is how a parent process sees this end: killed or timed out
+// as signal 9, a trap as signal 6, otherwise the exit code.
+func (r Result) ExitStatus() wasi.ExitStatus {
+	switch {
+	case r.Killed || r.TimedOut:
+		return wasi.ExitStatus{Signal: 9}
+	case r.ExitCode == ExitTrap && r.Error != "":
+		return wasi.ExitStatus{Signal: 6}
+	}
+	return wasi.ExitStatus{Code: uint32(r.ExitCode)}
 }
 
 // Exit codes the engine uses for ends that are not a proc_exit, following
