@@ -214,6 +214,9 @@ type process struct {
 	killed bool
 	mem    atomic.Int64 // linear memory bytes, published by measuredMemory
 	limit  int64
+	// exec starts further processes in this container (exec.go); nil
+	// without the engine's WASI host.
+	exec *spawner
 }
 
 // Stats implements runtime.StatsReporter.
@@ -289,12 +292,13 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	}
 	var proc *wasi.Proc
 	var group *wasi.Group
+	var sp *spawner
 	if e.opt.EngineWASI {
 		group = wasi.NewGroup(spec.Processes)
 		mem := int64(pagesFor(limit)) * pageSize
 		cspec := spec
 		cspec.Stdin, cspec.Stdout, cspec.Stderr = stdin, stdout, stderr
-		sp := &spawner{e: e, r: r, pages: pagesFor(limit), spec: cspec, ctx: runCtx, group: group, mem: mem}
+		sp = &spawner{e: e, r: r, pages: pagesFor(limit), spec: cspec, ctx: runCtx, group: group, mem: mem}
 		proc = wasi.New(wasi.Config{
 			Args: args, Env: spec.Env, FS: spec.FS, Mounts: WASIMounts(spec.Mounts), Stdin: stdin, Stdout: stdout, Stderr: stderr,
 			Net: spec.Net, Modules: e.opt.HostModules, Caps: spec.Caps,
@@ -302,7 +306,7 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		})
 		runCtx = withProc(runCtx, proc)
 	}
-	p := &process{done: make(chan struct{}), cancel: cancel, limit: int64(pagesFor(limit)) * 65536}
+	p := &process{done: make(chan struct{}), cancel: cancel, limit: int64(pagesFor(limit)) * 65536, exec: sp}
 	runCtx = experimental.WithMemoryAllocator(runCtx, allocator(&p.mem))
 	// The caller's context bounds the start, and cancelling it kills the run.
 	stop := context.AfterFunc(ctx, p.Kill)

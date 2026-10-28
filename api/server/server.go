@@ -74,6 +74,10 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("POST /containers/{id}/stop", s.containersStop)
 	s.mux.HandleFunc("POST /containers/{id}/restart", s.containersRestart)
 	s.mux.HandleFunc("POST /containers/{id}/attach", s.containersAttach)
+	s.mux.HandleFunc("POST /containers/{id}/exec", s.containersExec)
+	s.mux.HandleFunc("POST /exec/{id}/start", s.execStart)
+	s.mux.HandleFunc("POST /exec/{id}/resize", s.execResize)
+	s.mux.HandleFunc("GET /exec/{id}/json", s.execInspect)
 	s.mux.HandleFunc("GET /containers/{id}/changes", s.containersChanges)
 	s.mux.HandleFunc("POST /images/prune", s.imagesPrune)
 	s.mux.HandleFunc("GET /system/df", s.systemDF)
@@ -119,7 +123,9 @@ const DefaultMaxUploadBytes = 1 << 30
 // that upload content (an image layout, a container archive).
 func (s *server) bodyLimit(r *http.Request) int64 {
 	upload := r.Method == http.MethodPost && r.URL.Path == "/images/load" ||
-		r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/containers/") && strings.HasSuffix(r.URL.Path, "/archive")
+		r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/containers/") && strings.HasSuffix(r.URL.Path, "/archive") ||
+		// An exec's stdin follows its start object in the body.
+		r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/exec/") && strings.HasSuffix(r.URL.Path, "/start")
 	if !upload {
 		return maxBody
 	}
@@ -165,8 +171,11 @@ func statusOf(err error) int {
 	case errors.Is(err, container.ErrInvalid), errors.Is(err, container.ErrAmbiguous), errors.Is(err, runtime.ErrNotFound),
 		errors.Is(err, runtime.ErrInvalid), errors.Is(err, container.ErrTooMany):
 		return http.StatusBadRequest
-	case errors.Is(err, container.ErrNotRunning):
+	case errors.Is(err, container.ErrNotRunning), errors.Is(err, container.ErrExecStarted),
+		errors.Is(err, container.ErrExecNotRunning), errors.Is(err, runtime.ErrNoExec):
 		return http.StatusConflict
+	case errors.Is(err, container.ErrNoSuchExec):
+		return http.StatusNotFound
 	}
 	return http.StatusInternalServerError
 }
