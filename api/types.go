@@ -118,6 +118,19 @@ type HostConfig struct {
 	Binds []string `json:"Binds,omitempty"`
 	// NetworkMode is the network to join ("default", "none", a name).
 	NetworkMode string `json:"NetworkMode,omitempty"`
+	// DeviceRequests asks for devices (run --gpu: one request with the
+	// capability "gpu").
+	DeviceRequests []DeviceRequest `json:"DeviceRequests,omitempty"`
+}
+
+// DeviceRequest is Docker's request for devices from a device driver.
+// Capabilities is an OR list of AND lists ([["gpu"]]).
+type DeviceRequest struct {
+	Driver       string            `json:"Driver,omitempty"`
+	Count        int               `json:"Count,omitempty"`
+	DeviceIDs    []string          `json:"DeviceIDs,omitempty"`
+	Capabilities [][]string        `json:"Capabilities,omitempty"`
+	Options      map[string]string `json:"Options,omitempty"`
 }
 
 // Network is Docker's network object (GET /networks), a subset.

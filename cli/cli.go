@@ -248,6 +248,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 		memory     string
 		volumes    []string
 		network    string
+		gpu        bool
 	)
 	cmd := &cobra.Command{
 		Use:   "run [OPTIONS] IMAGE [COMMAND] [ARG...]",
@@ -265,6 +266,9 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 			req.HostConfig.AutoRemove = rm
 			req.HostConfig.Binds = volumes
 			req.HostConfig.NetworkMode = network
+			if gpu {
+				req.HostConfig.DeviceRequests = []api.DeviceRequest{api.GPURequest()}
+			}
 			if len(args) > 1 {
 				req.Cmd = args[1:]
 			}
@@ -295,6 +299,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 	f.StringVarP(&memory, "memory", "m", "", "memory limit (e.g. 64m)")
 	f.StringArrayVarP(&volumes, "volume", "v", nil, "mount a named volume: NAME:/path[:ro] (created if missing)")
 	f.StringVar(&network, "network", "", "connect to a network (default bridge; none: no network)")
+	f.BoolVar(&gpu, "gpu", false, "give the container the local GPU (wasi:webgpu, wasi-nn on the GPU)")
 	return cmd
 }
 

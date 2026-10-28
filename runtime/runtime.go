@@ -42,6 +42,9 @@ type Spec struct {
 	// Net is the container's network endpoint (nil: no network). Only
 	// the engine's WASI host serves sockets.
 	Net netdriver.Endpoint
+	// Caps are capabilities granted to the process ("gpu", from run
+	// --gpu); host modules read them through the engine's WASI host.
+	Caps []string
 }
 
 // Result is how a process ended.

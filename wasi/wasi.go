@@ -198,6 +198,14 @@ type Config struct {
 	// Net is the container's place on a network; nil means no network
 	// (sock_open fails with ENOTSUP).
 	Net netdriver.Endpoint
+	// Modules are the host modules served beside wasi_snapshot_preview1,
+	// in the order of the import table (Imports); an executor passes the
+	// same list it defined the imports from.
+	Modules []HostModule
+	// Caps are the capabilities the process was started with ("gpu").
+	Caps []string
+	// Parent is the process that started this one, if any.
+	Parent *Proc
 }
 
 type fdKind int
@@ -249,6 +257,7 @@ type Proc struct {
 	next  uint32
 	start time.Time
 	net   *netState
+	host  *hostState
 }
 
 // MaxFDs bounds the descriptors a process may hold.
@@ -268,7 +277,7 @@ func New(cfg Config) *Proc {
 	if cfg.Stderr == nil {
 		cfg.Stderr = io.Discard
 	}
-	p := &Proc{cfg: cfg, fds: map[uint32]*fdEntry{}, next: 4, start: time.Now()}
+	p := &Proc{cfg: cfg, fds: map[uint32]*fdEntry{}, next: 4, start: time.Now(), host: newHostState(cfg.Modules)}
 	p.netInit()
 	p.fds[0] = &fdEntry{kind: kindStdin, read: true}
 	p.fds[1] = &fdEntry{kind: kindStdout, write: true}
@@ -315,6 +324,15 @@ type Result struct {
 	// Exit is set by proc_exit, with Code.
 	Exit bool
 	Code uint32
+	// Ret is a host-module function's result (HostFunc.Result); the
+	// wasi_snapshot_preview1 functions return Errno instead.
+	Ret uint64
+	// Realloc, when set, asks the host to allocate in the guest first
+	// (see Realloc); Wait and Realloc are never both set.
+	Realloc *Realloc
+	// Trap, when not empty, ends the guest with a trap of that message (a
+	// host module's answer to a call the canonical ABI says must trap).
+	Trap string
 }
 
 func ok() Result               { return Result{} }
