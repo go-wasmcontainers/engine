@@ -313,14 +313,21 @@ func filtersQuery(q url.Values, fs []Filters) url.Values {
 	return q
 }
 
-// Containers lists containers, with optional filters (label, name, id,
-// status, network).
-func (c *Client) Containers(ctx context.Context, all bool, filters ...Filters) ([]ContainerSummary, error) {
+// Containers lists containers. Its signature is part of interfaces other
+// modules declare (the dashboard's engine), so filters come through
+// ContainersFiltered rather than a new parameter here.
+func (c *Client) Containers(ctx context.Context, all bool) ([]ContainerSummary, error) {
+	return c.ContainersFiltered(ctx, all, nil)
+}
+
+// ContainersFiltered lists containers matching filters (label, name, id,
+// status, network; nil: all).
+func (c *Client) ContainersFiltered(ctx context.Context, all bool, filters Filters) ([]ContainerSummary, error) {
 	q := url.Values{}
 	if all {
 		q.Set("all", "1")
 	}
-	q = filtersQuery(q, filters)
+	q = filtersQuery(q, []Filters{filters})
 	var out []ContainerSummary
 	err := c.getJSON(ctx, http.MethodGet, "/containers/json", q, nil, &out)
 	return out, err
@@ -392,10 +399,16 @@ func (c *Client) VolumeCreate(ctx context.Context, o VolumeCreateOptions) (Volum
 	return out, err
 }
 
-// Volumes lists volumes, with optional filters (name, label, dangling).
-func (c *Client) Volumes(ctx context.Context, filters ...Filters) ([]Volume, error) {
+// Volumes lists volumes.
+func (c *Client) Volumes(ctx context.Context) ([]Volume, error) {
+	return c.VolumesFiltered(ctx, nil)
+}
+
+// VolumesFiltered lists volumes matching filters (name, label, dangling;
+// nil: all).
+func (c *Client) VolumesFiltered(ctx context.Context, filters Filters) ([]Volume, error) {
 	var out VolumeListResponse
-	err := c.getJSON(ctx, http.MethodGet, "/volumes", filtersQuery(nil, filters), nil, &out)
+	err := c.getJSON(ctx, http.MethodGet, "/volumes", filtersQuery(nil, []Filters{filters}), nil, &out)
 	return out.Volumes, err
 }
 
@@ -534,11 +547,16 @@ func (c *Client) NetworkCreate(ctx context.Context, o NetworkCreateRequest) (Net
 	return out, err
 }
 
-// Networks lists networks, with optional filters (label, name, id,
-// driver).
-func (c *Client) Networks(ctx context.Context, filters ...Filters) ([]Network, error) {
+// Networks lists networks.
+func (c *Client) Networks(ctx context.Context) ([]Network, error) {
+	return c.NetworksFiltered(ctx, nil)
+}
+
+// NetworksFiltered lists networks matching filters (label, name, id,
+// driver; nil: all).
+func (c *Client) NetworksFiltered(ctx context.Context, filters Filters) ([]Network, error) {
 	var out []Network
-	err := c.getJSON(ctx, http.MethodGet, "/networks", filtersQuery(nil, filters), nil, &out)
+	err := c.getJSON(ctx, http.MethodGet, "/networks", filtersQuery(nil, []Filters{filters}), nil, &out)
 	return out, err
 }
 
