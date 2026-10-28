@@ -10,6 +10,8 @@ package api
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/go-wasmcontainers/engine/portmap"
 )
 
 // APIVersion is the version the server speaks; MinAPIVersion the oldest
@@ -151,12 +153,22 @@ type ContainerConfig struct {
 	WorkingDir string            `json:"WorkingDir"`
 	Labels     map[string]string `json:"Labels"`
 	Tty        bool              `json:"Tty"`
+	// ExposedPorts are ports the container listens on ({"80/tcp": {}}):
+	// published by PublishAllPorts, shown by inspect.
+	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
 }
 
 // HostConfig is the create body's host part (a subset).
 type HostConfig struct {
 	Memory     int64 `json:"Memory"`
 	AutoRemove bool  `json:"AutoRemove"`
+	// PortBindings publishes container ports on the daemon's host
+	// ("80/tcp": [{"HostIp": "", "HostPort": "8080"}]). An empty HostIp
+	// is 127.0.0.1 here, not Docker's 0.0.0.0.
+	PortBindings portmap.APIMap `json:"PortBindings,omitempty"`
+	// PublishAllPorts gives every exposed port without a binding a host
+	// port the system picks.
+	PublishAllPorts bool `json:"PublishAllPorts,omitempty"`
 	// Binds are "VOLUME:/path[:ro|:rw]"; named volumes only.
 	Binds []string `json:"Binds,omitempty"`
 	// NetworkMode is the network to join ("default", "none", a name).
@@ -383,6 +395,17 @@ type ContainerInspect struct {
 type NetworkSettings struct {
 	IPAddress string                      `json:"IPAddress"`
 	Networks  map[string]EndpointSettings `json:"Networks"`
+	// Ports are the published ports while the container runs (a picked
+	// host port as picked), null for a port only exposed.
+	Ports portmap.APIMap `json:"Ports"`
+}
+
+// Port is one entry of a container summary's Ports.
+type Port struct {
+	IP          string `json:"IP,omitempty"`
+	PrivatePort uint16 `json:"PrivatePort"`
+	PublicPort  uint16 `json:"PublicPort,omitempty"`
+	Type        string `json:"Type"`
 }
 
 // EndpointSettings is a container's place on one network.

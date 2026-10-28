@@ -104,6 +104,26 @@ Read from the OpenAPI document `https://docs.docker.com/reference/api/engine/ver
   prune` (stopped containers and dangling images; `-a` every image without
   a container; the `Are you sure you want to continue? [y/N]` question
   unless `-f`; `Total reclaimed space:`).
+- Published ports (`portmap`, `container/ports.go`, `api/server`), from
+  `https://docs.docker.com/reference/api/engine/version/v1.47.yaml`:
+  `PortMap` (`"<port>/<protocol>"` keys, an array of `PortBinding` or
+  `null` for a port only exposed), `PortBinding` (`HostIp`, `HostPort`, both
+  strings), `Config.ExposedPorts` (`{"80/tcp": {}}`),
+  `HostConfig.PublishAllPorts` ("allocated when the container starts,
+  de-allocated when it stops; might change when restarting"), and the
+  summary's `Port` (`IP`, `PrivatePort`, `PublicPort`, `Type`).
+
+## Docker's `-p` grammar
+
+Read from `github.com/docker/go-connections`, `nat/nat.go` and
+`nat/parse.go` (`main`, 2026-10-28): `ParsePortSpec` and `splitParts` —
+`ip:hostPort:containerPort` with the ip being everything before the last two
+colons (an IPv6 address in brackets), the protocol after `/` defaulting to
+`tcp`, ranges of equal length mapped one to one, and a host range with a
+single container port meaning "the first free one in it". Followed by
+`portmap.ParseSpec`, except that `sctp` is refused (the engine's networks
+carry TCP and UDP) and an empty host address means `127.0.0.1`, not every
+address.
 
 ## CNCF TAG-Runtime: Wasm OCI Artifact layout
 

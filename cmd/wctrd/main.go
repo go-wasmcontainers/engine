@@ -28,6 +28,7 @@ import (
 	"github.com/go-wasmcontainers/engine/image"
 	"github.com/go-wasmcontainers/engine/netdriver"
 	"github.com/go-wasmcontainers/engine/network"
+	"github.com/go-wasmcontainers/engine/portmap"
 	"github.com/go-wasmcontainers/engine/runtime/wazero"
 	"github.com/go-wasmcontainers/engine/state"
 	"github.com/go-wasmcontainers/engine/wasi"
@@ -208,7 +209,10 @@ func serve(ctx context.Context, cfg Config, out io.Writer, ready chan<- string) 
 		nopt.Drivers = map[string]netdriver.NetworkDriver{cfg.RelayNetwork: j}
 		nopt.DriverName = "relay"
 	}
-	copt := container.Options{Executor: exec, MemoryLimitBytes: mem, Timeout: cfg.Timeout, MaxContainers: cfg.MaxContainers}
+	copt := container.Options{Executor: exec, MemoryLimitBytes: mem, Timeout: cfg.Timeout, MaxContainers: cfg.MaxContainers,
+		// Published ports listen on this machine's sockets, 127.0.0.1
+		// unless a binding names another address.
+		Ports: portmap.OS{}}
 	copt.Quota.MaxBytes = quota
 	// Containers, their logs and writable layers survive a restart.
 	stateDir := filepath.Join(cfg.DataRoot, "containers")

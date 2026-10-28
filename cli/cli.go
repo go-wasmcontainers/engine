@@ -129,7 +129,7 @@ func RootCmd(o Options) *cobra.Command {
 	client := func() (*api.Client, error) { return o.Client(host) }
 
 	root.AddCommand(
-		pullCmd(client), imagesCmd(client), runCmd(client, o.LookupEnv), psCmd(client), logsCmd(client),
+		pullCmd(client), imagesCmd(client), runCmd(client, o.LookupEnv), psCmd(client), portCmd(client), logsCmd(client),
 		rmCmd(client), rmiCmd(client), inspectCmd(client), killCmd(client), versionCmd(client, o.Version),
 		systemCmd(client), startCmd(client), diffCmd(client), stopCmd(client, false), stopCmd(client, true),
 		eventsCmd(client), statsCmd(client), volumeCmd(client), networkCmd(client),
@@ -279,6 +279,9 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 		network    string
 		gpu        bool
 		aliases    []string
+		publish    []string
+		publishAll bool
+		expose     []string
 	)
 	cmd := &cobra.Command{
 		Use:   "run [OPTIONS] IMAGE [COMMAND] [ARG...]",
@@ -304,6 +307,9 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 					return &exitError{code: 125, err: fmt.Errorf("--network-alias needs a user-defined --network")}
 				}
 				req.NetworkingConfig = &api.NetworkingConfig{EndpointsConfig: map[string]*api.EndpointSettings{network: {Aliases: aliases}}}
+			}
+			if err := portFlags(&req, publish, expose, publishAll); err != nil {
+				return &exitError{code: 125, err: err}
 			}
 			if len(args) > 1 {
 				req.Cmd = args[1:]
@@ -337,6 +343,9 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 	f.StringVar(&network, "network", "", "connect to a network (default bridge; none: no network)")
 	f.BoolVar(&gpu, "gpu", false, "give the container the local GPU (wasi:webgpu, wasi-nn on the GPU)")
 	f.StringArrayVar(&aliases, "network-alias", nil, "add a name the container answers to on --network (replicas may share one)")
+	f.StringArrayVarP(&publish, "publish", "p", nil, "publish a port on the host: [ip:][hostPort:]containerPort[/tcp|udp] (ip defaults to 127.0.0.1)")
+	f.BoolVarP(&publishAll, "publish-all", "P", false, "publish every exposed port on a host port the system picks")
+	f.StringArrayVar(&expose, "expose", nil, "expose a port or a range without publishing it (80, 8000-8010/udp)")
 	return cmd
 }
 
@@ -443,8 +452,8 @@ func psCmd(client clientFunc) *cobra.Command {
 				for i, n := range x.Names {
 					names[i] = strings.TrimPrefix(n, "/")
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t\t%s\n", x.ID[:12], x.Image, quoteCommand(x.Command),
-					ago(time.Unix(x.Created, 0)), x.Status, strings.Join(names, ","))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", x.ID[:12], x.Image, quoteCommand(x.Command),
+					ago(time.Unix(x.Created, 0)), x.Status, formatPorts(x.Ports), strings.Join(names, ","))
 			}
 			return tw.Flush()
 		},
