@@ -3,7 +3,6 @@ package wazero
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
