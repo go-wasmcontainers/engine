@@ -137,8 +137,42 @@ jobs:
         with: { go-version: '1.27.3' }
       - run: go version
       - run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build ./image/... ./rootfs/... ./runtime ./container/... ./api
-      - name: the wctr CLI builds for wasip1/wasm
-        run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -o wctr.wasm ./cmd/wctr && ls -l wctr.wasm
+      - name: the wctr CLI (its own module, with build and compose) builds for wasip1/wasm
+        working-directory: cmd/wctr
+        run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -o wctr.wasm . && ls -l wctr.wasm
+
+  # cmd/wctr is a nested module (build and compose depend on the engine, so
+  # the engine's module cannot import them): its own vet, tests, builds and
+  # vulnerability scan.
+  wctr:
+    name: cmd/wctr module
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: cmd/wctr } }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.27.3', cache-dependency-path: cmd/wctr/go.sum }
+      - run: go version
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - name: cross builds
+        run: |
+          for t in linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 linux/386 windows/amd64; do
+            GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go build -o /dev/null . || exit 1
+          done
+      - name: govulncheck, judged by vulngate
+        run: |
+          set -eu
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/go-fleettools/fleettools/cmd/vulngate@v0.20.1
+          BIN="$(go env GOPATH)/bin"
+          "$BIN/govulncheck" -format json ./... > /tmp/vuln.json || true
+          test -s /tmp/vuln.json || { echo "::error::govulncheck wrote nothing at all"; exit 1; }
+          "$BIN/vulngate" -go "$(go env GOVERSION)" /tmp/vuln.json
 
   # The browser executor, the in-memory transport and everything the
   # playground's engine imports build for GOOS=js (they run in a Web Worker;
