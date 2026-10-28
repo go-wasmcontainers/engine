@@ -93,6 +93,7 @@ not have.
 | `build`, `compose` | from [build](https://github.com/go-wasmcontainers/build) and [compose](https://github.com/go-wasmcontainers/compose), wired in `cmd/wctr` through `cli.Options.Extra`; they use wctr's `-H`. The root command reads its own flags before the subcommand (`TraverseChildren`), so `-f` is `compose`'s `--file` and `logs`' `--follow` |
 | `inspect NAME\|ID...` | containers, then images |
 | `kill CONTAINER...` | |
+| `exec [-d] [-i] [-t] [-e K=V] [-w DIR] [-u USER] CONTAINER CMD...` | a further process in a running container (needs `--wasi engine`): same files, network and capabilities, in its process group (counted against its limits, killed with it); exits with the command's status. `-t` gives it a terminal: the engine does the line editing and echo (`tty_set` switches them), output gets CR LF; `-u` accepts only `root`/`0` (`POST /containers/{id}/exec`, `POST /exec/{id}/start`, `POST /exec/{id}/resize`, `GET /exec/{id}/json`) |
 | `start CONTAINER...` | starts stopped containers (they keep their files and logs); `-a/--attach` (one container) prints this run's output and exits with its status |
 | `stop CONTAINER...`, `restart CONTAINER...` | `-t/--time` accepted and ignored: a wasm guest has no signals, so stopping is killing, at once |
 | `diff CONTAINER` | the files it added (`A`), changed (`C`) or deleted (`D`) |
@@ -181,7 +182,11 @@ prefixes accepted): `GET /_ping`, `GET /version`, `POST /images/create`
 `DELETE /containers/{id}`. Other clients of the Docker Engine API can use
 these endpoints; this has not been tested with any of them yet, and
 attaching to a container (what an interactive `run` does) is not
-implemented.
+implemented. `POST /exec/{id}/start` does not hijack the connection as
+Docker does: it answers an ordinary streamed response (multiplexed, or raw
+with a terminal), and reads stdin from the request body after the
+`ExecStartConfig` object (see `api/exec.go`), which also works over the
+playground's in-process transport.
 
 ## Networks
 
@@ -402,9 +407,10 @@ open item.
 
 ## Limitations
 
-- No `exec` API yet, no TTY, no stdin attach. Process spawning is the
-  WASIX subset above (no signals: a child is stopped only with its
-  container).
+- No stdin attach and no terminal for a container's first process (`run
+  -it`); `exec -it` has both. No `exec` in the browser executor yet.
+  Process spawning is the WASIX subset above (no signals: a child is
+  stopped only with its container; ^C in a terminal erases the line).
 - Networks: no published ports (`-p`) yet; a container on several networks
   binds to its primary address or to all (`0.0.0.0`), not to a secondary
   address alone; aliases only on in-engine networks; IPv4 only on in-engine

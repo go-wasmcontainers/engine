@@ -135,20 +135,19 @@ func readBytes(m Memory, off, n uint32) ([]byte, uint32) {
 }
 
 // readCString reads a NUL-terminated string at off, of at most max bytes.
+// The scan position is 64-bit: a string that runs to the last byte of a
+// 4 GiB memory is EFAULT, it never wraps around to address 0.
 func readCString(m Memory, off uint32, max int) (string, uint32) {
 	var out []byte
-	for len(out) <= max {
-		chunk := uint32(256)
-		if room := uint64(1<<32) - uint64(off); room < uint64(chunk) {
-			chunk = uint32(room)
-		}
-		if chunk == 0 {
+	for pos := uint64(off); len(out) <= max; {
+		if pos >= 1<<32 {
 			return "", EFAULT
 		}
-		b, ok := m.Read(off, chunk)
+		chunk := min(uint64(256), 1<<32-pos)
+		b, ok := m.Read(uint32(pos), uint32(chunk))
 		if !ok {
 			// Near the end of memory: one byte at a time.
-			b, ok = m.Read(off, 1)
+			b, ok = m.Read(uint32(pos), 1)
 			if !ok {
 				return "", EFAULT
 			}
@@ -161,7 +160,7 @@ func readCString(m Memory, off uint32, max int) (string, uint32) {
 			return string(out), 0
 		}
 		out = append(out, b...)
-		off += uint32(len(b))
+		pos += uint64(len(b))
 	}
 	return "", E2BIG
 }
