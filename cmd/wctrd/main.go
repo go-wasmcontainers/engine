@@ -30,6 +30,7 @@ import (
 	"github.com/go-wasmcontainers/engine/network"
 	"github.com/go-wasmcontainers/engine/runtime/wazero"
 	"github.com/go-wasmcontainers/engine/state"
+	"github.com/go-wasmcontainers/engine/wasi"
 )
 
 var (
@@ -186,7 +187,13 @@ func serve(ctx context.Context, cfg Config, out io.Writer, ready chan<- string) 
 	if cfg.WASI != "engine" && cfg.WASI != "wazero" {
 		return fmt.Errorf("--wasi %q: engine or wazero", cfg.WASI)
 	}
-	exec := wazero.New(wazero.Options{DefaultMemoryLimitBytes: mem, EngineWASI: cfg.WASI == "engine"})
+	// The engine's WASI host also serves the WASIX process calls, so that
+	// a container's sh can start programs (RUN a && b, exec CONTAINER sh).
+	var mods []wasi.HostModule
+	if cfg.WASI == "engine" {
+		mods = append(mods, wasi.WASIX)
+	}
+	exec := wazero.New(wazero.Options{DefaultMemoryLimitBytes: mem, EngineWASI: cfg.WASI == "engine", HostModules: mods})
 	defer exec.Close(context.Background())
 	var nopt network.Options
 	if cfg.Relay != "" {
