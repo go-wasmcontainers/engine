@@ -223,7 +223,13 @@ type Config struct {
 	// Admitted says Group.Admit already reserved this process's room (a
 	// Spawner sets it).
 	Admitted bool
+	// Label names the process's container (runtime.Spec.ID): host modules
+	// report it with what they show of the process (a surface's pane).
+	Label string
 }
+
+// Label is the process's container label (Config.Label).
+func (p *Proc) Label() string { return p.cfg.Label }
 
 type fdKind int
 

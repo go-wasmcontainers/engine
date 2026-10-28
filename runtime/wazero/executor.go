@@ -302,7 +302,7 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		proc = wasi.New(wasi.Config{
 			Args: args, Env: spec.Env, FS: spec.FS, Mounts: WASIMounts(spec.Mounts), Stdin: stdin, Stdout: stdout, Stderr: stderr,
 			Net: spec.Net, Modules: e.opt.HostModules, Caps: spec.Caps,
-			Group: group, Spawner: sp, Terminal: spec.Terminal, MemoryLimitBytes: mem,
+			Group: group, Spawner: sp, Terminal: spec.Terminal, MemoryLimitBytes: mem, Label: spec.ID,
 		})
 		runCtx = withProc(runCtx, proc)
 	}

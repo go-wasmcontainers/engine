@@ -37,11 +37,16 @@ func TestHostModule(t *testing.T) {
 		{args: []string{"cap"}, caps: []string{"gpu"}, out: "1\n"},
 		{args: []string{"trap"}, code: runtime.ExitTrap, err: "boom: the test module traps here"},
 	} {
-		r := start(t, e, runtime.Spec{FS: img.Clone(rootfs.Quota{}), Path: "/bin/hostmod.wasm",
+		id := "c-" + strings.Join(c.args, "-")
+		r := start(t, e, runtime.Spec{ID: id, FS: img.Clone(rootfs.Quota{}), Path: "/bin/hostmod.wasm",
 			Args: append([]string{"hostmod"}, c.args...), Caps: c.caps})
 		if r.stdout != c.out || r.res.ExitCode != c.code || !strings.Contains(r.res.Error, c.err) {
 			t.Errorf("%v: stdout %q, exit %d, error %q; want %q, %d, %q (stderr %q)",
 				c.args, r.stdout, r.res.ExitCode, r.res.Error, c.out, c.code, c.err, r.stderr)
+		}
+		// The module sees the container it serves (wasi.Proc.Label).
+		if l, _ := mod.Label.Load().(string); l != id {
+			t.Errorf("%v: label %q, want %q", c.args, l, id)
 		}
 	}
 	if o, c := mod.Opened.Load(), mod.Closed.Load(); o != 6 || c != 6 {

@@ -55,7 +55,7 @@ func (s *spawner) Spawn(parent *wasi.Proc, ss wasi.SpawnSpec) (*wasi.Child, uint
 		Args: ss.Argv, Env: ss.Env, FS: s.spec.FS, Mounts: WASIMounts(s.spec.Mounts),
 		Stdin: s.spec.Stdin, Stdout: s.spec.Stdout, Stderr: s.spec.Stderr, Net: s.spec.Net,
 		Modules: s.e.opt.HostModules, Caps: s.spec.Caps, Parent: parent, FDs: ss.FDs,
-		Group: s.group, Spawner: s, Terminal: s.spec.Terminal, MemoryLimitBytes: s.mem, Admitted: true,
+		Group: s.group, Spawner: s, Terminal: s.spec.Terminal, MemoryLimitBytes: s.mem, Admitted: true, Label: s.spec.ID,
 	})
 	admitted = false
 	ctx, cancel := context.WithCancel(s.ctx)

@@ -48,7 +48,7 @@ func (s *spawner) Spawn(parent *wasi.Proc, ss wasi.SpawnSpec) (*wasi.Child, uint
 		Args: ss.Argv, Env: ss.Env, FS: s.spec.FS, Mounts: mounts,
 		Stdin: s.spec.Stdin, Stdout: s.spec.Stdout, Stderr: s.spec.Stderr, Net: s.spec.Net,
 		Modules: s.e.opt.HostModules, Caps: s.spec.Caps, Parent: parent, FDs: ss.FDs,
-		Group: s.group, Spawner: s, Terminal: s.spec.Terminal, MemoryLimitBytes: s.mem, Admitted: true,
+		Group: s.group, Spawner: s, Terminal: s.spec.Terminal, MemoryLimitBytes: s.mem, Admitted: true, Label: s.spec.ID,
 	})
 	// The child exists before its worker starts, so its end can never be
 	// reported to a handle not yet made.

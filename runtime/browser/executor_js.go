@@ -309,7 +309,7 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	mem := int64(pagesFor(limit)) * 65536
 	sp := &spawner{e: e, pages: pagesFor(limit), spec: spec, imports: imports, group: group, mem: mem}
 	proc := wasi.New(wasi.Config{Args: args, Env: spec.Env, FS: spec.FS, Mounts: mounts, Stdin: spec.Stdin, Stdout: spec.Stdout, Stderr: spec.Stderr, Net: spec.Net,
-		Modules: e.opt.HostModules, Caps: spec.Caps, Group: group, Spawner: sp, Terminal: spec.Terminal, MemoryLimitBytes: mem})
+		Modules: e.opt.HostModules, Caps: spec.Caps, Group: group, Spawner: sp, Terminal: spec.Terminal, MemoryLimitBytes: mem, Label: spec.ID})
 	p := e.run(mod, proc, imports, limit, func(runtime.Result) {
 		group.Kill() // a container ends with its first process
 	})
