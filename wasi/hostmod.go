@@ -179,16 +179,34 @@ func (p *Proc) CallImport(i int, args []uint64, m Memory) Result {
 	return Result{Trap: fmt.Sprintf("no host function at import %d", i)}
 }
 
+// open returns module k's instance, opening it on first use. Open runs
+// without the lock (it may look up other instances of this process, or of
+// its parent); if two calls race, the first instance stored wins and the
+// other is closed.
 func (h *hostState) open(k int, p *Proc) (Instance, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.close {
+		h.mu.Unlock()
 		return nil, errClosed
 	}
-	if h.inst[k] == nil {
-		h.inst[k] = h.mods[k].Open(p)
+	if in := h.inst[k]; in != nil {
+		h.mu.Unlock()
+		return in, nil
 	}
-	return h.inst[k], nil
+	h.mu.Unlock()
+	in := h.mods[k].Open(p)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	switch {
+	case h.close:
+		in.Close()
+		return nil, errClosed
+	case h.inst[k] != nil:
+		in.Close()
+		return h.inst[k], nil
+	}
+	h.inst[k] = in
+	return in, nil
 }
 
 // closeAll closes the opened instances, last opened module first.

@@ -3,6 +3,7 @@ package wasi_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/wasi"
@@ -108,6 +109,37 @@ func TestCallImport(t *testing.T) {
 		t.Errorf("call after Close: %+v, want a trap", r)
 	}
 	parent.Close()
+}
+
+// lookupMod's Open looks up instances of its own process, as a module
+// sharing state with another (or with the parent's) does.
+type lookupMod struct{ seen *wasi.Instance }
+
+func (lookupMod) Module() string                               { return "lookup" }
+func (lookupMod) Funcs() []wasi.HostFunc                       { return []wasi.HostFunc{{Name: "f"}} }
+func (lookupInst) Call(int, []uint64, wasi.Memory) wasi.Result { return wasi.Result{} }
+func (lookupInst) Close()                                      {}
+
+type lookupInst struct{}
+
+func (l lookupMod) Open(p *wasi.Proc) wasi.Instance {
+	*l.seen = p.Instance("lookup") // must not deadlock
+	return lookupInst{}
+}
+
+func TestOpenMayLookUpInstances(t *testing.T) {
+	var seen wasi.Instance
+	p := wasi.New(wasi.Config{FS: rootfs.New(), Modules: []wasi.HostModule{lookupMod{&seen}}})
+	done := make(chan wasi.Result, 1)
+	go func() { done <- p.CallImport(len(wasi.Funcs), nil, make(mem, 8)) }()
+	select {
+	case r := <-done:
+		if r.Trap != "" || seen != nil || p.Instance("lookup") == nil {
+			t.Fatalf("%+v seen=%v", r, seen)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Open calling Instance deadlocked")
+	}
 }
 
 func TestCheckBlock(t *testing.T) {
