@@ -159,6 +159,12 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
+      # `go install …/cmd/wctr@version` refuses a module with replace
+      # directives: the module requires released versions only.
+      - name: no replace directive
+        run: |
+          replaced=$(go list -m -f '{{if .Replace}}{{.Path}}{{end}}' all)
+          if [ -n "$replaced" ]; then echo "::error::cmd/wctr/go.mod replaces: $replaced"; exit 1; fi
       - run: go vet ./...
       - run: go test -race -count=1 ./...
       - name: cross builds
