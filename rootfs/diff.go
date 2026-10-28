@@ -2,9 +2,12 @@ package rootfs
 
 import (
 	"archive/tar"
+	"errors"
+	"fmt"
 	"io"
 	"path"
 	"sort"
+	"strings"
 )
 
 // paxWhiteout marks a diff's whiteouts. OCI layers mark them by name
@@ -136,6 +139,50 @@ func (f *FS) Diff() []Change {
 type differ struct {
 	tw   *tar.Writer
 	seen map[*node]string // regular files written, for hard links
+	oci  bool             // whiteouts as OCI .wh. entries (WriteLayer)
+}
+
+// OCI whiteout names (image-spec layer.md, "Whiteouts").
+const (
+	whPrefix = ".wh."
+	whOpaque = ".wh..wh..opq"
+)
+
+// ErrWhiteoutName is returned by WriteLayer for a changed path whose name
+// begins with ".wh.": an OCI layer would read it as a whiteout.
+var ErrWhiteoutName = errors.New("rootfs: a file name beginning with .wh. cannot be written to an image layer")
+
+// WriteLayer writes what this tree changed relative to its base as an OCI
+// image layer (an uncompressed tar changeset): added and changed entries
+// in full, removed ones as ".wh.<name>" entries, a directory removed and
+// made again followed by ".wh..wh..opq". It is what `commit` stores. A
+// tree that is not a clone is written whole.
+func (f *FS) WriteLayer(w io.Writer) (Usage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	tw := tar.NewWriter(w)
+	d := differ{tw: tw, seen: map[*node]string{}, oci: true}
+	if f.root != f.base {
+		// The root itself, for its mode and time.
+		if err := d.write(&tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: int64(f.root.mode.Perm()), ModTime: f.root.mtime}, nil); err != nil {
+			return Usage{}, err
+		}
+	}
+	if err := d.dir(nil, f.root, f.baseOrNil()); err != nil {
+		return Usage{}, err
+	}
+	if err := tw.Close(); err != nil {
+		return Usage{}, err
+	}
+	return Usage{Bytes: f.bytes, Files: f.files}, nil
+}
+
+// baseOrNil is the base a clone diffs against; the caller holds mu.
+func (f *FS) baseOrNil() *node {
+	if f.root == f.base {
+		return f.root // unchanged clone: nothing differs
+	}
+	return f.base
 }
 
 func sortedNames(n *node) []string {
@@ -152,8 +199,12 @@ func (d *differ) dir(comps []string, cur, low *node) error {
 	if low != nil {
 		for _, name := range sortedNames(low) {
 			if cur.kids[name] == nil {
-				if err := d.write(&tar.Header{Name: path.Join(append(comps, name)...), Typeflag: tar.TypeReg, Mode: 0o644,
-					PAXRecords: map[string]string{paxWhiteout: "file"}}, nil); err != nil {
+				h := &tar.Header{Name: path.Join(append(comps, name)...), Typeflag: tar.TypeReg, Mode: 0o644,
+					PAXRecords: map[string]string{paxWhiteout: "file"}}
+				if d.oci {
+					h = &tar.Header{Name: path.Join(append(comps, whPrefix+name)...), Typeflag: tar.TypeReg, Mode: 0o644}
+				}
+				if err := d.write(h, nil); err != nil {
 					return err
 				}
 			}
@@ -168,6 +219,9 @@ func (d *differ) dir(comps []string, cur, low *node) error {
 		if k == lk {
 			continue // shared with the base: unchanged, all the way down
 		}
+		if d.oci && strings.HasPrefix(name, whPrefix) {
+			return fmt.Errorf("%w: %s", ErrWhiteoutName, path.Join(append(comps, name)...))
+		}
 		sub := append(append([]string{}, comps...), name)
 		p := path.Join(sub...)
 		hdr := &tar.Header{Name: p, Mode: int64(k.mode.Perm()), ModTime: k.mtime}
@@ -175,16 +229,25 @@ func (d *differ) dir(comps []string, cur, low *node) error {
 		case k.isDir():
 			hdr.Typeflag = tar.TypeDir
 			var below *node
+			opaque := false
 			if lk != nil && lk.isDir() {
 				if lk.ino == k.ino {
 					below = lk // copied up: only the differences
 				} else {
 					// Removed and made again: nothing below shows through.
-					hdr.PAXRecords = map[string]string{paxWhiteout: "opaque"}
+					opaque = true
+					if !d.oci {
+						hdr.PAXRecords = map[string]string{paxWhiteout: "opaque"}
+					}
 				}
 			}
 			if err := d.write(hdr, nil); err != nil {
 				return err
+			}
+			if opaque && d.oci {
+				if err := d.write(&tar.Header{Name: path.Join(p, whOpaque), Typeflag: tar.TypeReg, Mode: 0o644}, nil); err != nil {
+					return err
+				}
 			}
 			if err := d.dir(sub, k, below); err != nil {
 				return err

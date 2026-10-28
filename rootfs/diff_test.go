@@ -3,6 +3,7 @@ package rootfs
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -58,6 +59,86 @@ func diffBase(t testing.TB) *FS {
 	}
 	b.Freeze()
 	return b
+}
+
+// TestWriteLayer: the OCI layer of a clone's changes, applied as an image
+// layer (OCI whiteouts) on the base, gives the clone back.
+func TestWriteLayer(t *testing.T) {
+	base := diffBase(t)
+	q := Quota{MaxBytes: 1 << 20, MaxFiles: 100}
+	c := base.Clone(q)
+	var buf bytes.Buffer
+	if _, err := c.WriteLayer(&buf); err != nil || buf.Len() != 1024 {
+		t.Fatalf("unchanged clone: %d bytes, %v", buf.Len(), err)
+	}
+	for i, s := range []func() error{
+		func() error { return c.WriteFile("new.txt", []byte("new"), 0o600) },
+		func() error { return c.WriteFile("etc/motd", []byte("changed\n"), 0o644) },
+		func() error { return c.Remove("bin/x") },
+		func() error { return c.Remove("d/a") },
+		func() error { return c.Remove("d/b") },
+		func() error { return c.Rmdir("d") },
+		func() error { return c.Mkdir("d", 0o700) }, // made again: opaque
+		func() error { return c.WriteFile("d/c", []byte("c"), 0o644) },
+		func() error { return c.Rename("keep", "moved") },
+		func() error { return c.Symlink("../etc/motd", "e/up") },
+		func() error { return c.Link("new.txt", "hard") },
+		func() error { return c.Chmod("e/f/g", 0o400) },
+	} {
+		if err := s(); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	buf.Reset()
+	if _, err := c.WriteLayer(&buf); err != nil {
+		t.Fatal(err)
+	}
+	// OCI whiteouts, not the private marker.
+	tr := tar.NewReader(bytes.NewReader(buf.Bytes()))
+	var names []string
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if _, ok := h.PAXRecords[paxWhiteout]; ok {
+			t.Fatalf("%s carries the private whiteout record", h.Name)
+		}
+		names = append(names, h.Name)
+	}
+	joined := strings.Join(names, " ")
+	for _, want := range []string{"bin/.wh.x", "d/.wh..wh..opq", ".wh.keep"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("layer lacks %s: %s", want, joined)
+		}
+	}
+	r := base.Clone(q)
+	if err := r.applyTar(bytes.NewReader(buf.Bytes()), NewBudget(DefaultLimits), false); err != nil {
+		t.Fatal(err)
+	}
+	// Image layers do not restore a directory's time after its entries are
+	// applied (the private diff format does): compare all but those.
+	noDirTimes := func(s string) string {
+		var out []string
+		for _, l := range strings.Split(s, "\n") {
+			if f := strings.Fields(l); len(f) >= 2 && strings.HasPrefix(f[len(f)-2], "d") {
+				l = strings.Join(f[:len(f)-1], " ")
+			} else if len(f) == 2 && strings.HasPrefix(f[0], "d") { // the root: no path
+				l = f[0]
+			}
+			out = append(out, l)
+		}
+		return strings.Join(out, "\n")
+	}
+	if got, want := noDirTimes(dump(t, r)), noDirTimes(dump(t, c)); got != want {
+		t.Fatalf("layer applied differs:\n%s\n--- want\n%s", got, want)
+	}
+	// A name an OCI layer would read as a whiteout is refused.
+	c2 := base.Clone(q)
+	c2.WriteFile(".wh.trick", []byte("x"), 0o644)
+	if _, err := c2.WriteLayer(&bytes.Buffer{}); !errors.Is(err, ErrWhiteoutName) {
+		t.Fatalf(".wh. name: %v", err)
+	}
 }
 
 func TestDiffRoundTrip(t *testing.T) {

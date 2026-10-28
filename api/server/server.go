@@ -30,6 +30,10 @@ const maxBody = 1 << 20
 type Info struct {
 	Version   string
 	GitCommit string
+	// MaxUploadBytes bounds POST /images/load and PUT
+	// /containers/{id}/archive bodies (default DefaultMaxUploadBytes);
+	// every other request body is bounded at 1 MiB.
+	MaxUploadBytes int64
 }
 
 type server struct {
@@ -72,6 +76,11 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("GET /containers/{id}/changes", s.containersChanges)
 	s.mux.HandleFunc("POST /images/prune", s.imagesPrune)
 	s.mux.HandleFunc("GET /system/df", s.systemDF)
+	s.mux.HandleFunc("POST /commit", s.commit)
+	s.mux.HandleFunc("POST /images/load", s.imagesLoad)
+	s.mux.HandleFunc("PUT /containers/{id}/archive", s.containersArchivePut)
+	s.mux.HandleFunc("GET /containers/{id}/archive", s.containersArchiveGet)
+	s.mux.HandleFunc("POST /images/{rest...}", s.imagesPost)
 	s.mux.HandleFunc("GET /networks", s.networksList)
 	s.mux.HandleFunc("POST /networks/create", s.networksCreate)
 	s.mux.HandleFunc("GET /networks/{id}", s.networksInspect)
@@ -93,8 +102,26 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Api-Version", api.APIVersion)
 	w.Header().Set("Server", "go-wasmcontainers-engine/"+s.info.Version)
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	r.Body = http.MaxBytesReader(w, r.Body, s.bodyLimit(r))
 	s.mux.ServeHTTP(w, r)
+}
+
+// DefaultMaxUploadBytes bounds an image load or an archive upload when
+// Info.MaxUploadBytes is not set.
+const DefaultMaxUploadBytes = 1 << 30
+
+// bodyLimit is a request's body bound: 1 MiB, except for the two routes
+// that upload content (an image layout, a container archive).
+func (s *server) bodyLimit(r *http.Request) int64 {
+	upload := r.Method == http.MethodPost && r.URL.Path == "/images/load" ||
+		r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/containers/") && strings.HasSuffix(r.URL.Path, "/archive")
+	if !upload {
+		return maxBody
+	}
+	if s.info.MaxUploadBytes > 0 {
+		return s.info.MaxUploadBytes
+	}
+	return DefaultMaxUploadBytes
 }
 
 func versionInRange(maj, min string) bool {
@@ -337,14 +364,21 @@ func (s *server) imagesInspect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ec := daemon.ExecConfig(img)
-	var layers []string
-	for _, l := range img.Manifest.Layers {
-		layers = append(layers, string(l.Digest))
+	if tags == nil {
+		tags = []string{}
+	}
+	if digests == nil {
+		digests = []string{}
 	}
 	out := api.ImageInspect{ID: string(img.ID()), RepoTags: tags, RepoDigests: digests, Created: img.Config.Created,
 		Author: img.Config.Author, Architecture: img.Config.Architecture, Os: img.Config.OS, Size: img.Size,
-		Config: api.ContainerConfig{Cmd: ec.Cmd, Entrypoint: ec.Entrypoint, Env: ec.Env, WorkingDir: ec.WorkingDir, Labels: ec.Labels},
-		RootFS: map[string]any{"Type": "layers", "Layers": layers}}
+		Config: toAPIConfig(ec),
+		// diff_ids: the layers' uncompressed digests, as Docker lists them.
+		RootFS: map[string]any{"Type": "layers", "Layers": img.DiffIDs()}}
+	for _, h := range img.Config.History {
+		out.History = append(out.History, api.ImageHistory{Created: h.Created, CreatedBy: h.CreatedBy, Author: h.Author,
+			Comment: h.Comment, EmptyLayer: h.EmptyLayer})
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

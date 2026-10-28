@@ -148,6 +148,10 @@ type persisted struct {
 	saved            bool
 }
 
+// Touched stores c after a change made from outside it (an archive
+// extracted into its files).
+func (m *Manager) Touched(c *Container) { m.schedule(c) }
+
 // schedule asks the writer to store c's current state (or to delete it,
 // once it is removed). Many changes before the writer gets to it are one
 // write: only the latest state matters.
