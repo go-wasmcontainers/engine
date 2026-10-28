@@ -53,7 +53,7 @@ func eventFilter(raw string) (func(events.Event) bool, error) {
 	}
 	for k := range f {
 		switch k {
-		case "type", "event", "container", "image", "volume", "label":
+		case "type", "event", "container", "image", "volume", "network", "label":
 		default:
 			return nil, fmt.Errorf("unsupported event filter %q", k)
 		}
@@ -76,6 +76,9 @@ func eventFilter(raw string) (func(events.Event) bool, error) {
 				return (e.Type == events.Image && (e.ID == v || e.Attributes["name"] == v)) || (e.Type == events.Container && e.Attributes["image"] == v)
 			}) &&
 			any(f["volume"], func(v string) bool { return e.Type == events.Volume && e.ID == v }) &&
+			any(f["network"], func(v string) bool {
+				return e.Type == events.Network && (e.Attributes["name"] == v || (v != "" && strings.HasPrefix(e.ID, v)))
+			}) &&
 			any(f["label"], func(v string) bool {
 				k, val, has := strings.Cut(v, "=")
 				got, ok := e.Attributes[k]

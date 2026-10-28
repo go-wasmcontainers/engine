@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-wasmcontainers/engine/api"
@@ -13,13 +16,17 @@ import (
 	"github.com/go-wasmcontainers/engine/network"
 )
 
-// networkOf is the network a container joins, by name.
-func networkOf(cfg container.Config) string {
-	if cfg.Network == "" {
+// networkName is how the API names a container's network: the engine's
+// default as "bridge".
+func networkName(n string) string {
+	if n == "" {
 		return network.Bridge
 	}
-	return cfg.Network
+	return n
 }
+
+// networkOf is the network a container joins first, by name.
+func networkOf(cfg container.Config) string { return networkName(cfg.PrimaryNetwork()) }
 
 func (s *server) networkObject(n network.Network) api.Network {
 	labels := n.Labels
@@ -33,9 +40,29 @@ func (s *server) networkObject(n network.Network) api.Network {
 		out.IPAM.Config = append(out.IPAM.Config, map[string]string{"Subnet": n.Subnet})
 	}
 	for _, c := range s.d.Containers().List(true) {
-		if networkOf(c.Config) == n.Name && c.IPAddress.IsValid() {
-			out.Containers[c.ID] = api.NetworkEndpoint{Name: c.Name, IPv4Address: c.IPAddress.String() + "/" + prefixBits(n.Subnet)}
+		for _, ni := range c.Networks {
+			if networkName(ni.Network) == n.Name && ni.IPAddress.IsValid() {
+				out.Containers[c.ID] = api.NetworkEndpoint{Name: c.Name, IPv4Address: ni.IPAddress.String() + "/" + prefixBits(n.Subnet)}
+			}
 		}
+	}
+	return out
+}
+
+// endpointSettings is inspect's NetworkSettings.Networks.
+func (s *server) endpointSettings(sn container.Snapshot) map[string]api.EndpointSettings {
+	out := map[string]api.EndpointSettings{}
+	for _, ni := range sn.Networks {
+		name := networkName(ni.Network)
+		es := api.EndpointSettings{Aliases: ni.Aliases, DNSNames: append([]string{container.DNSName(sn.Name, sn.ID)}, ni.Aliases...)}
+		if n, err := s.d.Networks().Get(name); err == nil {
+			es.NetworkID = n.ID
+			if ni.IPAddress.IsValid() {
+				es.IPAddress = ni.IPAddress.String()
+				es.IPPrefixLen, _ = strconv.Atoi(prefixBits(n.Subnet))
+			}
+		}
+		out[name] = es
 	}
 	return out
 }
@@ -61,18 +88,37 @@ func networkStatus(err error) int {
 	return statusOf(err)
 }
 
+// networksList honours the label, name, id and driver filters.
 func (s *server) networksList(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilters(r.URL.Query().Get("filters"), "label", "name", "id", "driver")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	out := []api.Network{}
 	for _, n := range s.d.Networks().List() {
+		if !labelsMatch(n.Labels, f["label"]) ||
+			!anyMatch(f["name"], func(v string) bool { return strings.Contains(n.Name, v) }) ||
+			!anyMatch(f["id"], func(v string) bool { return strings.HasPrefix(n.ID, v) }) ||
+			!anyMatch(f["driver"], func(v string) bool { return n.Driver == v }) {
+			continue
+		}
 		out = append(out, s.networkObject(n))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
+func decodeBody(r *http.Request, v any) error {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(v); err != nil {
+		return fmt.Errorf("invalid body: %v", err)
+	}
+	return nil
+}
+
 func (s *server) networksCreate(w http.ResponseWriter, r *http.Request) {
 	var req api.NetworkCreateRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid body: %v", err))
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	if req.Driver != "" && req.Driver != "bridge" {
@@ -83,7 +129,7 @@ func (s *server) networksCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("network options are not supported"))
 		return
 	}
-	n, err := s.d.Networks().Create(req.Name, req.Labels)
+	n, err := s.d.NetworkCreate(req.Name, req.Labels)
 	if err != nil {
 		writeError(w, networkStatus(err), err)
 		return
@@ -106,4 +152,48 @@ func (s *server) networksDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) networksConnect(w http.ResponseWriter, r *http.Request) {
+	var req api.NetworkConnectRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var aliases []string
+	if req.EndpointConfig != nil {
+		aliases = req.EndpointConfig.Aliases
+	}
+	if err := s.d.NetworkConnect(context.WithoutCancel(r.Context()), r.PathValue("id"), req.Container, aliases); err != nil {
+		writeError(w, networkStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *server) networksDisconnect(w http.ResponseWriter, r *http.Request) {
+	var req api.NetworkDisconnectRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.d.NetworkDisconnect(r.PathValue("id"), req.Container); err != nil {
+		writeError(w, networkStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// networksPrune honours the label filter.
+func (s *server) networksPrune(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilters(r.URL.Query().Get("filters"), "label")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	gone := s.d.NetworkPrune(func(labels map[string]string) bool { return labelsMatch(labels, f["label"]) })
+	if gone == nil {
+		gone = []string{}
+	}
+	writeJSON(w, http.StatusOK, api.NetworkPruneResponse{NetworksDeleted: gone})
 }

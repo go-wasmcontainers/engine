@@ -16,6 +16,7 @@ const (
 	Container = "container"
 	Image     = "image"
 	Volume    = "volume"
+	Network   = "network"
 )
 
 // Event is one thing that happened.

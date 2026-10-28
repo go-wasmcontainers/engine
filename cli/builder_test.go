@@ -81,6 +81,7 @@ func TestBuilderAPI(t *testing.T) {
 		tw.Write([]byte(body))
 	}
 	tw.Close()
+	var de404 *api.ErrDaemon
 	if err := c.CopyTo(ctx, "b", "/srv", bytes.NewReader(ctxTar.Bytes())); err == nil {
 		t.Fatal("copied into a directory that does not exist")
 	}
@@ -104,6 +105,22 @@ func TestBuilderAPI(t *testing.T) {
 	rc.Close()
 	if strings.Join(got, " ") != "src/= src/main.go=package main" {
 		t.Fatalf("copy out: %q", got)
+	}
+	// HEAD: the stat alone, the same as GET's header.
+	if st, err := c.StatPath(ctx, "b", "/src"); err != nil || st.Name != "src" || fs.FileMode(st.Mode)&fs.ModeDir == 0 || st.Mtime == "" {
+		t.Fatalf("stat /src: %+v %v", st, err)
+	}
+	if st, err := c.StatPath(ctx, "b", "/README"); err != nil || st.Size != 2 || fs.FileMode(st.Mode).IsDir() {
+		t.Fatalf("stat /README: %+v %v", st, err)
+	}
+	if _, err := c.StatPath(ctx, "b", "/nope"); !errors.As(err, &de404) || de404.Status != http.StatusNotFound {
+		t.Fatalf("stat a missing path: %v", err)
+	}
+	hc, base := c.HTTP()
+	if resp, err := hc.Head(base + "/containers/b/archive?path=/src"); err != nil || resp.ContentLength > 0 || resp.Header.Get("X-Docker-Container-Path-Stat") == "" {
+		t.Fatalf("HEAD: %+v %v", resp, err)
+	} else {
+		resp.Body.Close()
 	}
 	// Hostile archive: refused with a 400, nothing written.
 	var bad bytes.Buffer

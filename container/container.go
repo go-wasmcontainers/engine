@@ -63,9 +63,10 @@ type Config struct {
 	AutoRemove bool `json:"-"`
 	// Mounts are the volumes it mounts (run -v NAME:/path[:ro]).
 	Mounts []Mount `json:"-"`
-	// Network is the network it joins (run --network): "" for the
-	// engine's default, "none" for no network.
-	Network string `json:"-"`
+	// Networks are the networks it joins (run --network and
+	// --network-alias, network connect), the first one its primary: empty
+	// for the engine's default, [{none}] for no network.
+	Networks []Attachment `json:"-"`
 	// Caps are device capabilities granted to it (run --gpu: "gpu").
 	Caps []string `json:"-"`
 }
@@ -113,6 +114,7 @@ type Container struct {
 	removed    bool
 	path       string
 	ip         netip.Addr
+	net        *netdriver.Multi // its networks while it runs
 	proc       runtime.Process
 	// killPending is a kill that arrived while running but before proc
 	// was attached; Start delivers it.
@@ -139,8 +141,10 @@ type Snapshot struct {
 	Path string
 	// SizeRw is the bytes the container wrote to its filesystem.
 	SizeRw int64
-	// IPAddress is its address on its network while it runs.
+	// IPAddress is its address on its primary network while it runs.
 	IPAddress netip.Addr
+	// Networks are its networks, with their addresses while it runs.
+	Networks []NetworkInfo
 }
 
 // Command is argv as configured.
@@ -191,6 +195,7 @@ func (c *Container) Snapshot() Snapshot {
 		ID: c.id, Name: c.name, Created: c.created, Config: c.cfg,
 		State: c.state, ExitCode: c.exitCode, Error: c.errMsg, TimedOut: c.timedOut,
 		StartedAt: c.startedAt, FinishedAt: c.finishedAt, Path: c.path, SizeRw: rw, IPAddress: c.ip,
+		Networks: c.networksLocked(),
 	}
 }
 
@@ -230,9 +235,9 @@ type Options struct {
 	Events *events.Bus
 	// Volume finds a volume's tree by name, for Config.Mounts.
 	Volume func(name string) (*rootfs.FS, error)
-	// Network attaches a starting container to Config.Network under its
-	// DNS name; nil means containers have no network.
-	Network func(ctx context.Context, network, name string) (netdriver.Endpoint, error)
+	// Network attaches a container to one of Config.Networks under its DNS
+	// name and aliases; nil means containers have no network.
+	Network func(ctx context.Context, network, name string, aliases []string) (netdriver.Endpoint, error)
 }
 
 var networkRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
@@ -358,9 +363,11 @@ func (m *Manager) create(o CreateOptions) (*Container, error) {
 	if err := checkMounts(o.Config.Mounts); err != nil {
 		return nil, err
 	}
-	if n := o.Config.Network; n != "" && !ValidNetworkName(n) {
-		return nil, fmt.Errorf("%w: invalid network name %q", ErrInvalid, n)
+	atts, err := checkAttachments(o.Config.Networks)
+	if err != nil {
+		return nil, err
 	}
+	o.Config.Networks = atts
 	name := strings.TrimPrefix(o.Name, "/")
 	if name != "" && (!nameRE.MatchString(name) || len(name) > 128) {
 		return nil, fmt.Errorf("%w: invalid container name %q, only [a-zA-Z0-9][a-zA-Z0-9_.-] are allowed", ErrInvalid, o.Name)
@@ -397,18 +404,6 @@ func (m *Manager) create(o CreateOptions) (*Container, error) {
 	m.byID[c.id] = c
 	m.byName[name] = c
 	return c, nil
-}
-
-// UsesNetwork reports whether a container, in any state, joins a network.
-func (m *Manager) UsesNetwork(name string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, c := range m.byID {
-		if c.cfg.Network == name {
-			return true
-		}
-	}
-	return false
 }
 
 // UsesVolume lists the containers, in any state, that mount a volume.
@@ -581,18 +576,15 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 		}
 		spec.Mounts = append(spec.Mounts, runtime.Mount{Path: mt.Target, FS: vfs, ReadOnly: mt.ReadOnly})
 	}
-	var ep netdriver.Endpoint
-	if c.cfg.Network != "none" && m.opt.Network != nil {
-		var err error
-		ep, err = m.opt.Network(ctx, c.cfg.Network, DNSName(c.name, c.id))
-		if err != nil {
-			c.mu.Unlock()
-			return fmt.Errorf("%w: network %q: %v", ErrInvalid, c.cfg.Network, err)
-		}
-		if ep != nil { // nil: a network without a driver ("none")
-			spec.Net = netdriver.WithDNS(ep)
-			c.ip = ep.Addr()
-		}
+	ep, err := m.attach(ctx, c)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	c.net = ep
+	if ep != nil { // nil: no network
+		spec.Net = netdriver.WithDNS(ep)
+		c.ip = ep.Addr()
 	}
 	c.state = Running
 	c.startedAt = time.Now().UTC()
@@ -712,6 +704,7 @@ func (c *Container) finish(r runtime.Result) {
 	c.finishedAt = time.Now().UTC()
 	c.proc = nil
 	c.ip = netip.Addr{}
+	c.net = nil
 	c.killPending = false
 	c.exits++
 	c.notifyLocked()

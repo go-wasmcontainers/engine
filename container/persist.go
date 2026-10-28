@@ -43,19 +43,22 @@ type record struct {
 	Memory     int64             `json:"memory,omitempty"`
 	AutoRemove bool              `json:"autoRemove,omitempty"`
 	Mounts     []Mount           `json:"mounts,omitempty"`
-	Network    string            `json:"network,omitempty"`
-	Caps       []string          `json:"caps,omitempty"`
-	State      State             `json:"state"`
-	ExitCode   int               `json:"exitCode"`
-	Error      string            `json:"error,omitempty"`
-	TimedOut   bool              `json:"timedOut,omitempty"`
-	StartedAt  time.Time         `json:"startedAt"`
-	FinishedAt time.Time         `json:"finishedAt"`
-	Path       string            `json:"path,omitempty"`
-	Logs       string            `json:"logs,omitempty"` // blob key
-	Diff       string            `json:"diff,omitempty"` // blob key
-	Usage      rootfs.Usage      `json:"usage"`
-	SavedAt    time.Time         `json:"savedAt"`
+	// Network is the one network of a record written before v0.14.0;
+	// Networks replaces it.
+	Network    string       `json:"network,omitempty"`
+	Networks   []Attachment `json:"networks,omitempty"`
+	Caps       []string     `json:"caps,omitempty"`
+	State      State        `json:"state"`
+	ExitCode   int          `json:"exitCode"`
+	Error      string       `json:"error,omitempty"`
+	TimedOut   bool         `json:"timedOut,omitempty"`
+	StartedAt  time.Time    `json:"startedAt"`
+	FinishedAt time.Time    `json:"finishedAt"`
+	Path       string       `json:"path,omitempty"`
+	Logs       string       `json:"logs,omitempty"` // blob key
+	Diff       string       `json:"diff,omitempty"` // blob key
+	Usage      rootfs.Usage `json:"usage"`
+	SavedAt    time.Time    `json:"savedAt"`
 }
 
 var (
@@ -77,7 +80,18 @@ func (r *record) check() error {
 		return errors.New("no command")
 	case r.Network != "" && !ValidNetworkName(r.Network):
 		return errors.New("bad network")
+	case r.Network != "" && len(r.Networks) > 0:
+		return errors.New("both network and networks")
 	}
+	if r.Network != "" {
+		r.Networks = []Attachment{{Network: r.Network}}
+		r.Network = ""
+	}
+	atts, err := checkAttachments(r.Networks)
+	if err != nil {
+		return err
+	}
+	r.Networks = atts
 	return checkMounts(r.Mounts)
 }
 
@@ -291,7 +305,7 @@ func (m *Manager) checkpointLocked(c *Container) error {
 	r := record{
 		ID: c.id, Name: c.name, Created: c.created, Image: c.cfg.Image, ImageID: c.cfg.ImageID,
 		Entrypoint: c.cfg.Entrypoint, Cmd: c.cfg.Cmd, Env: c.cfg.Env, WorkingDir: c.cfg.WorkingDir,
-		Labels: c.cfg.Labels, Memory: c.cfg.MemoryLimitBytes, AutoRemove: c.cfg.AutoRemove, Mounts: c.cfg.Mounts, Network: c.cfg.Network, Caps: c.cfg.Caps,
+		Labels: c.cfg.Labels, Memory: c.cfg.MemoryLimitBytes, AutoRemove: c.cfg.AutoRemove, Mounts: c.cfg.Mounts, Networks: c.cfg.Networks, Caps: c.cfg.Caps,
 		State: sn.State, ExitCode: sn.ExitCode, Error: sn.Error, TimedOut: sn.TimedOut,
 		StartedAt: sn.StartedAt, FinishedAt: sn.FinishedAt, Path: sn.Path,
 		Logs: logsKey, Diff: diffKey, Usage: usage, SavedAt: time.Now().UTC(),
@@ -438,7 +452,7 @@ func (m *Manager) Restore(lower func(imageID string) (*rootfs.FS, error), lim ro
 		c := &Container{
 			id: r.ID, name: r.Name, created: r.Created,
 			cfg: Config{Image: r.Image, ImageID: r.ImageID, Entrypoint: r.Entrypoint, Cmd: r.Cmd, Env: r.Env,
-				WorkingDir: r.WorkingDir, Labels: r.Labels, MemoryLimitBytes: r.Memory, AutoRemove: r.AutoRemove, Mounts: r.Mounts, Network: r.Network, Caps: r.Caps},
+				WorkingDir: r.WorkingDir, Labels: r.Labels, MemoryLimitBytes: r.Memory, AutoRemove: r.AutoRemove, Mounts: r.Mounts, Networks: r.Networks, Caps: r.Caps},
 			fs: low.Clone(m.opt.Quota), logs: newLogs(m.opt.MaxLogBytes),
 			state: r.State, exitCode: r.ExitCode, errMsg: r.Error, timedOut: r.TimedOut,
 			startedAt: r.StartedAt, finishedAt: r.FinishedAt, path: r.Path, changed: make(chan struct{}),

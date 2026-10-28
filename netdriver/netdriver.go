@@ -26,6 +26,14 @@ type NetworkDriver interface {
 	Close() error
 }
 
+// AliasDriver is a NetworkDriver whose containers can answer to more names
+// than their own (Docker's network aliases). Local is one; a driver that
+// is not refuses a container that asks for aliases.
+type AliasDriver interface {
+	NetworkDriver
+	AttachAliases(ctx context.Context, container string, aliases []string) (Endpoint, error)
+}
+
 // Endpoint is one container's place on a network.
 type Endpoint interface {
 	Addr() netip.Addr

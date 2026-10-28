@@ -82,7 +82,7 @@ not have.
 |---|---|
 | `pull IMAGE` | `IMAGE` is a registry reference or `oci:<dir>[:<ref.name>]` |
 | `images` | `-q` |
-| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network) |
+| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one) |
 | `ps` | `-a/--all`, `-q` |
 | `logs CONTAINER` | `-f/--follow` |
 | `rm CONTAINER...` | `-f/--force` |
@@ -94,10 +94,10 @@ not have.
 | `start CONTAINER...` | starts stopped containers (they keep their files and logs); `-a/--attach` (one container) prints this run's output and exits with its status |
 | `stop CONTAINER...`, `restart CONTAINER...` | `-t/--time` accepted and ignored: a wasm guest has no signals, so stopping is killing, at once |
 | `diff CONTAINER` | the files it added (`A`), changed (`C`) or deleted (`D`) |
-| `events` | `--since`, `--until` (Unix seconds, RFC 3339, or a duration such as `10m`), `-f/--filter` `type=`, `event=`, `container=`, `image=`, `volume=`, `label=`; streams container `create start die kill stop restart destroy prune` and image `pull untag delete prune` (`GET /events`; the last 1024 events are kept for `--since`) |
+| `events` | `--since`, `--until` (Unix seconds, RFC 3339, or a duration such as `10m`), `-f/--filter` `type=`, `event=`, `container=`, `image=`, `volume=`, `network=`, `label=`; streams container `create start die kill stop restart destroy prune`, image `pull untag delete prune` and network `create connect disconnect destroy prune` (`GET /events`; the last 1024 events are kept for `--since`) |
 | `stats [CONTAINER...]` | `--no-stream`, `-a/--all`; linear memory against its limit, bytes written, pids (`GET /containers/{id}/stats`, one reading or one per second). CPU is shown as `--`: a WebAssembly guest gives the engine no CPU accounting, so none is invented |
 | `volume create\|ls\|inspect\|rm\|prune` | named volumes: `create [--label K=V] [NAME]`, `ls [-q]`, `rm [-f]` (refused while any container mounts it), `prune [-a] [-f]` (anonymous ones; `-a` every unused one) |
-| `network create\|ls\|inspect\|rm` | `create [--label K=V] NAME` (an in-engine network, the next free `10.89+n.0.0/16`), `ls [-q]`, `inspect` (with the running containers' addresses), `rm` (refused while a container uses it; `bridge`, `none` and a class network cannot be removed) |
+| `network create\|ls\|inspect\|rm\|connect\|disconnect\|prune` | `create [--label K=V] NAME` (an in-engine network, the next free `10.89+n.0.0/16`), `ls [-q]`, `inspect` (with the running containers' addresses), `rm` (refused while a container uses it; `bridge`, `none` and a class network cannot be removed), `connect [--alias NAME] NETWORK CONTAINER` (a running container at once), `disconnect [-f] NETWORK CONTAINER`, `prune [-f] [--filter label=K[=V]\|label!=K=V]` |
 | `version` | |
 
 **For builders** (API only for now): `POST /images/load` takes an OCI image
@@ -106,7 +106,8 @@ or `org.opencontainers.image.ref.name`, else `<none>`; checked as a pull is,
 nothing read from the host); `PUT /containers/{id}/archive?path=DIR` extracts
 a tar into a container (relative clean names only, no devices, hard links
 inside, paths resolved inside the container, its quota applies;
-`noOverwriteDirNonDir=1`) and `GET` returns a tar of a path. Those two
+`noOverwriteDirNonDir=1`), `GET` returns a tar of a path, and `HEAD` only
+its `X-Docker-Container-Path-Stat` (no tar is built; `api.Client.StatPath`). Those two
 uploads are bounded by `server.Info.MaxUploadBytes` (1 GiB by default),
 every other request at 1 MiB. `GET /images/{name}/json` shows the full config,
 the history, and `RootFS.Layers` as diff_ids. Other modules add commands to
@@ -217,6 +218,22 @@ wait on, so the browser's engine worker keeps its event loop.
   8 KiB and a full queue (256) drops; `127.0.0.1` is the container itself.
   A container is reachable by its name when that is a DNS label, else by
   its short ID.
+- **Aliases and several networks.** `--network-alias` (or
+  `NetworkingConfig.EndpointsConfig[net].Aliases` at create, or
+  `network connect --alias`) adds names on a user-defined network; an alias
+  several containers share answers every one of them, in an order that
+  rotates from query to query (a compose service's replicas). A container
+  joins more networks at create (`EndpointsConfig`, API 1.44+) or with
+  `network connect`, a running one at once: its listeners open on the new
+  network too, a dial goes out through the network holding the address,
+  and names resolve on all of them. `network disconnect` takes it off one;
+  off its last, it has no network. Connect, disconnect, create and destroy
+  are `network` events.
+- **Filters.** `GET /containers/json` (`label`, `name`, `id`, `status`,
+  `network`), `GET /networks` (`label`, `name`, `id`, `driver`),
+  `GET /volumes` (`label`, `name`, `dangling`) and `POST /networks/prune`
+  (`label`) honour Docker's filters (`k`, `k=v`, `k!=v` for labels; both
+  JSON forms); any other filter is refused with 400 rather than ignored.
 - **A class network**: `wctrd --relay https://relay:8443
   --relay-join-code-file FILE [--relay-ca ca.pem]` joins a class of a
   [relay](https://github.com/go-wasmcontainers/relay) and adds a network
@@ -361,8 +378,10 @@ open item.
 ## Limitations
 
 - No `exec` / process spawn (WASIX subset later), no TTY, no stdin attach.
-- Networks: no published ports (`-p`), no `network connect` (one network
-  per container), IPv4 only on in-engine networks, no `AF_UNIX`; the DNS
+- Networks: no published ports (`-p`) yet; a container on several networks
+  binds to its primary address or to all (`0.0.0.0`), not to a secondary
+  address alone; aliases only on in-engine networks; IPv4 only on in-engine
+  networks, no `AF_UNIX`; the DNS
   answers on the resolver addresses shadow a container's own UDP server on
   port 53 there; an unconnected UDP `sendto` to the resolver is not
   answered (stub resolvers connect).

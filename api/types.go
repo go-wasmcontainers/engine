@@ -219,6 +219,39 @@ type NetworkCreateResponse struct {
 	Warning string `json:"Warning"`
 }
 
+// NetworkConnectRequest is the body of POST /networks/{id}/connect.
+type NetworkConnectRequest struct {
+	Container      string            `json:"Container"`
+	EndpointConfig *EndpointSettings `json:"EndpointConfig,omitempty"`
+}
+
+// NetworkDisconnectRequest is the body of POST /networks/{id}/disconnect.
+type NetworkDisconnectRequest struct {
+	Container string `json:"Container"`
+	Force     bool   `json:"Force,omitempty"`
+}
+
+// NetworkPruneResponse is POST /networks/prune.
+type NetworkPruneResponse struct {
+	NetworksDeleted []string `json:"NetworksDeleted"`
+}
+
+// ContainerPathStat is the base64 JSON of the X-Docker-Container-Path-Stat
+// header (GET and HEAD /containers/{id}/archive).
+type ContainerPathStat struct {
+	Name       string `json:"name"`
+	Size       int64  `json:"size"`
+	Mode       uint32 `json:"mode"`
+	Mtime      string `json:"mtime"`
+	LinkTarget string `json:"linkTarget"`
+}
+
+// NetworkingConfig is the create body's networking part: the networks'
+// endpoint settings by network name (only Aliases is read).
+type NetworkingConfig struct {
+	EndpointsConfig map[string]*EndpointSettings `json:"EndpointsConfig,omitempty"`
+}
+
 // MountPoint is one entry of an inspected container's Mounts.
 type MountPoint struct {
 	Type        string `json:"Type"`
@@ -272,7 +305,8 @@ type VolumePruneResponse struct {
 // ContainerCreateRequest is the body of POST /containers/create.
 type ContainerCreateRequest struct {
 	ContainerConfig
-	HostConfig HostConfig `json:"HostConfig"`
+	HostConfig       HostConfig        `json:"HostConfig"`
+	NetworkingConfig *NetworkingConfig `json:"NetworkingConfig,omitempty"`
 }
 
 // ContainerCreateResponse is the reply to POST /containers/create.
@@ -353,8 +387,11 @@ type NetworkSettings struct {
 
 // EndpointSettings is a container's place on one network.
 type EndpointSettings struct {
-	IPAddress string   `json:"IPAddress"`
-	DNSNames  []string `json:"DNSNames"`
+	Aliases     []string `json:"Aliases"`
+	NetworkID   string   `json:"NetworkID,omitempty"`
+	IPAddress   string   `json:"IPAddress"`
+	IPPrefixLen int      `json:"IPPrefixLen,omitempty"`
+	DNSNames    []string `json:"DNSNames"`
 }
 
 // JSONMessage is one line of the POST /images/create progress stream.

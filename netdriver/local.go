@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -27,6 +29,10 @@ type Local struct {
 	udp    map[netip.AddrPort]*udpSock
 	eph    uint16 // the next client port
 	closed bool
+	// aliases are the attached endpoints by alias (AttachAliases); rr
+	// rotates each alias's answer.
+	aliases map[string]map[*localEP]struct{}
+	rr      map[string]uint32
 }
 
 const (
@@ -41,6 +47,8 @@ const (
 	MaxEndpoints = 4096
 	// MaxSockets bounds the listeners and datagram sockets of one network.
 	MaxSockets = 1 << 15
+	// MaxAliases bounds one endpoint's aliases.
+	MaxAliases = 32
 
 	ephemeralFirst = 49152
 )
@@ -56,13 +64,15 @@ func NewLocal(prefix netip.Prefix) (*Local, error) {
 		return nil, fmt.Errorf("netdriver: %s: want an IPv4 prefix of /30 or wider", prefix)
 	}
 	return &Local{
-		prefix: prefix,
-		next:   prefix.Addr().Next().Next(), // .1 is the gateway's, by habit
-		names:  map[string]netip.Addr{},
-		byAddr: map[netip.Addr]*localEP{},
-		tcp:    map[netip.AddrPort]*localListener{},
-		udp:    map[netip.AddrPort]*udpSock{},
-		eph:    ephemeralFirst,
+		prefix:  prefix,
+		next:    prefix.Addr().Next().Next(), // .1 is the gateway's, by habit
+		names:   map[string]netip.Addr{},
+		byAddr:  map[netip.Addr]*localEP{},
+		tcp:     map[netip.AddrPort]*localListener{},
+		udp:     map[netip.AddrPort]*udpSock{},
+		eph:     ephemeralFirst,
+		aliases: map[string]map[*localEP]struct{}{},
+		rr:      map[string]uint32{},
 	}, nil
 }
 
@@ -71,11 +81,63 @@ func (n *Local) Prefix() netip.Prefix { return n.prefix }
 
 // Attach implements NetworkDriver.
 func (n *Local) Attach(ctx context.Context, container string) (Endpoint, error) {
+	return n.AttachAliases(ctx, container, nil)
+}
+
+// AttachAliases implements AliasDriver: the container also answers to
+// aliases on this network (Docker's network aliases; a compose service's
+// name). An alias several containers share resolves to all of them, in an
+// order that rotates from one query to the next. A container's own name
+// wins over another's alias. Attaching again replaces the aliases.
+func (n *Local) AttachAliases(ctx context.Context, container string, aliases []string) (Endpoint, error) {
 	if !ValidName(container) {
 		return nil, fmt.Errorf("netdriver: %q is not a DNS label", container)
 	}
+	if len(aliases) > MaxAliases {
+		return nil, fmt.Errorf("netdriver: at most %d aliases", MaxAliases)
+	}
+	for _, a := range aliases {
+		if !ValidName(a) {
+			return nil, fmt.Errorf("netdriver: alias %q is not a DNS label", a)
+		}
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	ep, err := n.attachLocked(container)
+	if err != nil {
+		return nil, err
+	}
+	n.setAliasesLocked(ep, aliases)
+	return ep, nil
+}
+
+// setAliasesLocked replaces ep's aliases; the caller holds n.mu.
+func (n *Local) setAliasesLocked(ep *localEP, aliases []string) {
+	for _, a := range ep.aliases {
+		if set := n.aliases[a]; set != nil {
+			delete(set, ep)
+			if len(set) == 0 {
+				delete(n.aliases, a)
+				delete(n.rr, a)
+			}
+		}
+	}
+	ep.aliases = nil
+	for _, a := range aliases {
+		if a == ep.name || slices.Contains(ep.aliases, a) {
+			continue
+		}
+		ep.aliases = append(ep.aliases, a)
+		set := n.aliases[a]
+		if set == nil {
+			set = map[*localEP]struct{}{}
+			n.aliases[a] = set
+		}
+		set[ep] = struct{}{}
+	}
+}
+
+func (n *Local) attachLocked(container string) (*localEP, error) {
 	if n.closed {
 		return nil, net.ErrClosed
 	}
@@ -127,12 +189,16 @@ func (n *Local) Close() error {
 }
 
 type localEP struct {
-	n    *Local
-	name string
-	addr netip.Addr
+	n       *Local
+	name    string
+	addr    netip.Addr
+	aliases []string // guarded by n.mu
 }
 
 func (e *localEP) Addr() netip.Addr { return e.addr }
+
+// Prefix is the endpoint's network (Multi routes a dial by it).
+func (e *localEP) Prefix() netip.Prefix { return e.n.prefix }
 
 // own maps the loopback address and the unspecified one to the
 // endpoint's own.
@@ -265,11 +331,22 @@ func (e *localEP) Resolve(ctx context.Context, name string) ([]netip.Addr, error
 	if name == "localhost" {
 		return []netip.Addr{netip.AddrFrom4([4]byte{127, 0, 0, 1})}, nil
 	}
+	key := strings.ToLower(strings.TrimSuffix(name, "."))
 	n := e.n
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if a, ok := n.names[name]; ok && n.byAddr[a] != nil {
+	if a, ok := n.names[key]; ok && n.byAddr[a] != nil {
 		return []netip.Addr{a}, nil
+	}
+	if set := n.aliases[key]; len(set) > 0 {
+		out := make([]netip.Addr, 0, len(set))
+		for ep := range set {
+			out = append(out, ep.addr)
+		}
+		slices.SortFunc(out, netip.Addr.Compare)
+		r := int(n.rr[key] % uint32(len(out)))
+		n.rr[key]++
+		return append(out[r:], out[:r]...), nil
 	}
 	return nil, &net.DNSError{Err: "no such container", Name: name, IsNotFound: true}
 }
@@ -284,6 +361,7 @@ func (e *localEP) Detach() error {
 		return nil
 	}
 	delete(n.byAddr, e.addr)
+	n.setAliasesLocked(e, nil)
 	var ls []*localListener
 	var us []*udpSock
 	for ap, l := range n.tcp {

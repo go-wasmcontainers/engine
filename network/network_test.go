@@ -37,19 +37,28 @@ func TestManager(t *testing.T) {
 	}
 	// Attach: the default network, a created one, none (no endpoint).
 	ctx := context.Background()
-	ep, err := m.Attach(ctx, "", "web")
+	ep, err := m.Attach(ctx, "", "web", nil)
 	if err != nil || !netdriver.DefaultPrefix.Contains(ep.Addr()) {
 		t.Fatal(ep, err)
 	}
-	ep, err = m.Attach(ctx, "lab", "web")
+	ep, err = m.Attach(ctx, "lab", "web", []string{"www"})
 	if err != nil || ep.Addr().String() != "10.89.0.2" {
 		t.Fatal(ep, err)
 	}
-	if ep, err := m.Attach(ctx, None, "web"); err != nil || ep != nil {
+	if got, err := ep.Resolve(ctx, "www"); err != nil || len(got) != 1 || got[0] != ep.Addr() {
+		t.Fatal(got, err)
+	}
+	if ep, err := m.Attach(ctx, None, "web", nil); err != nil || ep != nil {
 		t.Fatal(ep, err)
 	}
-	if _, err := m.Attach(ctx, "nowhere", "web"); !errors.Is(err, ErrNotFound) {
+	if _, err := m.Attach(ctx, "nowhere", "web", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
+	}
+	// Aliases: user-defined networks only, as Docker.
+	for _, net := range []string{"", Bridge, None} {
+		if _, err := m.Attach(ctx, net, "web2", []string{"www"}); !errors.Is(err, ErrInvalid) {
+			t.Errorf("aliases on %q: %v", net, err)
+		}
 	}
 	// Removal: refused while used, and for builtins.
 	if err := m.Remove("lab", func(string) bool { return true }); !errors.Is(err, ErrInUse) {
@@ -59,6 +68,16 @@ func TestManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := m.Remove("lab2", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Prune: unused created networks whose labels match.
+	m.Create("keep", map[string]string{"app": "a"})
+	m.Create("drop", map[string]string{"app": "b"})
+	gone := m.Prune(func(n string) bool { return n == "lab" }, func(l map[string]string) bool { return l["app"] != "a" })
+	if len(gone) != 1 || gone[0] != "drop" {
+		t.Fatalf("pruned %v, want [drop]", gone)
+	}
+	if _, err := m.Get("keep"); err != nil {
 		t.Fatal(err)
 	}
 	m.Close()
@@ -110,7 +129,7 @@ func TestHostDrivers(t *testing.T) {
 	if n, err := m.AddDriver("joined", "relay", d2); err != nil || n.Driver != "relay" || !n.Builtin {
 		t.Fatal(n, err)
 	}
-	if ep, err := m.Attach(context.Background(), "joined", "web"); err != nil || ep == nil {
+	if ep, err := m.Attach(context.Background(), "joined", "web", nil); err != nil || ep == nil {
 		t.Fatal(ep, err)
 	}
 	if err := m.Remove("joined", nil); !errors.Is(err, ErrInvalid) {
@@ -122,7 +141,7 @@ func TestHostDrivers(t *testing.T) {
 	if got, err := m.RemoveDriver("joined"); err != nil || got != d2 {
 		t.Fatal(got, err)
 	}
-	if _, err := m.Attach(context.Background(), "joined", "web"); !errors.Is(err, ErrNotFound) {
+	if _, err := m.Attach(context.Background(), "joined", "web", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
 	d2.Close()

@@ -46,24 +46,20 @@ func volumeStatus(err error) int {
 	return statusOf(err)
 }
 
-// volumesList honours the name and dangling filters; others are refused.
+// volumesList honours the name, label and dangling filters; others are
+// refused.
 func (s *server) volumesList(w http.ResponseWriter, r *http.Request) {
-	var filters map[string][]string
-	if f := r.URL.Query().Get("filters"); f != "" {
-		if err := json.Unmarshal([]byte(f), &filters); err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid filters: %v", err))
-			return
-		}
-		for k := range filters {
-			if k != "name" && k != "dangling" {
-				writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported volume filter %q", k))
-				return
-			}
-		}
+	filters, err := parseFilters(r.URL.Query().Get("filters"), "name", "label", "dangling")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
 	out := api.VolumeListResponse{Volumes: []api.Volume{}, Warnings: []string{}}
 	for _, v := range s.d.Volumes().List() {
 		if names := filters["name"]; len(names) > 0 && !anyContains(v.Name, names) {
+			continue
+		}
+		if !labelsMatch(v.Labels, filters["label"]) {
 			continue
 		}
 		if d := filters["dangling"]; len(d) > 0 {

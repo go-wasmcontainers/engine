@@ -278,6 +278,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 		volumes    []string
 		network    string
 		gpu        bool
+		aliases    []string
 	)
 	cmd := &cobra.Command{
 		Use:   "run [OPTIONS] IMAGE [COMMAND] [ARG...]",
@@ -297,6 +298,12 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 			req.HostConfig.NetworkMode = network
 			if gpu {
 				req.HostConfig.DeviceRequests = []api.DeviceRequest{api.GPURequest()}
+			}
+			if len(aliases) > 0 {
+				if network == "" || network == "default" || network == "bridge" {
+					return &exitError{code: 125, err: fmt.Errorf("--network-alias needs a user-defined --network")}
+				}
+				req.NetworkingConfig = &api.NetworkingConfig{EndpointsConfig: map[string]*api.EndpointSettings{network: {Aliases: aliases}}}
 			}
 			if len(args) > 1 {
 				req.Cmd = args[1:]
@@ -329,6 +336,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 	f.StringArrayVarP(&volumes, "volume", "v", nil, "mount a named volume: NAME:/path[:ro] (created if missing)")
 	f.StringVar(&network, "network", "", "connect to a network (default bridge; none: no network)")
 	f.BoolVar(&gpu, "gpu", false, "give the container the local GPU (wasi:webgpu, wasi-nn on the GPU)")
+	f.StringArrayVar(&aliases, "network-alias", nil, "add a name the container answers to on --network (replicas may share one)")
 	return cmd
 }
 
