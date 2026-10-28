@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -141,10 +142,17 @@ func TestAcceptance(t *testing.T) {
 	}
 	dir := shortDir(t)
 	bin := filepath.Join(dir, "bin")
+	// cmd/wctr is a module of its own: a workspace of the two builds it
+	// against this tree's engine, not the released one it requires.
+	work := filepath.Join(dir, "go.work")
+	root := testutil.RepoRoot()
+	if err := os.WriteFile(work, []byte("go 1.27.3\n\nuse (\n\t"+strconv.Quote(root)+"\n\t"+strconv.Quote(filepath.Join(root, "cmd", "wctr"))+"\n)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []string{"wctr", "wctrd"} {
 		b := exec.Command("go", "build", "-o", filepath.Join(bin, c), "./cmd/"+c)
-		b.Dir = testutil.RepoRoot()
-		b.Env = append(os.Environ(), "CGO_ENABLED=0", "GOWORK=off")
+		b.Dir = root
+		b.Env = append(os.Environ(), "CGO_ENABLED=0", "GOWORK="+work)
 		if msg, err := b.CombinedOutput(); err != nil {
 			t.Fatalf("build %s: %v\n%s", c, err, msg)
 		}

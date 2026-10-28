@@ -30,7 +30,8 @@ executor, so the whole core is testable in CI. Documentation:
 ## Demo
 
 ```console
-$ go install github.com/go-wasmcontainers/engine/cmd/wctr@latest github.com/go-wasmcontainers/engine/cmd/wctrd@latest
+$ go install github.com/go-wasmcontainers/engine/cmd/wctr@latest
+$ go install github.com/go-wasmcontainers/engine/cmd/wctrd@latest
 $ export WCTR_HOST=unix://$HOME/wctr.sock    # the default, /var/run/wctr.sock, needs write access to /var/run
 $ wctrd -H "$WCTR_HOST" &
 wctrd v0.1.0 listening on unix:///home/me/wctr.sock (data root /home/me/.local/share/wasmcontainers)
@@ -89,6 +90,7 @@ not have.
 | `rmi IMAGE...` | `-f/--force` |
 | `commit CONTAINER [REPO[:TAG]]` | `-m/--message`, `-a/--author`, `-c/--change` (`CMD`, `ENTRYPOINT`, `ENV`, `EXPOSE`, `LABEL`, `ONBUILD`, `STOPSIGNAL`, `USER`, `VOLUME`, `WORKDIR`): the container's changes as one OCI layer (OCI whiteouts) on the parent's, a history entry (`empty_layer` when nothing changed); without a name, a `<none>` image addressable by ID (`POST /commit`) |
 | `tag SOURCE TARGET` | another name for an image; a tag that moves leaves the old image as `<none>` (`POST /images/{name}/tag`) |
+| `build`, `compose` | from [build](https://github.com/go-wasmcontainers/build) and [compose](https://github.com/go-wasmcontainers/compose), wired in `cmd/wctr` through `cli.Options.Extra`; they use wctr's `-H`. The root command reads its own flags before the subcommand (`TraverseChildren`), so `-f` is `compose`'s `--file` and `logs`' `--follow` |
 | `inspect NAME\|ID...` | containers, then images |
 | `kill CONTAINER...` | |
 | `start CONTAINER...` | starts stopped containers (they keep their files and logs); `-a/--attach` (one container) prints this run's output and exits with its status |
@@ -286,7 +288,7 @@ The module sees the container's root filesystem as its preopened `/`
 | `daemon` | image store + unpacked image trees + container manager; the create override rules |
 | `api`, `api/server`, `api/inproc` | the API: types, client, multiplexed stream; the HTTP server; an in-memory transport for an in-process client (the browser has no sockets) |
 | `cli` | the `wctr` command tree, importable (the playground runs it in-process) |
-| `cmd/wctr`, `cmd/wctrd` | the CLI (cobra; also builds for `GOOS=wasip1`) and the daemon |
+| `cmd/wctr`, `cmd/wctrd` | the CLI (cobra; also builds for `GOOS=wasip1`) and the daemon. `cmd/wctr` is a **module of its own** (`github.com/go-wasmcontainers/engine/cmd/wctr`, tags `cmd/wctr/vX.Y.Z`): it adds `wctr build` ([build](https://github.com/go-wasmcontainers/build)) and `wctr compose` ([compose](https://github.com/go-wasmcontainers/compose)), which depend on the engine and so cannot be imported from its module. Install the two with two `go install` commands: one command naming both no longer works, as they are in different modules. Engine tags up to v0.14.0 still hold `cmd/wctr` (without build and compose) |
 
 ## In a browser
 
