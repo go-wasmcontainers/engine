@@ -41,6 +41,10 @@ type Options struct {
 	// wazero's. It exists so that host is exercised natively by real
 	// guests.
 	EngineWASI bool
+	// HostModules are served beside wasi_snapshot_preview1 (wasi-nn,
+	// wasi:webgpu, …). They run in the engine's WASI host, so setting any
+	// implies EngineWASI.
+	HostModules []wasi.HostModule
 }
 
 // Executor runs modules with wazero. Compiled modules are cached by the
@@ -74,6 +78,9 @@ func New(opt Options) *Executor {
 	}
 	if opt.MaxCompiled <= 0 {
 		opt.MaxCompiled = 64
+	}
+	if len(opt.HostModules) > 0 {
+		opt.EngineWASI = true
 	}
 	return &Executor{
 		opt:      opt,
@@ -115,11 +122,13 @@ func (e *Executor) runtimeLocked(ctx context.Context, pages uint32) (wazero.Runt
 		// interpreter and its compiler.
 		WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExceptionHandling)
 	r := wazero.NewRuntimeWithConfig(ctx, cfg)
-	instantiate := wasi_snapshot_preview1.Instantiate
+	var err error
 	if e.opt.EngineWASI {
-		instantiate = instantiateEngineWASI
+		_, err = instantiateEngineWASI(ctx, r, e.opt.HostModules)
+	} else {
+		_, err = wasi_snapshot_preview1.Instantiate(ctx, r)
 	}
-	if _, err := instantiate(ctx, r); err != nil {
+	if err != nil {
 		r.Close(ctx)
 		return nil, err
 	}
@@ -282,7 +291,7 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	if e.opt.EngineWASI {
 		proc = wasi.New(wasi.Config{
 			Args: args, Env: spec.Env, FS: spec.FS, Mounts: WASIMounts(spec.Mounts), Stdin: stdin, Stdout: stdout, Stderr: stderr,
-			Net: spec.Net,
+			Net: spec.Net, Modules: e.opt.HostModules, Caps: spec.Caps,
 		})
 		runCtx = withProc(runCtx, proc)
 	}

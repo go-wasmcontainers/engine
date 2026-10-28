@@ -173,9 +173,11 @@ func (p *Proc) netInit() {
 	p.net = &netState{ep: p.cfg.Net, ctx: ctx, cancel: cancel, wake: make(chan struct{})}
 }
 
-// Close releases what the process holds beyond its memory: its sockets
-// and their goroutines. An executor calls it when the process ends.
+// Close releases what the process holds beyond its memory: its host
+// modules' instances, its sockets and their goroutines. An executor calls
+// it when the process ends.
 func (p *Proc) Close() {
+	p.host.closeAll()
 	n := p.net
 	n.cancel()
 	n.mu.Lock()

@@ -32,6 +32,10 @@ type Options struct {
 	CodeCache, CodeCacheURL string
 	// OnCompile, when set, is told about each module the executor got.
 	OnCompile func(CompileStat)
+	// HostModules are served beside wasi_snapshot_preview1 by the engine's
+	// WASI host in this worker; worker.js gives the guest one import
+	// object per module.
+	HostModules []wasi.HostModule
 }
 
 // Executor runs each container process in a Web Worker.
@@ -181,6 +185,19 @@ func (m jsMemory) view(off, n uint32) (js.Value, bool) {
 	return js.Global().Get("Uint8Array").New(buf, off, n), true
 }
 
+// size is the memory's current length in bytes.
+func (m jsMemory) size() uint64 {
+	if m.mem.IsUndefined() || m.mem.IsNull() {
+		return 0
+	}
+	return uint64(m.mem.Get("buffer").Get("byteLength").Float())
+}
+
+// JSMemory returns the guest's shared WebAssembly.Memory, so a host module
+// can hand a view of it to a browser API (WebGPU's writeBuffer takes a
+// shared buffer) instead of copying through Go.
+func (m jsMemory) JSMemory() js.Value { return m.mem }
+
 func (m jsMemory) Read(off, n uint32) ([]byte, bool) {
 	v, ok := m.view(off, n)
 	if !ok {
@@ -276,61 +293,43 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	for i, mt := range spec.Mounts {
 		mounts[i] = wasi.Mount{Path: mt.Path, FS: mt.FS, ReadOnly: mt.ReadOnly}
 	}
-	proc := wasi.New(wasi.Config{Args: args, Env: spec.Env, FS: spec.FS, Mounts: mounts, Stdin: spec.Stdin, Stdout: spec.Stdout, Stderr: spec.Stderr, Net: spec.Net})
+	imports, err := wasi.Imports(e.opt.HostModules)
+	if err != nil {
+		return nil, err
+	}
+	proc := wasi.New(wasi.Config{Args: args, Env: spec.Env, FS: spec.FS, Mounts: mounts, Stdin: spec.Stdin, Stdout: spec.Stdout, Stderr: spec.Stderr, Net: spec.Net,
+		Modules: e.opt.HostModules, Caps: spec.Caps})
 
-	ctl := js.Global().Get("SharedArrayBuffer").New(256)
+	ctl := js.Global().Get("SharedArrayBuffer").New(ctlSize)
 	i32 := js.Global().Get("Int32Array").New(ctl)
-	ctlU8 := js.Global().Get("Uint8Array").New(ctl, 0, 192)
+	ctlU8 := js.Global().Get("Uint8Array").New(ctl, 0, ctlSize)
 	atomics := js.Global().Get("Atomics")
 	worker := js.Global().Get("Worker").New(e.opt.WorkerURL)
 	p := &process{worker: worker, done: make(chan struct{}), mem: js.Undefined(), limit: int64(pagesFor(limit)) * 65536, proc: proc}
 	mem := jsMemory{mem: js.Undefined()}
-	ctlBuf := make([]byte, 192)
-
-	onMessage := js.FuncOf(func(_ js.Value, a []js.Value) any {
-		data := a[0].Get("data")
-		switch data.Get("t").String() {
-		case "memory":
-			mem = jsMemory{mem: data.Get("memory")}
-			p.mu.Lock()
-			p.mem = mem.mem
-			p.mu.Unlock()
-		case "call":
-			js.CopyBytesToGo(ctlBuf, ctlU8)
-			fn := int(int32(binary.LittleEndian.Uint32(ctlBuf[4:])))
-			var res wasi.Result
-			if fn < 0 || fn >= len(wasi.Funcs) {
-				res = wasi.Result{Errno: wasi.ENOSYS}
-			} else {
-				n := len(wasi.Funcs[fn].Params)
-				callArgs := make([]uint64, n)
-				for i := 0; i < n; i++ {
-					callArgs[i] = binary.LittleEndian.Uint64(ctlBuf[64+8*i:])
-				}
-				res = proc.Call(fn, callArgs, mem)
-			}
-			reply := func(res wasi.Result) {
-				flags := 0
-				if res.Exit {
-					flags = 1
-				}
-				sleep := res.Sleep.Microseconds()
-				if sleep > math.MaxInt32 {
-					sleep = math.MaxInt32
-				}
-				i32.SetIndex(2, int(res.Errno))
-				i32.SetIndex(3, flags)
-				i32.SetIndex(4, int(sleep))
-				i32.SetIndex(5, int(int32(res.Code)))
-				atomics.Call("store", i32, 0, 2)
-				atomics.Call("notify", i32, 0)
-			}
-			if res.Wait == nil {
-				reply(res)
-				break
-			}
-			// A socket wait: never in this callback (the network needs
-			// the event loop). The guest stays blocked in Atomics.wait.
+	ctlBuf := make([]byte, ctlSize)
+	// pending is the continuation of a host call waiting for the guest's
+	// cabi_realloc (the worker answers with a "realloc" message).
+	var pending *wasi.Realloc
+	var reply func(fn int, res wasi.Result)
+	// serve finishes a call: an answer, a realloc request, or a wait for a
+	// socket or a promise (never in this callback: those need the event
+	// loop; the guest stays blocked in Atomics.wait meanwhile).
+	var serve func(fn int, res wasi.Result)
+	serve = func(fn int, res wasi.Result) {
+		switch {
+		case res.Trap != "":
+			p.finish(runtime.Result{ExitCode: runtime.ExitTrap, Error: res.Trap})
+		case res.Realloc != nil:
+			pending = res.Realloc
+			i32.SetIndex(ctlFlags, flagRealloc)
+			i32.SetIndex(ctlAlign, int(int32(res.Realloc.Align)))
+			i32.SetIndex(ctlSizeArg, int(int32(res.Realloc.Size)))
+			atomics.Call("store", i32, ctlState, stateDone)
+			atomics.Call("notify", i32, ctlState)
+		case res.Wait == nil:
+			reply(fn, res)
+		default:
 			go func(res wasi.Result, mem jsMemory) {
 				for res.Wait != nil {
 					var timeout <-chan time.Time
@@ -347,8 +346,74 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 					}
 					res = res.Resume(mem)
 				}
-				reply(res)
+				serve(fn, res)
 			}(res, mem)
+		}
+	}
+	current := -1 // the import being served
+	reply = func(fn int, res wasi.Result) {
+		flags := 0
+		if res.Exit {
+			flags = flagExit
+		}
+		sleep := res.Sleep.Microseconds()
+		if sleep > math.MaxInt32 {
+			sleep = math.MaxInt32
+		}
+		i32.SetIndex(ctlErrno, int(res.Errno))
+		i32.SetIndex(ctlFlags, flags)
+		i32.SetIndex(ctlSleep, int(sleep))
+		i32.SetIndex(ctlCode, int(int32(res.Code)))
+		if fn >= len(wasi.Funcs) {
+			var b [8]byte
+			binary.LittleEndian.PutUint64(b[:], res.Ret)
+			js.CopyBytesToJS(js.Global().Get("Uint8Array").New(ctl, ctlRet, 8), b[:])
+		}
+		atomics.Call("store", i32, ctlState, stateDone)
+		atomics.Call("notify", i32, ctlState)
+	}
+
+	onMessage := js.FuncOf(func(_ js.Value, a []js.Value) any {
+		data := a[0].Get("data")
+		switch data.Get("t").String() {
+		case "memory":
+			mem = jsMemory{mem: data.Get("memory")}
+			p.mu.Lock()
+			p.mem = mem.mem
+			p.mu.Unlock()
+		case "call":
+			js.CopyBytesToGo(ctlBuf, ctlU8)
+			fn := int(int32(binary.LittleEndian.Uint32(ctlBuf[4*ctlFunc:])))
+			if fn < 0 || fn >= len(imports) {
+				p.finish(runtime.Result{ExitCode: runtime.ExitTrap, Error: fmt.Sprintf("call to unknown import %d", fn)})
+				break
+			}
+			current = fn
+			n := len(imports[fn].Params)
+			callArgs := make([]uint64, n)
+			for i := 0; i < n; i++ {
+				callArgs[i] = binary.LittleEndian.Uint64(ctlBuf[ctlArgs+8*i:])
+			}
+			serve(fn, proc.CallImport(fn, callArgs, mem))
+		case "realloc":
+			// The worker ran the guest's cabi_realloc for the pending call.
+			r := pending
+			pending = nil
+			if r == nil || current < 0 {
+				p.finish(runtime.Result{ExitCode: runtime.ExitTrap, Error: "unexpected realloc answer"})
+				break
+			}
+			if data.Get("error").Truthy() {
+				p.finish(runtime.Result{ExitCode: runtime.ExitTrap, Error: data.Get("error").String()})
+				break
+			}
+			js.CopyBytesToGo(ctlBuf, ctlU8)
+			ptr := binary.LittleEndian.Uint32(ctlBuf[4*ctlPtr:])
+			if err := wasi.CheckBlock(ptr, r.Align, r.Size, mem.size()); err != nil {
+				p.finish(runtime.Result{ExitCode: runtime.ExitTrap, Error: err.Error()})
+				break
+			}
+			serve(current, r.Then(ptr, mem))
 		case "exit":
 			p.finish(runtime.Result{ExitCode: data.Get("code").Int()})
 		case "trap":
@@ -368,9 +433,9 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	worker.Set("onmessage", onMessage)
 	worker.Set("onerror", onError)
 
-	funcs := make([]any, len(wasi.Funcs))
-	for i, f := range wasi.Funcs {
-		funcs[i] = []any{f.Name, f.NoResult}
+	funcs := make([]any, len(imports))
+	for i, f := range imports {
+		funcs[i] = []any{f.Module, f.Name, f.Params, f.Result}
 	}
 	msg := js.Global().Get("Object").New()
 	msg.Set("module", mod)

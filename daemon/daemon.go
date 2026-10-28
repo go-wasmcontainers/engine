@@ -378,6 +378,8 @@ type CreateRequest struct {
 	// Network is the network to join by name or ID ("" or "default": the
 	// engine's default; "none": no network).
 	Network string
+	// Caps are device capabilities granted to the container ("gpu").
+	Caps []string
 }
 
 // ParseBind reads "VOLUME:/path[:ro|:rw]".
@@ -484,7 +486,7 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 		Image: req.Image, ImageID: string(img.ID()),
 		Entrypoint: ec.Entrypoint, Cmd: ec.Cmd,
 		Env: mergeEnv(ec.Env, req.Env), WorkingDir: ec.WorkingDir, Labels: ec.Labels,
-		MemoryLimitBytes: req.Memory, AutoRemove: req.AutoRemove,
+		MemoryLimitBytes: req.Memory, AutoRemove: req.AutoRemove, Caps: req.Caps,
 	}
 	if req.Entrypoint != nil {
 		cfg.Entrypoint, cfg.Cmd = req.Entrypoint, nil

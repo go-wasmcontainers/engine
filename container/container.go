@@ -66,6 +66,8 @@ type Config struct {
 	// Network is the network it joins (run --network): "" for the
 	// engine's default, "none" for no network.
 	Network string `json:"-"`
+	// Caps are device capabilities granted to it (run --gpu: "gpu").
+	Caps []string `json:"-"`
 }
 
 // Mount is a volume mounted at Target.
@@ -563,7 +565,7 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 	spec := runtime.Spec{
 		ID: c.id, FS: c.fs, Path: c.path, Args: argv, Env: env,
 		Stdout: logWriter{c.logs, Stdout}, Stderr: logWriter{c.logs, Stderr},
-		MemoryLimitBytes: mem, Timeout: m.opt.Timeout,
+		MemoryLimitBytes: mem, Timeout: m.opt.Timeout, Caps: c.cfg.Caps,
 	}
 	for _, mt := range c.cfg.Mounts {
 		var vfs *rootfs.FS

@@ -405,6 +405,11 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("no image specified"))
 		return
 	}
+	caps, err := api.DeviceCaps(req.HostConfig.DeviceRequests)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	var warnings []string
 	if req.Tty {
 		warnings = append(warnings, "TTY is not supported; output is multiplexed")
@@ -413,7 +418,7 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 		Name: r.URL.Query().Get("name"), Image: req.Image,
 		Entrypoint: req.Entrypoint, Cmd: req.Cmd, Env: req.Env, WorkingDir: req.WorkingDir, Labels: req.Labels,
 		Memory: req.HostConfig.Memory, AutoRemove: req.HostConfig.AutoRemove, Binds: req.HostConfig.Binds,
-		Network: req.HostConfig.NetworkMode,
+		Network: req.HostConfig.NetworkMode, Caps: caps,
 	})
 	if err != nil {
 		writeError(w, statusOf(err), err)

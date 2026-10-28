@@ -77,6 +77,8 @@ jobs:
           - { target: FuzzCall, pkg: ./wasi }
           # Sequences of socket calls on two processes of one network.
           - { target: FuzzSockets, pkg: ./wasi }
+          # The block a guest's cabi_realloc hands a host module.
+          - { target: FuzzCheckBlock, pkg: ./wasi }
           # A guest's DNS queries, answered by the network's DNS server.
           - { target: FuzzAnswer, pkg: ./netdriver }
           - { target: FuzzLimitMemory, pkg: ./wasmbin }
