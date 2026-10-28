@@ -4,8 +4,8 @@ go 1.27.3
 
 require (
 	github.com/go-wasmcontainers/build v0.2.1
-	github.com/go-wasmcontainers/compose v0.2.1
-	github.com/go-wasmcontainers/engine v0.14.0
+	github.com/go-wasmcontainers/compose v0.3.0
+	github.com/go-wasmcontainers/engine v0.16.0
 	github.com/spf13/cobra v1.10.2
 )
 
@@ -25,5 +25,3 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
 )
-
-replace github.com/go-wasmcontainers/engine => ../..
