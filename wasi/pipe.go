@@ -102,22 +102,25 @@ func (q *pipe) write(b []byte) (n int, broken bool, wake <-chan struct{}) {
 	return n, false, nil
 }
 
-// anyOf returns a channel closed when any of chs is. Its goroutines end
-// with it: each channel given is closed at the latest when its pipe or
-// network changes, and every change wakes all of them.
-func anyOf(chs []<-chan struct{}) <-chan struct{} {
+// anyOf returns a channel closed when any of chs is, and stop, which ends
+// its goroutines. A waiter calls stop once it is done waiting (woken, or
+// its clock ran out); otherwise a poll that times out on idle pipes would
+// leave its goroutines behind until those pipes change.
+func anyOf(chs []<-chan struct{}) (<-chan struct{}, func()) {
 	out := make(chan struct{})
-	var once sync.Once
+	quit := make(chan struct{})
+	var once, stopOnce sync.Once
 	for _, c := range chs {
 		go func(c <-chan struct{}) {
 			select {
 			case <-c:
 				once.Do(func() { close(out) })
 			case <-out:
+			case <-quit:
 			}
 		}(c)
 	}
-	return out
+	return out, func() { stopOnce.Do(func() { close(quit) }) }
 }
 
 // Pipe creates a pipe in this process: the read end at r, the write end

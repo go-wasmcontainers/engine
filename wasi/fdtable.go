@@ -325,16 +325,20 @@ func (p *Proc) preopenFor(t *FDTable, abs string) (*fdEntry, string) {
 	return best, rel
 }
 
+// MaxModuleBytes bounds a module a process spawns (spawns repeat, up to
+// the group's rate, so each read is bounded on its own).
+const MaxModuleBytes = 128 << 20
+
 // ReadModule reads the module a child is to run: an absolute guest path,
 // resolved through this process's preopens. ENOENT when nothing is
 // there, ENOEXEC when it is not a regular file holding a WebAssembly
-// module.
+// module, or holds more than MaxModuleBytes.
 func (p *Proc) ReadModule(abs string) ([]byte, uint32) {
 	in, e := p.Stat(abs, false)
 	if e != 0 {
 		return nil, e
 	}
-	if !in.Mode().IsRegular() {
+	if !in.Mode().IsRegular() || in.Size() > MaxModuleBytes {
 		return nil, ENOEXEC
 	}
 	pre, rel := p.preopenFor(&FDTable{fds: p.fds}, resolve("/", abs))

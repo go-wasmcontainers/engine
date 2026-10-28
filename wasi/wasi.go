@@ -1356,10 +1356,12 @@ func (p *Proc) pollUntil(in, out, nsubs, resultPtr uint32, deadline time.Time, m
 			if !deadline.IsZero() {
 				left = max(time.Until(deadline), time.Nanosecond)
 			}
+			stop := func() {}
 			if len(pipeWakes) > 0 {
-				wake = anyOf(append(pipeWakes, wake))
+				wake, stop = anyOf(append(pipeWakes, wake))
 			}
 			return Result{Wait: wake, Sleep: left, Resume: func(m Memory) Result {
+				stop() // woken or timed out: the merged wait's goroutines end here
 				return p.pollUntil(in, out, nsubs, resultPtr, deadline, m)
 			}}
 		}

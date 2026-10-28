@@ -2,6 +2,7 @@ package wasi
 
 import (
 	"encoding/binary"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -151,6 +152,86 @@ func TestPollPipes(t *testing.T) {
 	sub(m, 0, 1, eventFdRead, r, 0)
 	if y := call(t, p, m, "poll_oneoff", 0, 1000, 1, 2000); y.Errno != 0 || binary.LittleEndian.Uint16(m[1000+24:]) != eventHangup {
 		t.Fatalf("hang-up: %+v", y)
+	}
+}
+
+// TestPollPipeNoGoroutineLeak: timed polls on an idle pipe leave no
+// goroutines behind (a guest looping on poll(pipe, 1µs) must not grow the
+// host). Before the fix: two goroutines per poll, 1000 after 500 polls.
+func TestPollPipeNoGoroutineLeak(t *testing.T) {
+	p, _, _ := newProc(t)
+	m := make(mem, 4096)
+	r, _, _ := p.Pipe()
+	settle := func() int {
+		time.Sleep(50 * time.Millisecond)
+		return runtime.NumGoroutine()
+	}
+	before := settle()
+	const polls = 500
+	waited := 0
+	for i := 0; i < polls; i++ {
+		sub(m, 0, 1, eventFdRead, r, 0)
+		sub(m, 48, 3, eventClock, 0, uint64(time.Microsecond))
+		x := call(t, p, m, "poll_oneoff", 0, 1000, 2, 2000)
+		if x.Wait != nil {
+			waited++
+			time.Sleep(x.Sleep)
+			x.Resume(m)
+		}
+	}
+	if waited == 0 {
+		t.Fatal("no poll waited: the test measured nothing")
+	}
+	if d := settle() - before; d > 20 {
+		t.Fatalf("%d goroutines left after %d timed polls", d, polls)
+	}
+}
+
+func TestGroupKillThenRegister(t *testing.T) {
+	g := NewGroup(GroupLimits{})
+	p := New(Config{FS: rootfs.New(), Group: g})
+	if e := g.Admit(0); e != 0 {
+		t.Fatal(e)
+	}
+	c := New(Config{FS: rootfs.New(), Group: g, Admitted: true, Parent: p})
+	g.Kill()
+	killed := false
+	g.OnKill(c.Pid(), func() { killed = true })
+	if !killed {
+		t.Error("a process registered after the group was killed was not killed")
+	}
+}
+
+type countMod struct{ closes *int }
+
+func (countMod) Module() string        { return "count" }
+func (countMod) Funcs() []HostFunc     { return []HostFunc{{Name: "f"}} }
+func (c countMod) Open(*Proc) Instance { return countInst(c) }
+
+type countInst countMod
+
+func (countInst) Call(int, []uint64, Memory) Result { return Result{} }
+func (c countInst) Close()                          { *c.closes++ }
+
+func TestCloseTwiceClosesInstancesOnce(t *testing.T) {
+	n := 0
+	p := New(Config{FS: rootfs.New(), Modules: []HostModule{countMod{&n}}})
+	p.CallImport(len(Funcs), nil, make(mem, 8))
+	p.Close()
+	p.Close()
+	if n != 1 {
+		t.Errorf("instance closed %d times", n)
+	}
+}
+
+func TestReadModuleBounded(t *testing.T) {
+	f := rootfs.New()
+	big := make([]byte, MaxModuleBytes+1)
+	copy(big, "\x00asm\x01\x00\x00\x00")
+	f.WriteFile("/big.wasm", big, 0o644)
+	p := New(Config{FS: f})
+	if _, e := p.ReadModule("/big.wasm"); e != ENOEXEC {
+		t.Errorf("oversized module: %d", e)
 	}
 }
 

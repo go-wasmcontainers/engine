@@ -50,11 +50,18 @@ func (s *spawner) Spawn(parent *wasi.Proc, ss wasi.SpawnSpec) (*wasi.Child, uint
 		Modules: s.e.opt.HostModules, Caps: s.spec.Caps, Parent: parent, FDs: ss.FDs,
 		Group: s.group, Spawner: s, Terminal: s.spec.Terminal, MemoryLimitBytes: s.mem, Admitted: true,
 	})
-	var child *wasi.Child
-	p := s.e.run(mod, proc, s.imports, int64(s.pages)*65536, func(r runtime.Result) {
+	// The child exists before its worker starts, so its end can never be
+	// reported to a handle not yet made.
+	var p *process
+	kill := func() {
+		if p != nil {
+			p.Kill()
+		}
+	}
+	child := wasi.NewChild(proc.Pid(), kill)
+	p = s.e.run(mod, proc, s.imports, int64(s.pages)*65536, func(r runtime.Result) {
 		child.Exit(r.ExitStatus(), parent)
 	})
-	child = wasi.NewChild(proc.Pid(), p.Kill)
-	s.group.OnKill(proc.Pid(), p.Kill)
+	s.group.OnKill(proc.Pid(), kill)
 	return child, 0
 }

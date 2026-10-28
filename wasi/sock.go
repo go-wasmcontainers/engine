@@ -177,7 +177,6 @@ func (p *Proc) netInit() {
 // modules' instances, its sockets and their goroutines. An executor calls
 // it when the process ends.
 func (p *Proc) Close() {
-	p.host.closeAll()
 	p.childMu.Lock()
 	if p.closed {
 		p.childMu.Unlock()
@@ -185,6 +184,7 @@ func (p *Proc) Close() {
 	}
 	p.closed = true
 	p.childMu.Unlock()
+	p.host.closeAll()
 	p.cfg.Group.unregister(p)
 	n := p.net
 	n.cancel()

@@ -129,13 +129,20 @@ func (g *Group) unregister(p *Proc) {
 	}
 }
 
-// OnKill registers how to stop process pid (its executor's kill).
+// OnKill registers how to stop process pid (its executor's kill). After
+// the group was killed it stops the process at once: a spawn admitted
+// before the kill and registered after it must not outlive the group.
 func (g *Group) OnKill(pid uint32, kill func()) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
+	if g.dead {
+		g.mu.Unlock()
+		kill()
+		return
+	}
 	if _, ok := g.procs[pid]; ok {
 		g.kills[pid] = kill
 	}
+	g.mu.Unlock()
 }
 
 // Kill stops every process of the group and refuses new ones.

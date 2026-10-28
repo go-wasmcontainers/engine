@@ -108,36 +108,28 @@ func procExecutor(t *testing.T) *Executor {
 	return e
 }
 
-// TestSpawnPipeline: a child's stdout on a pipe, read to end of file once
-// the child (the last writer) exits, then joined with its exit code.
-func TestSpawnPipeline(t *testing.T) {
+// TestSpawn runs testdata/wasm/spawner through one executor (its compiled
+// modules cached across the cases, which keeps the race-enabled CI lanes
+// short):
+//   - pipeline: a child's stdout on a pipe, read to end of file once the
+//     child (the last writer) exits, then joined with its exit code;
+//   - codes: an exit code above 255 survives; a missing module is ENOENT,
+//     a file that is not a module ENOEXEC, a join with no child ECHILD;
+//   - orphan: a spinning child does not keep the container alive once its
+//     first process exits.
+func TestSpawn(t *testing.T) {
 	img := lower(t, "spawner", "hello", "probe")
 	e := procExecutor(t)
 	r := start(t, e, runtime.Spec{FS: img.Clone(rootfs.Quota{}), Path: "/bin/spawner.wasm", Args: []string{"spawner", "pipeline"}})
 	want := fmt.Sprintf("me=1 child=2 read=%q err=<nil> code=0 sig=0 join=0\n", "Hello from a WebAssembly container!\n")
 	if r.stdout != want || r.res.ExitCode != 0 {
-		t.Fatalf("stdout %q (exit %d, %s, stderr %q), want %q", r.stdout, r.res.ExitCode, r.res.Error, r.stderr, want)
+		t.Errorf("pipeline: stdout %q (exit %d, %s, stderr %q), want %q", r.stdout, r.res.ExitCode, r.res.Error, r.stderr, want)
 	}
-}
-
-// TestSpawnCodes: a child's exit code above 255 survives; a missing
-// module is ENOENT, a file that is not a module ENOEXEC, and a join with
-// no children left ECHILD.
-func TestSpawnCodes(t *testing.T) {
-	img := lower(t, "spawner", "probe")
-	e := procExecutor(t)
-	r := start(t, e, runtime.Spec{FS: img.Clone(rootfs.Quota{}), Path: "/bin/spawner.wasm", Args: []string{"spawner", "codes"}})
-	want := fmt.Sprintf("300 0 0\n%d %d %d\n", wasi.ENOENT, wasi.ENOEXEC, wasi.ECHILD)
+	r = start(t, e, runtime.Spec{FS: img.Clone(rootfs.Quota{}), Path: "/bin/spawner.wasm", Args: []string{"spawner", "codes"}})
+	want = fmt.Sprintf("300 0 0\n%d %d %d\n", wasi.ENOENT, wasi.ENOEXEC, wasi.ECHILD)
 	if r.stdout != want {
-		t.Fatalf("stdout %q (stderr %q, %s), want %q", r.stdout, r.stderr, r.res.Error, want)
+		t.Errorf("codes: stdout %q (stderr %q, %s), want %q", r.stdout, r.stderr, r.res.Error, want)
 	}
-}
-
-// TestSpawnOrphanStops: a spinning child does not keep the container
-// alive once its first process exits.
-func TestSpawnOrphanStops(t *testing.T) {
-	img := lower(t, "spawner", "probe")
-	e := procExecutor(t)
 	done := make(chan run, 1)
 	go func() {
 		done <- start(t, e, runtime.Spec{FS: img.Clone(rootfs.Quota{}), Path: "/bin/spawner.wasm", Args: []string{"spawner", "orphan"}})
