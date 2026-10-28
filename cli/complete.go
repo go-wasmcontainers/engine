@@ -247,6 +247,13 @@ func (c *completer) install(root *cobra.Command) {
 			sub.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 				return filter(c.containers(cmd, false, toComplete), toComplete, used(args)), noFiles
 			}
+		case "exec": // a running container, then its command
+			sub.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+				if len(args) > 0 {
+					return nil, noFiles
+				}
+				return filter(c.containers(cmd, false, toComplete), toComplete, nil), noFiles
+			}
 		case "inspect":
 			sub.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 				return filter(append(c.containers(cmd, true, toComplete), c.images(cmd)...), toComplete, used(args)), noFiles
