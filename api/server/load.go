@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/go-wasmcontainers/engine/api"
+	"github.com/go-wasmcontainers/engine/container"
 	"github.com/go-wasmcontainers/engine/rootfs"
 )
 
@@ -72,23 +75,47 @@ func (s *server) containersArchivePut(w http.ResponseWriter, r *http.Request) {
 // rooted at its base name, with Docker's X-Docker-Container-Path-Stat
 // header (base64 JSON of the path's stat).
 func (s *server) containersArchiveGet(w http.ResponseWriter, r *http.Request) {
+	c, p, ok := s.archiveStat(w, r)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-tar")
+	w.WriteHeader(http.StatusOK)
+	c.FS().WriteTar(p, w)
+}
+
+// containersArchiveHead is HEAD /containers/{id}/archive?path=P: the
+// X-Docker-Container-Path-Stat header alone, without building the tar
+// (a builder's WORKDIR and COPY checks).
+func (s *server) containersArchiveHead(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.archiveStat(w, r); ok {
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+// archiveStat sets the X-Docker-Container-Path-Stat header (base64 JSON:
+// name, size, mode, mtime, linkTarget, as the Engine API's
+// ContainerPathStat), or answers the error.
+func (s *server) archiveStat(w http.ResponseWriter, r *http.Request) (*container.Container, string, bool) {
 	c, err := s.d.Containers().Get(r.PathValue("id"))
 	if err != nil {
 		writeError(w, statusOf(err), err)
-		return
+		return nil, "", false
 	}
 	p := path.Clean("/" + r.URL.Query().Get("path"))
 	in, err := c.FS().Lstat(p)
 	if err != nil {
 		writeError(w, archiveStatus(err), err)
-		return
+		return nil, "", false
 	}
-	stat, _ := json.Marshal(map[string]any{"name": path.Base(p), "size": in.Size(), "mode": uint32(in.Mode()),
-		"mtime": in.ModTime().UTC().Format("2006-01-02T15:04:05.999999999Z07:00"), "linkTarget": ""})
+	link := ""
+	if in.Mode()&fs.ModeSymlink != 0 {
+		link, _ = c.FS().Readlink(p)
+	}
+	stat, _ := json.Marshal(api.ContainerPathStat{Name: path.Base(p), Size: in.Size(), Mode: uint32(in.Mode()),
+		Mtime: in.ModTime().UTC().Format(time.RFC3339Nano), LinkTarget: link})
 	w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString(stat))
-	w.Header().Set("Content-Type", "application/x-tar")
-	w.WriteHeader(http.StatusOK)
-	c.FS().WriteTar(p, w)
+	return c, p, true
 }
 
 func archiveStatus(err error) int {

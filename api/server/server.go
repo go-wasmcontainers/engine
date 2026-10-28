@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	goruntime "runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -80,11 +81,15 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("POST /images/load", s.imagesLoad)
 	s.mux.HandleFunc("PUT /containers/{id}/archive", s.containersArchivePut)
 	s.mux.HandleFunc("GET /containers/{id}/archive", s.containersArchiveGet)
+	s.mux.HandleFunc("HEAD /containers/{id}/archive", s.containersArchiveHead)
 	s.mux.HandleFunc("POST /images/{rest...}", s.imagesPost)
 	s.mux.HandleFunc("GET /networks", s.networksList)
 	s.mux.HandleFunc("POST /networks/create", s.networksCreate)
 	s.mux.HandleFunc("GET /networks/{id}", s.networksInspect)
 	s.mux.HandleFunc("DELETE /networks/{id}", s.networksDelete)
+	s.mux.HandleFunc("POST /networks/{id}/connect", s.networksConnect)
+	s.mux.HandleFunc("POST /networks/{id}/disconnect", s.networksDisconnect)
+	s.mux.HandleFunc("POST /networks/prune", s.networksPrune)
 	return s
 }
 
@@ -414,11 +419,24 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 	if req.Tty {
 		warnings = append(warnings, "TTY is not supported; output is multiplexed")
 	}
+	var endpoints map[string][]string
+	if req.NetworkingConfig != nil {
+		for name, es := range req.NetworkingConfig.EndpointsConfig {
+			if endpoints == nil {
+				endpoints = map[string][]string{}
+			}
+			if es != nil {
+				endpoints[name] = es.Aliases
+			} else {
+				endpoints[name] = nil
+			}
+		}
+	}
 	c, err := s.d.CreateContainer(daemon.CreateRequest{
 		Name: r.URL.Query().Get("name"), Image: req.Image,
 		Entrypoint: req.Entrypoint, Cmd: req.Cmd, Env: req.Env, WorkingDir: req.WorkingDir, Labels: req.Labels,
 		Memory: req.HostConfig.Memory, AutoRemove: req.HostConfig.AutoRemove, Binds: req.HostConfig.Binds,
-		Network: req.HostConfig.NetworkMode, Caps: caps,
+		Network: req.HostConfig.NetworkMode, Endpoints: endpoints, Caps: caps,
 	})
 	if err != nil {
 		writeError(w, statusOf(err), err)
@@ -441,8 +459,33 @@ func humanStatus(s container.Snapshot, now time.Time) string {
 	return "Created"
 }
 
+// containersList honours the label, name, id, status and network filters.
 func (s *server) containersList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, containerSummaries(s.d.Containers().List(boolParam(r, "all"))))
+	f, err := parseFilters(r.URL.Query().Get("filters"), "label", "name", "id", "status", "network")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	all := boolParam(r, "all") || len(f["status"]) > 0
+	var list []container.Snapshot
+	for _, c := range s.d.Containers().List(all) {
+		if !labelsMatch(c.Config.Labels, f["label"]) ||
+			!anyMatch(f["name"], func(v string) bool { return strings.Contains(c.Name, strings.TrimPrefix(v, "/")) }) ||
+			!anyMatch(f["id"], func(v string) bool { return strings.HasPrefix(c.ID, v) }) ||
+			!anyMatch(f["status"], func(v string) bool { return string(c.State) == v }) ||
+			!anyMatch(f["network"], func(v string) bool {
+				return slices.ContainsFunc(c.Networks, func(ni container.NetworkInfo) bool {
+					if n, err := s.d.Networks().Get(v); err == nil {
+						return networkName(ni.Network) == n.Name
+					}
+					return false
+				})
+			}) {
+			continue
+		}
+		list = append(list, c)
+	}
+	writeJSON(w, http.StatusOK, containerSummaries(list))
 }
 
 func containerSummaries(list []container.Snapshot) []api.ContainerSummary {
@@ -620,10 +663,9 @@ func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 		Mounts:          []api.MountPoint{},
 		NetworkSettings: api.NetworkSettings{Networks: map[string]api.EndpointSettings{}},
 	}
+	out.NetworkSettings.Networks = s.endpointSettings(sn)
 	if sn.IPAddress.IsValid() {
 		out.NetworkSettings.IPAddress = sn.IPAddress.String()
-		out.NetworkSettings.Networks[networkOf(sn.Config)] = api.EndpointSettings{IPAddress: sn.IPAddress.String(),
-			DNSNames: []string{container.DNSName(sn.Name, sn.ID)}}
 	}
 	for _, mt := range sn.Config.Mounts {
 		mode, rw := "rw", true

@@ -78,11 +78,6 @@ type Daemon struct {
 // Networks is the network manager.
 func (d *Daemon) Networks() *network.Manager { return d.nets }
 
-// NetworkRemove removes a created network no container uses.
-func (d *Daemon) NetworkRemove(ref string) error {
-	return d.nets.Remove(ref, d.mgr.UsesNetwork)
-}
-
 // Volumes is the volume manager.
 func (d *Daemon) Volumes() *volume.Manager { return d.vols }
 
@@ -380,6 +375,11 @@ type CreateRequest struct {
 	Network string
 	// Caps are device capabilities granted to the container ("gpu").
 	Caps []string
+	// Endpoints are the networks' aliases by network (Docker's
+	// NetworkingConfig.EndpointsConfig); a network named there and not in
+	// Network is joined too (API 1.44+), and with no Network the first of
+	// them by name is the primary.
+	Endpoints map[string][]string
 }
 
 // ParseBind reads "VOLUME:/path[:ro|:rw]".
@@ -497,16 +497,8 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 	if req.WorkingDir != "" {
 		cfg.WorkingDir = req.WorkingDir
 	}
-	switch req.Network {
-	case "", "default":
-	case "host":
-		return nil, fmt.Errorf("%w: the host network does not exist in a WebAssembly engine", container.ErrInvalid)
-	default:
-		n, err := d.nets.Get(req.Network)
-		if err != nil {
-			return nil, fmt.Errorf("%w: network %s not found", container.ErrInvalid, req.Network)
-		}
-		cfg.Network = n.Name
+	if cfg.Networks, err = d.attachments(req.Network, req.Endpoints); err != nil {
+		return nil, err
 	}
 	if len(req.Labels) > 0 {
 		cfg.Labels = req.Labels

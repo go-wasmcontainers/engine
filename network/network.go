@@ -286,8 +286,9 @@ func (m *Manager) Remove(ref string, inUse func(name string) bool) error {
 }
 
 // Attach puts a container on a network ("" = the default) under its DNS
-// name; it is container.Options.Network.
-func (m *Manager) Attach(ctx context.Context, network, name string) (netdriver.Endpoint, error) {
+// name and its aliases; it is container.Options.Network. A network whose
+// driver has no aliases refuses a container that asks for some.
+func (m *Manager) Attach(ctx context.Context, network, name string, aliases []string) (netdriver.Endpoint, error) {
 	if network == "" {
 		network = m.Default()
 	}
@@ -297,10 +298,42 @@ func (m *Manager) Attach(ctx context.Context, network, name string) (netdriver.E
 	if err != nil {
 		return nil, err
 	}
-	if e.drv == nil {
-		return nil, nil
+	if e.drv == nil || e.Name == Bridge { // Docker's rule: not on the default network
+		if len(aliases) > 0 {
+			return nil, fmt.Errorf("%w: network-scoped aliases are only supported for user-defined networks", ErrInvalid)
+		}
+		if e.drv == nil {
+			return nil, nil
+		}
+	}
+	if ad, ok := e.drv.(netdriver.AliasDriver); ok {
+		return ad.AttachAliases(ctx, name, aliases)
+	}
+	if len(aliases) > 0 {
+		return nil, fmt.Errorf("%w: network %s (%s) has no aliases", ErrInvalid, e.Name, e.Driver)
 	}
 	return e.drv.Attach(ctx, name)
+}
+
+// Prune removes every created network that no container uses and whose
+// labels match keep (nil: all), and returns their names.
+func (m *Manager) Prune(inUse func(name string) bool, keep func(labels map[string]string) bool) []string {
+	m.mu.Lock()
+	var names []string
+	for name, e := range m.by {
+		if !e.Builtin && (keep == nil || keep(e.Labels)) {
+			names = append(names, name)
+		}
+	}
+	m.mu.Unlock()
+	sort.Strings(names)
+	var gone []string
+	for _, n := range names {
+		if m.Remove(n, inUse) == nil {
+			gone = append(gone, n)
+		}
+	}
+	return gone
 }
 
 // AddDriver adds a host-provided network at run time (a class joined from

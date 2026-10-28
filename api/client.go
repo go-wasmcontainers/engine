@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -472,6 +473,25 @@ func (c *Client) CopyFrom(ctx context.Context, container, p string) (io.ReadClos
 	return resp.Body, nil
 }
 
+// StatPath describes the container's path p without copying it (HEAD
+// /containers/{id}/archive).
+func (c *Client) StatPath(ctx context.Context, container, p string) (ContainerPathStat, error) {
+	var st ContainerPathStat
+	resp, err := c.doRaw(ctx, http.MethodHead, "/containers/"+url.PathEscape(container)+"/archive", url.Values{"path": {p}}, nil, "")
+	if err != nil {
+		return st, err
+	}
+	resp.Body.Close()
+	b, err := base64.StdEncoding.DecodeString(resp.Header.Get("X-Docker-Container-Path-Stat"))
+	if err == nil {
+		err = json.Unmarshal(b, &st)
+	}
+	if err != nil {
+		return st, fmt.Errorf("stat %s: bad X-Docker-Container-Path-Stat: %w", p, err)
+	}
+	return st, nil
+}
+
 // ImageTag names an image repo[:tag].
 func (c *Client) ImageTag(ctx context.Context, source, repo, tag string) error {
 	q := url.Values{"repo": {repo}}
@@ -505,6 +525,35 @@ func (c *Client) NetworkInspect(ctx context.Context, ref string) (json.RawMessag
 // NetworkRemove removes a network.
 func (c *Client) NetworkRemove(ctx context.Context, ref string) error {
 	return c.getJSON(ctx, http.MethodDelete, "/networks/"+url.PathEscape(ref), nil, nil, nil)
+}
+
+// NetworkConnect puts a container on a network, answering there to its
+// name and aliases.
+func (c *Client) NetworkConnect(ctx context.Context, network, container string, aliases []string) error {
+	req := NetworkConnectRequest{Container: container}
+	if len(aliases) > 0 {
+		req.EndpointConfig = &EndpointSettings{Aliases: aliases}
+	}
+	return c.getJSON(ctx, http.MethodPost, "/networks/"+url.PathEscape(network)+"/connect", nil, req, nil)
+}
+
+// NetworkDisconnect takes a container off a network.
+func (c *Client) NetworkDisconnect(ctx context.Context, network, container string, force bool) error {
+	return c.getJSON(ctx, http.MethodPost, "/networks/"+url.PathEscape(network)+"/disconnect", nil,
+		NetworkDisconnectRequest{Container: container, Force: force}, nil)
+}
+
+// NetworkPrune removes the networks no container uses (those whose labels
+// match every label filter: "k", "k=v", "k!=v").
+func (c *Client) NetworkPrune(ctx context.Context, labels []string) (NetworkPruneResponse, error) {
+	var q url.Values
+	if len(labels) > 0 {
+		b, _ := json.Marshal(map[string][]string{"label": labels})
+		q = url.Values{"filters": {string(b)}}
+	}
+	var out NetworkPruneResponse
+	err := c.getJSON(ctx, http.MethodPost, "/networks/prune", q, nil, &out)
+	return out, err
 }
 
 // DiskUsage is GET /system/df.

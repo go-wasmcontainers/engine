@@ -84,6 +84,8 @@ jobs:
           - { target: FuzzLimitMemory, pkg: ./wasmbin }
           # commit --change instructions, from the API's query string.
           - { target: FuzzApplyChanges, pkg: ./daemon }
+          # The filters query parameter of list and prune requests.
+          - { target: FuzzParseFilters, pkg: ./api/server }
           # Keys and lines a user types; a front end feeds them raw.
           - { target: FuzzEditor, pkg: ./cli/lineedit }
           - { target: FuzzSplitPartial, pkg: ./cli/lineedit }

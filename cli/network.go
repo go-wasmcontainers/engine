@@ -122,6 +122,77 @@ func networkCmd(client clientFunc) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(create, ls, inspect, rm)
+	var aliases []string
+	connect := &cobra.Command{
+		Use:   "connect [OPTIONS] NETWORK CONTAINER",
+		Short: "Connect a container to a network (a running one at once)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client()
+			if err != nil {
+				return err
+			}
+			return c.NetworkConnect(cmd.Context(), args[0], args[1], aliases)
+		},
+	}
+	connect.Flags().StringArrayVar(&aliases, "alias", nil, "add a name the container answers to on this network")
+
+	var force bool
+	disconnect := &cobra.Command{
+		Use:   "disconnect [OPTIONS] NETWORK CONTAINER",
+		Short: "Disconnect a container from a network",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := client()
+			if err != nil {
+				return err
+			}
+			return c.NetworkDisconnect(cmd.Context(), args[0], args[1], force)
+		},
+	}
+	disconnect.Flags().BoolVarP(&force, "force", "f", false, "accepted for compatibility")
+
+	var yes bool
+	var pruneFilters []string
+	prune := &cobra.Command{
+		Use:   "prune [OPTIONS]",
+		Short: "Remove all networks no container uses",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var labels []string
+			for _, f := range pruneFilters {
+				if rest, ok := strings.CutPrefix(f, "label!="); ok && strings.Contains(rest, "=") {
+					k, v, _ := strings.Cut(rest, "=")
+					labels = append(labels, k+"!="+v)
+				} else if rest, ok := strings.CutPrefix(f, "label="); ok && rest != "" {
+					labels = append(labels, rest)
+				} else {
+					return &exitError{code: 125, err: fmt.Errorf("invalid filter %q (label=KEY[=VALUE] or label!=KEY=VALUE)", f)}
+				}
+			}
+			c, err := client()
+			if err != nil {
+				return err
+			}
+			if !yes && !confirm(cmd.InOrStdin(), cmd.OutOrStdout(), "WARNING! This will remove all custom networks not used by at least one container.") {
+				return &exitError{code: 1, err: fmt.Errorf("prune cancelled (use -f to skip the question)")}
+			}
+			r, err := c.NetworkPrune(cmd.Context(), labels)
+			if err != nil {
+				return err
+			}
+			if len(r.NetworksDeleted) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Deleted Networks:")
+				for _, n := range r.NetworksDeleted {
+					fmt.Fprintln(cmd.OutOrStdout(), n)
+				}
+			}
+			return nil
+		},
+	}
+	prune.Flags().BoolVarP(&yes, "force", "f", false, "do not ask for confirmation")
+	prune.Flags().StringArrayVar(&pruneFilters, "filter", nil, "only networks with these labels (label=KEY[=VALUE], label!=KEY=VALUE)")
+
+	cmd.AddCommand(create, ls, inspect, rm, connect, disconnect, prune)
 	return cmd
 }
