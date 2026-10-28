@@ -98,14 +98,18 @@ func (s *server) execStart(w http.ResponseWriter, r *http.Request) {
 		sio.Stdin = io.MultiReader(dec.Buffered(), r.Body)
 	}
 	// The process lives as long as the request: a client that hangs up
-	// kills it.
+	// kills it. Its first writes wait on mu until the header is out (or
+	// the error answered).
+	mu.Lock()
 	if err := m.StartExec(r.Context(), x, sio); err != nil {
 		writeError(w, statusOf(err), err)
+		mu.Unlock()
 		return
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.WriteHeader(http.StatusOK)
 	fw.rc.Flush()
+	mu.Unlock()
 	select {
 	case <-x.Done():
 	case <-r.Context().Done():

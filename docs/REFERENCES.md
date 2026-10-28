@@ -49,6 +49,19 @@ Read from `https://raw.githubusercontent.com/distribution/distribution/main/docs
 Read from the OpenAPI document `https://docs.docker.com/reference/api/engine/version/v1.47.yaml`
 (the HTML page at `/reference/api/engine/version/v1.47/` only links to it).
 
+- Exec (`api/exec.go`, from the same document, tag "Exec"):
+  `POST /containers/{id}/exec` with `ExecConfig` (AttachStdin/Stdout/
+  Stderr, ConsoleSize `[height, width]`, DetachKeys, Tty, Env, Cmd,
+  Privileged, User, WorkingDir) → 201 `IdResponse`, 404 no such container,
+  409 not running; `POST /exec/{id}/start` with `ExecStartConfig` (Detach,
+  Tty, ConsoleSize) → 200 stream (`application/vnd.docker.raw-stream` or
+  `multiplexed-stream`), 404, 409; `POST /exec/{id}/resize?h=&w=` → 200,
+  400, 404; `GET /exec/{id}/json` → `ExecInspectResponse` (CanRemove,
+  DetachKeys, ID, Running, ExitCode, ProcessConfig{privileged, user, tty,
+  entrypoint, arguments}, OpenStdin/Stderr/Stdout, ContainerID, Pid).
+  Departure: start answers a streamed response and takes stdin from the
+  request body after the start object, instead of hijacking the
+  connection.
 - Schemas reproduced (as a subset) in `api/types.go`: `ImageSummary`,
   `ContainerSummary`, `ContainerState`, `ContainerCreateResponse`,
   `ContainerWaitResponse`, `ImageDeleteResponseItem`, `SystemVersion`,

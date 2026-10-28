@@ -38,8 +38,8 @@ type ExecConfig struct {
 	WorkingDir string
 	// User must be empty, "root" or "0": a WebAssembly container has no
 	// users.
-	User                                   string
-	Tty                                    bool
+	User                                    string
+	Tty                                     bool
 	AttachStdin, AttachStdout, AttachStderr bool
 	// ConsoleSize is the initial terminal size, height then width (0, 0:
 	// 80x24).
