@@ -269,6 +269,23 @@ The module sees the container's root filesystem as its preopened `/`
 `WorkingDir` (default `/`), the image's `Env` plus `-e`, `PATH` and
 `HOSTNAME` defaults, real clocks and `crypto/rand`.
 
+## Processes (WASIX subset)
+
+With the engine's WASI host (`wctrd --wasi engine`, the default), a guest
+can start other programs of its container through a **subset of
+[WASIX](https://wasix.org/)**, in WASIX's own import module `wasix_32v1`
+and ABI (wasix-libc's `api_wasix.h`): `proc_spawn2`, `proc_spawn3`,
+`proc_join`, `proc_id`, `proc_parent`, `fd_pipe`, `tty_get`, `tty_set` —
+no fork, exec, threads or signals. A child is a new instance of a module
+of the same root filesystem, with a copy of its parent's descriptors
+changed by the spawn's file actions (close, dup2, open, chdir, fchdir);
+`proc_join` waits without blocking the engine; pipes hold 64 KiB and wake
+`poll_oneoff`. A container's processes form one group: at most 64 at once,
+32 spawns per second (bursts of 64), killed together with the container.
+This is what runs `sh` and its pipelines in the
+[go-wasmcontainers/shell](https://github.com/go-wasmcontainers/shell) base
+image.
+
 ## Packages
 
 | Package | What it does |
@@ -370,7 +387,13 @@ open item.
   every guest pointer and length in the socket calls is bounds-checked;
   a container's sockets close when it exits. The relay's join code and
   session token never appear in a URL, a command line or the environment.
-- **Fuzzed** in CI (corpus committed under `testdata/fuzz`): the socket
+- **Processes**: the WASIX calls bound what they read from the guest (a
+  4 KiB name, 256 file actions, 16384 strings, 256 KiB of argv and env
+  together), check every guest pointer, resolve programs only inside the
+  container's root, and are limited per container (process count, memory
+  reserved across instances, spawn rate).
+- **Fuzzed** in CI (corpus committed under `testdata/fuzz`): the WASIX
+  process calls, the socket
   calls (sequences of them on two processes of one network), the DNS
   answerer, the layer
   unpacker and the writable-layer reader, the path resolver, the document
@@ -379,7 +402,9 @@ open item.
 
 ## Limitations
 
-- No `exec` / process spawn (WASIX subset later), no TTY, no stdin attach.
+- No `exec` API yet, no TTY, no stdin attach. Process spawning is the
+  WASIX subset above (no signals: a child is stopped only with its
+  container).
 - Networks: no published ports (`-p`) yet; a container on several networks
   binds to its primary address or to all (`0.0.0.0`), not to a secondary
   address alone; aliases only on in-engine networks; IPv4 only on in-engine

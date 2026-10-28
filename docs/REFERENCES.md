@@ -184,6 +184,30 @@ name follows, the last entry may be truncated), `prestat` (8),
 `subscription` (48, union contents at 16) and `event` (32). Package `wasi`
 is written against it.
 
+## WASIX: the process subset (`wasi/wasix.go`)
+
+- wasix-libc `libc-bottom-half/headers/public/wasi/api_wasix.h` (main at
+  `2025b44a`): `__wasi_proc_spawn_fd_op_t` (56 bytes: cmd u8 @0, fd @4,
+  src_fd @8, path @12, path_len @16, dirflags @20, oflags u16 @24,
+  rights @32/@40, fdflags u16 @48, fdflagsext u16 @50; names CLOSE,
+  DUP2, OPEN, CHDIR, FCHDIR), `proc_spawn2` (line-feed separated lists),
+  `proc_spawn3` (arrays of C strings, a null env inherits),
+  `__wasi_option_pid_t` (tag u8 @0, pid @4), `__wasi_join_status_t`
+  (tag u8, union aligned to 2: exit_normal u16 @2; exit_signal code @2,
+  signal u8 @4), `__wasi_tty_t` (24 bytes), NON_BLOCKING join flag 1.
+- `libc-bottom-half/sources/__wasixlibc_real.c`: module `wasix_32v1`,
+  every argument an i32 (proc_spawn2/3 take 14), the errno as result.
+- wasmer v7.5.0 `lib/wasix/src/syscalls/wasix/proc_spawn2.rs`,
+  `proc_spawn3.rs` (`apply_fd_op`: a CLOSE of a preopen is skipped; PATH
+  defaults to `/usr/local/bin:/bin:/usr/bin`; ENOENT, ENOEXEC),
+  `syscalls/mod.rs` (`parse_delimited_string_list` drops empty entries),
+  `proc_join.rs`, `fd_pipe.rs` (read end first). Where wasmer is wrong
+  the module departs from it; the four defects (hard-coded fdstat for fds
+  0–2, exit codes through the errno enum, no filestat on a pipe end, a
+  poll on an empty pipe that never returns) each have a test in
+  `runtime/wazero/wasix_test.go`. The investigation is in
+  go-wasmcontainers/shell's `docs/REFERENCES.md`.
+
 ## Sockets: the WasmEdge socket extension (V2)
 
 Read, for package `wasi`'s socket calls:
