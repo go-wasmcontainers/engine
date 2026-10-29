@@ -4,12 +4,39 @@ import (
 	"context"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"github.com/go-wasmcontainers/engine/api"
 )
+
+// followSize sends the terminal's size to resize each time changes
+// reports a possible change and the size differs from the last one sent
+// (start: the size the exec was created with, [height, width]).
+func followSize(ctx context.Context, get func() (w, h int, err error), resize func(h, w uint16) error,
+	start []uint16, changes func(context.Context, func())) {
+	var lastH, lastW uint16
+	if len(start) == 2 {
+		lastH, lastW = start[0], start[1]
+	}
+	var mu sync.Mutex
+	changes(ctx, func() {
+		w, h, err := get()
+		if err != nil || w <= 0 || h <= 0 || w > 0xffff || h > 0xffff {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if uint16(h) == lastH && uint16(w) == lastW {
+			return
+		}
+		if resize(uint16(h), uint16(w)) == nil {
+			lastH, lastW = uint16(h), uint16(w)
+		}
+	})
+}
 
 // execCmd is `wctr exec [-d] [-i] [-t] [-e K=V] [-w DIR] [-u USER]
 // CONTAINER CMD [ARG...]`: a further process in a running container.
@@ -72,6 +99,14 @@ func execCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comma
 				return err
 			}
 			defer out.Close()
+			if f, ok := cmd.OutOrStdout().(*os.File); ok && tty && term.IsTerminal(int(f.Fd())) {
+				// Follow the window: the guest's tty_get reports the new size.
+				wctx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				followSize(wctx, func() (int, int, error) { return term.GetSize(int(f.Fd())) },
+					func(h, w uint16) error { return c.ExecResize(wctx, id, h, w) },
+					req.ConsoleSize, sizeChanges)
+			}
 			if tty {
 				_, err = io.Copy(cmd.OutOrStdout(), out)
 			} else {
