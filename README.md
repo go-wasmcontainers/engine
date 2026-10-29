@@ -384,6 +384,10 @@ memory directly, because `wasmbin` makes it shared (and caps it, which is
 how the memory limit is enforced there). The same `wasi` package is run
 natively by every guest test (`runtime/wazero`, `EngineWASI`), so the
 browser path's file-system semantics are tested without a browser.
+A host call there runs on the engine worker's event loop, so no call
+blocks. A guest reading its stdin, or polling it, waits the way it waits
+on a socket: a goroutine fills a bounded buffer (64 KiB), and the loop
+stays free to deliver the messages that feed that stdin.
 
 The browser executor can keep compiled modules across page loads
 (`Options.CodeCache`: Cache Storage plus `WebAssembly.compileStreaming`,

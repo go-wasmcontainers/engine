@@ -29,6 +29,53 @@ func gated(t *testing.T) (*Manager, *gate) {
 	return NewManager(Options{Executor: g}), g
 }
 
+// TestExecWhileStarting: a container listed as running whose process does
+// not exist yet (its module still compiling) takes an exec once the
+// process exists, instead of answering "not running".
+func TestExecWhileStarting(t *testing.T) {
+	m, g := gated(t)
+	c, err := m.Create(CreateOptions{Name: "spin", Lower: image(t), Config: Config{Entrypoint: []string{"probe"}, Cmd: []string{"spin"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan error, 1)
+	go func() { started <- m.Start(context.Background(), c.ID()) }()
+	<-g.entered
+	if s := c.Snapshot().State; s != Running {
+		t.Fatalf("state %s inside the window", s)
+	}
+	created := make(chan error, 1)
+	go func() {
+		_, err := m.CreateExec(c.ID(), ExecConfig{Cmd: []string{"probe", "exit", "0"}})
+		created <- err
+	}()
+	select {
+	case err := <-created:
+		t.Fatalf("exec answered before the process existed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(g.release)
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-created:
+		if err != nil {
+			t.Fatalf("exec once started: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("exec still waiting after the start")
+	}
+	m.Kill(c.ID())
+	// A container that is not running at all is refused at once.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c.Wait(ctx, WaitNotRunning)
+	if _, err := m.CreateExec(c.ID(), ExecConfig{Cmd: []string{"probe"}}); err == nil {
+		t.Fatal("exec into an exited container")
+	}
+}
+
 // TestKillBeforeAttach: a kill between "running" and the process being
 // attached used to answer success and kill nothing (the spinning guest
 // ran on). It must reach the process once it exists.

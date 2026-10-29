@@ -688,6 +688,7 @@ func (m *Manager) start(ctx context.Context, c *Container, auto bool) error {
 	c.proc = proc
 	pending := c.killPending
 	c.killPending = false
+	c.notifyLocked() // an exec waiting for the process (CreateExec)
 	c.mu.Unlock()
 	if pending {
 		proc.Kill() // a kill arrived before the process existed

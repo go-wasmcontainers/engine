@@ -63,6 +63,7 @@ func (p *process) Exec(ctx context.Context, es runtime.ExecSpec) (runtime.Proces
 	}
 	// The exec's own children see its stdio and terminal, not the
 	// container's first process's.
+	stdin = wasi.NewStdin(stdin) // shared with the exec's children
 	sp := *base
 	sp.spec.Stdin, sp.spec.Stdout, sp.spec.Stderr, sp.spec.Terminal = stdin, stdout, stderr, es.Terminal
 	proc := wasi.New(wasi.Config{
