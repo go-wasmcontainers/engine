@@ -128,6 +128,10 @@ type Container struct {
 	startedAt  time.Time
 	finishedAt time.Time
 	exits      int
+	// dies counts the "die" events published: a waiter for not-running
+	// returns once the exit's die is out, so `stop` follows `die`, as in
+	// Docker's event stream.
+	dies int
 	removed    bool
 	path       string
 	ip         netip.Addr
@@ -715,8 +719,18 @@ func (m *Manager) exitedAfterRun(c *Container) {
 		m.exited(c)
 		return
 	}
-	m.emit("die", c, map[string]string{"exitCode": strconv.Itoa(code)})
+	m.emitDie(c, code)
 	m.schedule(c)
+}
+
+// emitDie publishes an exit's "die" and then lets the waiters for
+// not-running go: `stop` and `kill` callers see die first.
+func (m *Manager) emitDie(c *Container, code int) {
+	m.emit("die", c, map[string]string{"exitCode": strconv.Itoa(code)})
+	c.mu.Lock()
+	c.dies++
+	c.notifyLocked()
+	c.mu.Unlock()
 }
 
 // exitStartFailed is the exit code of a container that could not start
@@ -741,7 +755,7 @@ func (m *Manager) exited(c *Container) {
 	c.mu.Lock()
 	code := c.exitCode
 	c.mu.Unlock()
-	m.emit("die", c, map[string]string{"exitCode": strconv.Itoa(code)})
+	m.emitDie(c, code)
 	if c.cfg.AutoRemove {
 		m.removeNow(c)
 		return
@@ -958,7 +972,7 @@ func (c *Container) Wait(ctx context.Context, cond WaitCondition) (int, error) {
 		case WaitRemoved:
 			ok = c.removed
 		case WaitNotRunning, "":
-			ok = c.state != Running
+			ok = c.state != Running && c.dies >= c.exits
 		default:
 			c.mu.Unlock()
 			return 0, fmt.Errorf("%w: wait condition %q", ErrInvalid, cond)
