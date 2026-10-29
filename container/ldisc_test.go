@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-wasmcontainers/engine/wasi"
 )
@@ -17,7 +18,7 @@ func discipline(t testing.TB, echo, line bool, input string) (string, string) {
 	var shown bytes.Buffer
 	cr := &crlf{w: &shown}
 	pr, pw := io.Pipe()
-	l := &ldisc{term: term, pw: pw, echo: rawEcho{cr}}
+	l := newLdisc(term, pw, rawEcho{cr})
 	go l.run(strings.NewReader(input))
 	got, _ := io.ReadAll(pr)
 	return string(got), shown.String()
@@ -53,6 +54,80 @@ func TestLineDiscipline(t *testing.T) {
 	if len(long) != MaxLine+1 {
 		t.Errorf("an over-long line gave %d bytes", len(long))
 	}
+}
+
+// A line editor switching to raw mode gets what was typed ahead in line
+// mode: at once, and before the keys typed after the switch.
+func TestLineModeOffHandsPendingOver(t *testing.T) {
+	term := wasi.NewTerminal(80, 24, [3]bool{true, true, true})
+	pr, pw := io.Pipe()
+	l := newLdisc(term, pw, io.Discard)
+	in, keys := io.Pipe()
+	go l.run(in)
+	keys.Write([]byte("l"))
+	// The line is pending: nothing is readable yet.
+	got := make(chan string, 1)
+	go func() {
+		b := make([]byte, 16)
+		n, _ := pr.Read(b)
+		got <- string(b[:n])
+	}()
+	select {
+	case s := <-got:
+		t.Fatalf("read %q before the switch", s)
+	case <-time.After(50 * time.Millisecond):
+	}
+	term.SetMode(false, false) // the guest's tty_set; it must not block
+	select {
+	case s := <-got:
+		if s != "l" {
+			t.Fatalf("handed over %q", s)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pending line was not handed over")
+	}
+	keys.Write([]byte("s"))
+	b := make([]byte, 16)
+	if n, _ := pr.Read(b); string(b[:n]) != "s" {
+		t.Fatalf("then %q", b[:n])
+	}
+	// Back in line mode, then off with nothing pending: nothing to hand.
+	term.SetMode(true, true)
+	term.SetMode(false, false)
+	keys.Close()
+	if rest, _ := io.ReadAll(pr); len(rest) != 0 {
+		t.Fatalf("rest %q", rest)
+	}
+}
+
+// The pending line also goes first when the switch is seen by the next
+// key rather than by the hand-over (whichever comes first).
+func TestRawKeyAfterPending(t *testing.T) {
+	term := wasi.NewTerminal(80, 24, [3]bool{true, true, true})
+	pr, pw := io.Pipe()
+	l := &ldisc{term: term, pw: pw, echo: io.Discard} // no hand-over hook
+	go l.run(&switchReader{term: term, parts: []string{"ab", "c"}})
+	if b, _ := io.ReadAll(pr); string(b) != "abc" {
+		t.Errorf("%q", b)
+	}
+}
+
+// switchReader returns parts, turning line mode off after the first.
+type switchReader struct {
+	term  *wasi.Terminal
+	parts []string
+	n     int
+}
+
+func (s *switchReader) Read(p []byte) (int, error) {
+	if s.n == len(s.parts) {
+		return 0, io.EOF
+	}
+	if s.n == 1 {
+		s.term.SetMode(false, false)
+	}
+	s.n++
+	return copy(p, s.parts[s.n-1]), nil
 }
 
 func TestCRLF(t *testing.T) {
