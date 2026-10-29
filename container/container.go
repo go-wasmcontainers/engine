@@ -131,13 +131,13 @@ type Container struct {
 	// dies counts the "die" events published: a waiter for not-running
 	// returns once the exit's die is out, so `stop` follows `die`, as in
 	// Docker's event stream.
-	dies int
-	removed    bool
-	path       string
-	ip         netip.Addr
-	net        *netdriver.Multi // its networks while it runs
-	ports      *portmap.Set     // its published ports while it runs
-	proc       runtime.Process
+	dies    int
+	removed bool
+	path    string
+	ip      netip.Addr
+	net     *netdriver.Multi // its networks while it runs
+	ports   *portmap.Set     // its published ports while it runs
+	proc    runtime.Process
 	// killPending is a kill that arrived while running but before proc
 	// was attached; Start delivers it.
 	killPending bool
