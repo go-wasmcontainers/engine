@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
+	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/go-wasmcontainers/engine/netdriver"
 )
@@ -118,5 +122,95 @@ func TestVirtualListen(t *testing.T) {
 	cl := &http.Client{Transport: v.Transport()}
 	if _, err := cl.Get("http://localhost:0/"); err == nil {
 		t.Fatal("port 0 dialed")
+	}
+}
+
+// A Dial racing a Close is either accepted or refused or closed -- never
+// left in a dead queue, its client waiting for an answer that cannot come
+// (the review of #35). Many rounds, under -race.
+func TestVirtualDialCloseRace(t *testing.T) {
+	ctx := context.Background()
+	for round := 0; round < 200; round++ {
+		v := NewVirtual()
+		l, err := v.Listen(ctx, "tcp", netip.MustParseAddrPort("127.0.0.1:8080"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		accepted := make(chan net.Conn, 2*VirtualBacklog)
+		acceptDone := make(chan struct{})
+		go func() {
+			defer close(acceptDone)
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				accepted <- c
+			}
+		}()
+		var wg sync.WaitGroup
+		dialed := make(chan net.Conn, VirtualBacklog)
+		for i := 0; i < 16; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if c, err := v.Dial(ctx, 8080); err == nil {
+					dialed <- c
+				}
+			}()
+		}
+		l.Close()
+		wg.Wait()
+		<-acceptDone
+		close(dialed)
+		close(accepted)
+		// The server ends someone accepted are answered (here: closed);
+		// the rest were closed by Close. So every client that "connected"
+		// sees its connection end now -- a timeout is a connection left in
+		// a dead queue.
+		for s := range accepted {
+			s.Close()
+		}
+		for c := range dialed {
+			c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, err := c.Read(make([]byte, 1))
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				t.Fatalf("round %d: a dialed connection was neither accepted nor closed", round)
+			}
+			c.Close()
+		}
+	}
+}
+
+// Publishing over a Virtual host and closing it returns every goroutine it
+// started, after 100 connections.
+func TestVirtualPublishGoroutines(t *testing.T) {
+	v := NewVirtual()
+	dial := webContainer(t)
+	runtime.GC()
+	before := runtime.NumGoroutine()
+	m, _ := ParseSpecs([]string{"8080:80"})
+	s, err := Publish(context.Background(), v, dial, m, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl := &http.Client{Transport: v.Transport()}
+	for i := 0; i < 100; i++ {
+		res, err := cl.Get("http://localhost:8080/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+	}
+	cl.CloseIdleConnections()
+	s.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > before+2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines: %d before, %d after", before, runtime.NumGoroutine())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
