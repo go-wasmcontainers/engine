@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -243,6 +244,47 @@ func (c *Client) Attach(ctx context.Context, id string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	return resp.Body, nil
+}
+
+// AttachOptions select what AttachWith attaches.
+type AttachOptions struct {
+	// Stdin, when not nil, is sent to the container (one created with
+	// OpenStdin) until it ends; the request body carries it, as for
+	// ExecStart.
+	Stdin io.Reader
+	// Logs replays the output so far first.
+	Logs bool
+	// DetachKeys overrides ctrl-p,ctrl-q.
+	DetachKeys string
+}
+
+// AttachWith attaches stdout and stderr, and stdin when given. The stream
+// is multiplexed, or raw for a container with a terminal; it ends when
+// the container stops, or when Stdin carries the detach keys.
+func (c *Client) AttachWith(ctx context.Context, id string, o AttachOptions) (io.ReadCloser, error) {
+	q := url.Values{"stream": {"1"}, "stdout": {"1"}, "stderr": {"1"}}
+	if o.Logs {
+		q.Set("logs", "1")
+	}
+	if o.DetachKeys != "" {
+		q.Set("detachKeys", o.DetachKeys)
+	}
+	var body io.Reader
+	if o.Stdin != nil {
+		q.Set("stdin", "1")
+		body = o.Stdin
+	}
+	resp, err := c.doRaw(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/attach", q, body, "application/octet-stream")
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
+// ContainerResize sets the terminal size of a container run with Tty.
+func (c *Client) ContainerResize(ctx context.Context, id string, height, width uint16) error {
+	q := url.Values{"h": {strconv.Itoa(int(height))}, "w": {strconv.Itoa(int(width))}}
+	return c.getJSON(ctx, http.MethodPost, "/containers/"+url.PathEscape(id)+"/resize", q, nil, nil)
 }
 
 // Kill kills a running container.

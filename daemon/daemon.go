@@ -395,6 +395,10 @@ type CreateRequest struct {
 	Ports        portmap.Map
 	ExposedPorts map[string]struct{}
 	PublishAll   bool
+	// Tty, OpenStdin, StdinOnce and ConsoleSize ([height, width]): run -t
+	// and -i (container/stdio.go).
+	Tty, OpenStdin, StdinOnce bool
+	ConsoleSize               [2]uint16
 }
 
 // ParseBind reads "VOLUME:/path[:ro|:rw]".
@@ -522,6 +526,7 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 		Entrypoint: ec.Entrypoint, Cmd: ec.Cmd,
 		Env: mergeEnv(ec.Env, req.Env), WorkingDir: ec.WorkingDir, Labels: ec.Labels,
 		MemoryLimitBytes: req.Memory, AutoRemove: req.AutoRemove, Caps: req.Caps, Restart: req.Restart,
+		Tty: req.Tty, OpenStdin: req.OpenStdin, StdinOnce: req.OpenStdin && req.StdinOnce, ConsoleSize: req.ConsoleSize,
 	}
 	if req.Entrypoint != nil {
 		cfg.Entrypoint, cfg.Cmd = req.Entrypoint, nil

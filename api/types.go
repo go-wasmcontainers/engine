@@ -152,7 +152,16 @@ type ContainerConfig struct {
 	Env        []string          `json:"Env"`
 	WorkingDir string            `json:"WorkingDir"`
 	Labels     map[string]string `json:"Labels"`
-	Tty        bool              `json:"Tty"`
+	// Tty gives the first process a terminal (run -t); OpenStdin a stdin
+	// that attached clients write into (run -i); StdinOnce closes that
+	// stdin when the first attached client's input ends. Attach* record
+	// what `run` attaches (informational, as in Docker).
+	Tty          bool `json:"Tty"`
+	OpenStdin    bool `json:"OpenStdin"`
+	StdinOnce    bool `json:"StdinOnce"`
+	AttachStdin  bool `json:"AttachStdin"`
+	AttachStdout bool `json:"AttachStdout"`
+	AttachStderr bool `json:"AttachStderr"`
 	// ExposedPorts are ports the container listens on ({"80/tcp": {}}):
 	// published by PublishAllPorts, shown by inspect.
 	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
@@ -168,6 +177,8 @@ type RestartPolicy struct {
 type HostConfig struct {
 	Memory     int64 `json:"Memory"`
 	AutoRemove bool  `json:"AutoRemove"`
+	// ConsoleSize is the terminal's first size, [height, width] (Tty).
+	ConsoleSize []uint16 `json:"ConsoleSize,omitempty"`
 	// PortBindings publishes container ports on the daemon's host
 	// ("80/tcp": [{"HostIp": "", "HostPort": "8080"}]). An empty HostIp
 	// is 127.0.0.1 here, not Docker's 0.0.0.0.

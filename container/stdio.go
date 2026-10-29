@@ -176,12 +176,36 @@ func (d *detachScanner) scan(p []byte) ([]byte, bool) {
 // returns ErrDetached). With StdinOnce, the end of in closes the
 // process's stdin, as the first attached client's hang-up does in Docker.
 func (c *Container) AttachStdin(ctx context.Context, in io.Reader, detachKeys []byte) error {
-	c.mu.Lock()
-	h, once := c.stdin, c.cfg.StdinOnce
-	c.mu.Unlock()
-	if h == nil {
+	if !c.cfg.OpenStdin {
 		return fmt.Errorf("%w: %s", ErrNoStdin, c.id[:12])
 	}
+	// Attached before the start (run attaches first, so nothing typed is
+	// lost): wait for the run's stdin.
+	var h *stdinHub
+	for {
+		c.mu.Lock()
+		hub, running, removed, changed := c.stdin, c.state == Running, c.removed, c.changed
+		c.mu.Unlock()
+		if removed {
+			return nil
+		}
+		if hub != nil && running {
+			select {
+			case <-hub.done:
+			default:
+				h = hub
+			}
+		}
+		if h != nil {
+			break
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	once := c.cfg.StdinOnce
 	d := detachScanner{keys: detachKeys}
 	type chunk struct {
 		b   []byte
