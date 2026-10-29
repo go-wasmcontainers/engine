@@ -24,6 +24,7 @@ import (
 
 	units "github.com/docker/go-units"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/go-wasmcontainers/engine/api"
 	"github.com/go-wasmcontainers/engine/image"
@@ -284,6 +285,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 		publishAll bool
 		expose     []string
 		restart    string
+		health     healthFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "run [OPTIONS] IMAGE [COMMAND] [ARG...]",
@@ -320,6 +322,11 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 				}
 				req.HostConfig.RestartPolicy = &rp
 			}
+			hc, err := health.config(cmd)
+			if err != nil {
+				return &exitError{code: 125, err: err}
+			}
+			req.Healthcheck = hc
 			if len(args) > 1 {
 				req.Cmd = args[1:]
 			}
@@ -356,7 +363,50 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 	f.BoolVarP(&publishAll, "publish-all", "P", false, "publish every exposed port on a host port the system picks")
 	f.StringArrayVar(&expose, "expose", nil, "expose a port or a range without publishing it (80, 8000-8010/udp)")
 	f.StringVar(&restart, "restart", "", "restart policy: no, always, unless-stopped, on-failure[:max-retries]")
+	health.register(f)
 	return cmd
+}
+
+// healthFlags are run's --health-* flags and --no-healthcheck.
+type healthFlags struct {
+	cmd                                       string
+	interval, timeout, startPeriod, startIntv time.Duration
+	retries                                   int
+	none                                      bool
+}
+
+func (h *healthFlags) register(f *pflag.FlagSet) {
+	f.StringVar(&h.cmd, "health-cmd", "", "command to run to check health (run by /bin/sh -c in the container)")
+	f.DurationVar(&h.interval, "health-interval", 0, "time between checks (ms|s|m|h) (default 30s)")
+	f.DurationVar(&h.timeout, "health-timeout", 0, "maximum time to allow one check to run (default 30s)")
+	f.DurationVar(&h.startPeriod, "health-start-period", 0, "start period for the container to initialize before failures count")
+	f.DurationVar(&h.startIntv, "health-start-interval", 0, "time between checks during the start period (default 5s)")
+	f.IntVar(&h.retries, "health-retries", 0, "consecutive failures needed to report unhealthy (default 3)")
+	f.BoolVar(&h.none, "no-healthcheck", false, "disable any container-specified HEALTHCHECK")
+}
+
+// config is the create request's Healthcheck: nil when no flag was given
+// (the image's check applies).
+func (h *healthFlags) config(cmd *cobra.Command) (*api.HealthConfig, error) {
+	changed := false
+	for _, n := range []string{"health-cmd", "health-interval", "health-timeout", "health-start-period", "health-start-interval", "health-retries"} {
+		changed = changed || cmd.Flags().Changed(n)
+	}
+	if h.none {
+		if changed {
+			return nil, fmt.Errorf("--no-healthcheck conflicts with --health-* options")
+		}
+		return &api.HealthConfig{Test: []string{"NONE"}}, nil
+	}
+	if !changed {
+		return nil, nil
+	}
+	out := &api.HealthConfig{Interval: int64(h.interval), Timeout: int64(h.timeout), StartPeriod: int64(h.startPeriod),
+		StartInterval: int64(h.startIntv), Retries: h.retries}
+	if h.cmd != "" {
+		out.Test = []string{"CMD-SHELL", h.cmd}
+	}
+	return out, nil
 }
 
 // parseRestart reads --restart into the API's RestartPolicy; the daemon

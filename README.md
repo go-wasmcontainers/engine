@@ -83,7 +83,7 @@ not have.
 |---|---|
 | `pull IMAGE` | `IMAGE` is a registry reference or `oci:<dir>[:<ref.name>]` |
 | `images` | `-q` |
-| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one), `-p/--publish [ip:][hostPort:]containerPort[/tcp\|udp]` (ip defaults to **127.0.0.1**; ranges as Docker's), `-P/--publish-all`, `--expose PORT[/proto]` — see [Published ports](#published-ports); `--restart no\|always\|unless-stopped\|on-failure[:N]` (see below; not with `--rm`) |
+| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one), `-p/--publish [ip:][hostPort:]containerPort[/tcp\|udp]` (ip defaults to **127.0.0.1**; ranges as Docker's), `-P/--publish-all`, `--expose PORT[/proto]` — see [Published ports](#published-ports); `--restart no\|always\|unless-stopped\|on-failure[:N]` (see below; not with `--rm`); `--health-cmd`, `--health-interval`, `--health-timeout`, `--health-start-period`, `--health-start-interval`, `--health-retries`, `--no-healthcheck` (see Health checks below) |
 | `port CONTAINER [PRIVATE_PORT[/PROTO]]` | where a running container's ports are published (`80/tcp -> 127.0.0.1:49153`) |
 | `ps` | `-a/--all`, `-q`; PORTS as Docker writes it (`127.0.0.1:8080->80/tcp, 9000/tcp`) |
 | `logs CONTAINER` | `-f/--follow` |
@@ -153,6 +153,24 @@ most a minute — and meanwhile the container is `restarting` (listed by
 `ps`, `Restarting (code) … ago`; `rm` needs `-f`). A start the engine refuses
 (a volume, a network, a port) is not retried. `inspect` shows
 `HostConfig.RestartPolicy`, `RestartCount` and `State.Restarting`.
+
+**Health checks** (`run --health-cmd CMD`, `--health-interval`,
+`--health-timeout`, `--health-start-period`, `--health-start-interval`,
+`--health-retries`, `--no-healthcheck`; `Config.Healthcheck`; an image's
+`HEALTHCHECK`), as Docker's: the test (`CMD` argv, `CMD-SHELL` through
+`/bin/sh -c`, or `NONE`) runs inside the running container through the exec
+machinery, every interval (default 30 s; 5 s during the start period), and
+is killed after the timeout (default 30 s, exit code −1). A pass makes the
+container `healthy`; `retries` consecutive failures (default 3) make it
+`unhealthy`; failures in the start period do not count. Request fields left
+empty are taken from the image's check. `inspect` shows `State.Health`
+(`Status`, `FailingStreak`, and the last 5 results with at most 4 KiB of
+output each), `ps` shows `Up … (healthy)`, and each change of status is a
+`health_status: healthy|unhealthy` event (`--filter event=health_status`
+matches it). Probes stop with the container and are not exec events.
+Unlike Docker, an interval or timeout below **100 ms** is refused (Docker
+allows 1 ms), so a check cannot spin the engine. Probes need an engine that
+can exec (the default wazero engine with the engine's WASI host).
 
 **Shell completion.** `source <(wctr completion bash)` (or `zsh`, `fish`,
 `powershell`; see `wctr completion bash --help` to install it for good).
