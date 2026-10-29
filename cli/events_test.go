@@ -31,10 +31,13 @@ func TestEvents(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	must(t, wctr(t, h, "pull", "oci:"+layout+":probe"), 0)
-	must(t, wctr(t, h, "run", "--name", "e", "probe", "exit", "3"), 3)
-	must(t, wctr(t, h, "run", "-d", "--name", "s", "probe", "spin"), 0)
-	must(t, wctr(t, h, "stop", "s"), 0)
-	must(t, wctr(t, h, "rm", "e", "s"), 0)
+	// Names with a '-': `-f container=NAME` also matches an ID prefix (as
+	// Docker's), and a one-letter hex name such as "e" matched a random ID
+	// starting with it now and then (1 run in 16).
+	must(t, wctr(t, h, "run", "--name", "ev-e", "probe", "exit", "3"), 3)
+	must(t, wctr(t, h, "run", "-d", "--name", "ev-s", "probe", "spin"), 0)
+	must(t, wctr(t, h, "stop", "ev-s"), 0)
+	must(t, wctr(t, h, "rm", "ev-e", "ev-s"), 0)
 
 	var got []string
 	timeout := time.After(10 * time.Second)
@@ -42,23 +45,23 @@ func TestEvents(t *testing.T) {
 		select {
 		case m := <-live:
 			got = append(got, m.Action+":"+m.Actor.Attributes["name"])
-			if m.Action == "die" && m.Actor.Attributes["name"] == "e" && m.Actor.Attributes["exitCode"] != "3" {
+			if m.Action == "die" && m.Actor.Attributes["name"] == "ev-e" && m.Actor.Attributes["exitCode"] != "3" {
 				t.Fatalf("die without its exit code: %+v", m)
 			}
 		case <-timeout:
 			t.Fatalf("live events: %v", got)
 		}
 	}
-	want := "create:e,start:e,die:e,create:s,start:s,kill:s,die:s,stop:s,destroy:e,destroy:s"
+	want := "create:ev-e,start:ev-e,die:ev-e,create:ev-s,start:ev-s,kill:ev-s,die:ev-s,stop:ev-s,destroy:ev-e,destroy:ev-s"
 	if strings.Join(got, ",") != want {
 		t.Fatalf("live events\n got %s\nwant %s", strings.Join(got, ","), want)
 	}
 
 	// The same from history, with --since/--until, in docker's format.
 	until := time.Now().Add(time.Second).Unix()
-	r := must(t, wctr(t, h, "events", "--since", itoa(t0), "--until", itoa(until), "-f", "container=e"), 0)
+	r := must(t, wctr(t, h, "events", "--since", itoa(t0), "--until", itoa(until), "-f", "container=ev-e"), 0)
 	lines := strings.Split(strings.TrimSpace(r.stdout), "\n")
-	if len(lines) != 4 || !strings.Contains(lines[2], " container die ") || !strings.Contains(lines[2], "exitCode=3") || !strings.Contains(lines[2], "image=probe, name=e") {
+	if len(lines) != 4 || !strings.Contains(lines[2], " container die ") || !strings.Contains(lines[2], "exitCode=3") || !strings.Contains(lines[2], "image=probe, name=ev-e") {
 		t.Fatalf("%q", r.stdout)
 	}
 	r = must(t, wctr(t, h, "events", "--since", "1m", "--until", itoa(until), "-f", "type=image"), 0)
