@@ -457,7 +457,7 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 		Memory: req.HostConfig.Memory, AutoRemove: req.HostConfig.AutoRemove, Binds: req.HostConfig.Binds,
 		Network: req.HostConfig.NetworkMode, Endpoints: endpoints, Caps: caps,
 		Ports: ports, ExposedPorts: req.ExposedPorts, PublishAll: req.HostConfig.PublishAllPorts,
-		Restart: restart,
+		Restart: restart, Healthcheck: healthFromAPI(req.Healthcheck),
 	})
 	if err != nil {
 		writeError(w, statusOf(err), err)
@@ -469,11 +469,49 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, api.ContainerCreateResponse{ID: c.ID(), Warnings: warnings})
 }
 
+// healthFromAPI reads Config.Healthcheck (durations in nanoseconds).
+func healthFromAPI(h *api.HealthConfig) *container.HealthConfig {
+	if h == nil {
+		return nil
+	}
+	return &container.HealthConfig{Test: h.Test, Interval: time.Duration(h.Interval), Timeout: time.Duration(h.Timeout),
+		StartPeriod: time.Duration(h.StartPeriod), StartInterval: time.Duration(h.StartInterval), Retries: h.Retries}
+}
+
+// healthToAPI is inspect's Config.Healthcheck.
+func healthToAPI(h *container.HealthConfig) *api.HealthConfig {
+	if h == nil {
+		return nil
+	}
+	return &api.HealthConfig{Test: h.Test, Interval: int64(h.Interval), Timeout: int64(h.Timeout),
+		StartPeriod: int64(h.StartPeriod), StartInterval: int64(h.StartInterval), Retries: h.Retries}
+}
+
+// healthState is inspect's State.Health.
+func healthState(h *container.Health) *api.Health {
+	if h == nil {
+		return nil
+	}
+	out := &api.Health{Status: h.Status, FailingStreak: h.FailingStreak, Log: []api.HealthcheckResult{}}
+	for _, r := range h.Log {
+		out.Log = append(out.Log, api.HealthcheckResult{Start: rfc3339(r.Start), End: rfc3339(r.End), ExitCode: r.ExitCode, Output: r.Output})
+	}
+	return out
+}
+
 // humanStatus renders the STATUS column the way Docker does.
 func humanStatus(s container.Snapshot, now time.Time) string {
 	switch s.State {
 	case container.Running:
-		return "Up " + humanDuration(now.Sub(s.StartedAt))
+		up := "Up " + humanDuration(now.Sub(s.StartedAt))
+		switch {
+		case s.Health == nil:
+		case s.Health.Status == container.HealthStarting:
+			up += " (health: starting)"
+		default:
+			up += " (" + s.Health.Status + ")"
+		}
+		return up
 	case container.Exited:
 		return fmt.Sprintf("Exited (%d) %s ago", s.ExitCode, humanDuration(now.Sub(s.FinishedAt)))
 	case container.Restarting:
@@ -732,10 +770,12 @@ func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 		Driver: "rootfs (in-memory, copy-on-write)", Platform: "wasip1", SizeRw: sn.SizeRw,
 		State: api.ContainerState{Status: string(sn.State), Running: sn.State == container.Running, ExitCode: sn.ExitCode,
 			Restarting: sn.State == container.Restarting,
-			Error:      sn.Error, StartedAt: rfc3339(sn.StartedAt), FinishedAt: rfc3339(sn.FinishedAt)},
+			Error:      sn.Error, StartedAt: rfc3339(sn.StartedAt), FinishedAt: rfc3339(sn.FinishedAt),
+			Health: healthState(sn.Health)},
 		RestartCount: sn.RestartCount,
 		Config: api.ContainerConfig{Image: sn.Config.Image, Cmd: sn.Config.Cmd, Entrypoint: sn.Config.Entrypoint,
-			Env: sn.Config.Env, WorkingDir: sn.Config.WorkingDir, Labels: sn.Config.Labels},
+			Env: sn.Config.Env, WorkingDir: sn.Config.WorkingDir, Labels: sn.Config.Labels,
+			Healthcheck: healthToAPI(sn.Config.Healthcheck)},
 		HostConfig: api.HostConfig{Memory: sn.Config.MemoryLimitBytes, NetworkMode: networkOf(sn.Config),
 			RestartPolicy: &api.RestartPolicy{Name: restartName(sn.Config.Restart.Name), MaximumRetryCount: sn.Config.Restart.MaximumRetryCount}},
 		Mounts:          []api.MountPoint{},

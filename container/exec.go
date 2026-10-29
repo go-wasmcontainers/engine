@@ -177,6 +177,12 @@ type ExecIO struct {
 // process (an attached client that hangs up), so a detached start passes
 // a context that is never cancelled.
 func (m *Manager) StartExec(ctx context.Context, x *Exec, sio ExecIO) error {
+	return m.startExec(ctx, x, sio, true)
+}
+
+// startExec is StartExec; events says whether exec_start and exec_die are
+// published (health probes are not).
+func (m *Manager) startExec(ctx context.Context, x *Exec, sio ExecIO, events bool) error {
 	x.mu.Lock()
 	if x.started {
 		x.mu.Unlock()
@@ -270,14 +276,18 @@ func (m *Manager) StartExec(ctx context.Context, x *Exec, sio ExecIO) error {
 	if feed != nil {
 		go feed()
 	}
-	m.emitExec("exec_start", c, x)
+	if events {
+		m.emitExec("exec_start", c, x)
+	}
 	go func() {
 		res := p.Wait()
 		x.mu.Lock()
 		x.running, x.exitCode = false, res.ExitCode
 		x.mu.Unlock()
 		close(x.done)
-		m.emitExec("exec_die", c, x)
+		if events {
+			m.emitExec("exec_die", c, x)
+		}
 	}()
 	return nil
 }
