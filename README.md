@@ -24,8 +24,10 @@ executor, so the whole core is testable in CI. Documentation:
 > a web page ([In a browser](#in-a-browser)). Containers have a network:
 > TCP and UDP between containers, by name, on in-engine networks or on a
 > class network through the [relay](https://github.com/go-wasmcontainers/relay)
-> ([Networks](#networks)). No `exec`, no build yet — see
-> [Limitations](#limitations).
+> ([Networks](#networks)). `exec` works natively and in the browser.
+> Building images is a separate module, `wctr build`
+> ([go-wasmcontainers/build](https://github.com/go-wasmcontainers/build),
+> wired into `cmd/wctr`). See [Limitations](#limitations).
 
 ## Demo
 
@@ -384,6 +386,20 @@ memory directly, because `wasmbin` makes it shared (and caps it, which is
 how the memory limit is enforced there). The same `wasi` package is run
 natively by every guest test (`runtime/wazero`, `EngineWASI`), so the
 browser path's file-system semantics are tested without a browser.
+
+**exec in the browser** (v0.26.0) works as it does natively. The browser
+executor starts the exec'd process in a Web Worker of its own, in the
+container's process group, so:
+
+- it shares the container's files, network and capabilities;
+- it counts against the container's limits;
+- it is killed with the container.
+
+Its stdin, stdout and stderr, and with `-t` its terminal, are the exec
+session's, and the WASIX processes it spawns inherit them, as a shell's
+children do. With `-t`, the engine's line discipline does the echo and the
+line editing, as natively, and `POST /exec/{id}/resize` reaches the
+process's terminal.
 
 The browser executor can keep compiled modules across page loads
 (`Options.CodeCache`: Cache Storage plus `WebAssembly.compileStreaming`,
