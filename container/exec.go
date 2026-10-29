@@ -31,6 +31,10 @@ var (
 // ones go first.
 const MaxExecs = 256
 
+// startWait bounds how long an exec waits for a starting container's
+// process to exist.
+const startWait = 30 * time.Second
+
 // ExecConfig is an exec instance as created.
 type ExecConfig struct {
 	Cmd        []string
@@ -99,9 +103,26 @@ func (m *Manager) CreateExec(ref string, cfg ExecConfig) (*Exec, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.mu.Lock()
-	running := c.state == Running && c.proc != nil
-	c.mu.Unlock()
+	// A container is listed as running from the moment its start begins,
+	// before its process exists (compiling the module takes a while): an
+	// exec then waits for the process rather than answer "not running".
+	running := false
+	deadline := time.NewTimer(startWait)
+	defer deadline.Stop()
+	for {
+		c.mu.Lock()
+		state, proc, changed := c.state, c.proc, c.changed
+		c.mu.Unlock()
+		if state == Running && proc == nil {
+			select {
+			case <-changed:
+				continue
+			case <-deadline.C:
+			}
+		}
+		running = state == Running && proc != nil
+		break
+	}
 	if !running {
 		return nil, fmt.Errorf("%w: %s", ErrNotRunning, c.id[:12])
 	}

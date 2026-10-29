@@ -308,6 +308,9 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		group = wasi.NewGroup(spec.Processes)
 		mem := int64(pagesFor(limit)) * pageSize
 		cspec := spec
+		// One *wasi.Stdin for the process and its children: no two
+		// readers race for the input.
+		stdin = wasi.NewStdin(stdin)
 		cspec.Stdin, cspec.Stdout, cspec.Stderr = stdin, stdout, stderr
 		sp = &spawner{e: e, r: r, pages: pagesFor(limit), spec: cspec, ctx: runCtx, group: group, mem: mem}
 		proc = wasi.New(wasi.Config{
