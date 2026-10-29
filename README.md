@@ -472,7 +472,8 @@ open item.
 ## Limitations
 
 - No stdin attach and no terminal for a container's first process (`run
-  -it`); `exec -it` has both. No `exec` in the browser executor yet.
+  -it`); `exec -it` has both, natively and in the browser (a new worker
+  on the container's bridge).
   Process spawning is the WASIX subset above (no signals: a child is
   stopped only with its container; ^C in a terminal erases the line).
 - Published ports: no sctp; no browser host yet (the playground's Service

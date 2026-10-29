@@ -231,6 +231,8 @@ type process struct {
 	limit int64
 	proc  *wasi.Proc
 	onEnd func(runtime.Result)
+	// exec starts further processes in this container (exec_js.go).
+	exec *spawner
 }
 
 func (p *process) Wait() runtime.Result { <-p.done; return p.res }
@@ -311,6 +313,7 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	p := e.run(mod, proc, imports, limit, func(runtime.Result) {
 		group.Kill() // a container ends with its first process
 	})
+	p.exec = sp
 	if spec.Timeout > 0 {
 		p.timer = time.AfterFunc(spec.Timeout, func() {
 			p.finish(runtime.Result{ExitCode: runtime.ExitKilled, TimedOut: true, Error: "wall-clock timeout"})
