@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tetratelabs/wazero"
 	experimentalsys "github.com/tetratelabs/wazero/experimental/sys"
 
 	"github.com/go-wasmcontainers/engine/internal/testutil"
@@ -187,6 +188,24 @@ func TestLimits(t *testing.T) {
 }
 
 func firstLine(s string) string { l, _, _ := strings.Cut(s, "\n"); return l }
+
+// TestSharedCompilationCache: an executor given a cache leaves it open on
+// Close, so the next executor still runs from it.
+func TestSharedCompilationCache(t *testing.T) {
+	img := lower(t, "hello")
+	cache := wazero.NewCompilationCache()
+	defer cache.Close(context.Background())
+	for i := 0; i < 2; i++ {
+		e := New(Options{CompilationCache: cache})
+		r := start(t, e, runtime.Spec{FS: img.Clone(rootfs.Quota{}), Path: "/bin/hello.wasm"})
+		if r.res.ExitCode != 0 || r.stdout != "Hello from a WebAssembly container!\n" {
+			t.Fatalf("executor %d: %+v", i, r)
+		}
+		if err := e.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestStartErrors(t *testing.T) {
 	f := rootfs.New()

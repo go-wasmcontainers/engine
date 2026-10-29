@@ -22,7 +22,7 @@ import (
 // state store (networks are kept).
 func netDaemon(t *testing.T, dir string) string {
 	t.Helper()
-	e := wazero.New(wazero.Options{EngineWASI: true})
+	e := wazero.New(wazero.Options{EngineWASI: true, CompilationCache: testutil.CompilationCache()})
 	st, err := state.OpenDir(filepath.Join(dir, "containers"))
 	if err != nil {
 		t.Fatal(err)

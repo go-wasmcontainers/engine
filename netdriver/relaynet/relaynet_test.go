@@ -76,7 +76,7 @@ func TestClassNetwork(t *testing.T) {
 	img.MkdirAll("/bin", 0o755)
 	img.WriteFile("/bin/netprobe.wasm", testutil.Wasm(t, "netprobe"), 0o755)
 	img.Freeze()
-	e := wazero.New(wazero.Options{EngineWASI: true})
+	e := wazero.New(wazero.Options{EngineWASI: true, CompilationCache: testutil.CompilationCache()})
 	defer e.Close(context.Background())
 	ctx := context.Background()
 	run := func(d netdriver.NetworkDriver, name string, out *buf, args ...string) runtime.Process {

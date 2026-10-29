@@ -22,7 +22,7 @@ import (
 // execDaemon serves the engine's WASI host with the WASIX module.
 func execDaemon(t *testing.T, dir string) string {
 	t.Helper()
-	e := wazero.New(wazero.Options{HostModules: []wasi.HostModule{wasi.WASIX}})
+	e := wazero.New(wazero.Options{HostModules: []wasi.HostModule{wasi.WASIX}, CompilationCache: testutil.CompilationCache()})
 	d, err := daemon.New(daemon.Options{Root: filepath.Join(dir, "data"), Containers: container.Options{Executor: e}})
 	if err != nil {
 		t.Fatal(err)
