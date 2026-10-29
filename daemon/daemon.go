@@ -19,6 +19,7 @@ import (
 	"github.com/go-wasmcontainers/engine/events"
 	"github.com/go-wasmcontainers/engine/image"
 	"github.com/go-wasmcontainers/engine/network"
+	"github.com/go-wasmcontainers/engine/portmap"
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/volume"
 )
@@ -380,6 +381,13 @@ type CreateRequest struct {
 	// Network is joined too (API 1.44+), and with no Network the first of
 	// them by name is the primary.
 	Endpoints map[string][]string
+	// Ports are published ports (HostConfig.PortBindings, run -p);
+	// ExposedPorts adds ports with no binding (Config.ExposedPorts, run
+	// --expose), to the image's own; PublishAll gives each of those a port
+	// the system picks (run -P).
+	Ports        portmap.Map
+	ExposedPorts map[string]struct{}
+	PublishAll   bool
 }
 
 // ParseBind reads "VOLUME:/path[:ro|:rw]".
@@ -468,6 +476,26 @@ func mergeEnv(base, over []string) []string {
 	return out
 }
 
+// containerPorts is a container's ports: the image's exposed ports, the
+// request's, and the request's bindings; nil when there are none.
+func containerPorts(image map[string]struct{}, req CreateRequest) (portmap.Map, error) {
+	m := portmap.Map{}
+	if err := m.Exposed(image); err != nil {
+		return nil, fmt.Errorf("%w: the image's ExposedPorts: %v", container.ErrInvalid, err)
+	}
+	if err := m.Exposed(req.ExposedPorts); err != nil {
+		return nil, fmt.Errorf("%w: %v", container.ErrInvalid, err)
+	}
+	m.Merge(req.Ports)
+	if m.Bindings() > portmap.MaxBindings {
+		return nil, fmt.Errorf("%w: at most %d published ports", container.ErrInvalid, portmap.MaxBindings)
+	}
+	if len(m) == 0 {
+		return nil, nil
+	}
+	return m, nil
+}
+
 // CreateContainer makes a container from an image.
 func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error) {
 	name, img, err := d.ResolveImage(req.Image)
@@ -500,6 +528,10 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 	if cfg.Networks, err = d.attachments(req.Network, req.Endpoints); err != nil {
 		return nil, err
 	}
+	if cfg.Ports, err = containerPorts(ec.ExposedPorts, req); err != nil {
+		return nil, err
+	}
+	cfg.PublishAll = req.PublishAll
 	if len(req.Labels) > 0 {
 		cfg.Labels = req.Labels
 	}

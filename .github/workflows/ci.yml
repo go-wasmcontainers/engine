@@ -88,6 +88,8 @@ jobs:
           - { target: FuzzCheckBlock, pkg: ./wasi }
           # A guest's DNS queries, answered by the network's DNS server.
           - { target: FuzzAnswer, pkg: ./netdriver }
+          # Published ports: `-p` values and API PortBindings.
+          - { target: FuzzParseSpec, pkg: ./portmap }
           - { target: FuzzLimitMemory, pkg: ./wasmbin }
           # commit --change instructions, from the API's query string.
           - { target: FuzzApplyChanges, pkg: ./daemon }

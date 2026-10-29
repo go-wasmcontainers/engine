@@ -21,6 +21,7 @@ import (
 	"github.com/go-wasmcontainers/engine/container"
 	"github.com/go-wasmcontainers/engine/daemon"
 	"github.com/go-wasmcontainers/engine/image"
+	"github.com/go-wasmcontainers/engine/portmap"
 	"github.com/go-wasmcontainers/engine/runtime"
 )
 
@@ -424,6 +425,11 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	ports, err := portmap.FromAPI(req.HostConfig.PortBindings)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	var warnings []string
 	if req.Tty {
 		warnings = append(warnings, "TTY is not supported; output is multiplexed")
@@ -446,6 +452,7 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 		Entrypoint: req.Entrypoint, Cmd: req.Cmd, Env: req.Env, WorkingDir: req.WorkingDir, Labels: req.Labels,
 		Memory: req.HostConfig.Memory, AutoRemove: req.HostConfig.AutoRemove, Binds: req.HostConfig.Binds,
 		Network: req.HostConfig.NetworkMode, Endpoints: endpoints, Caps: caps,
+		Ports: ports, ExposedPorts: req.ExposedPorts, PublishAll: req.HostConfig.PublishAllPorts,
 	})
 	if err != nil {
 		writeError(w, statusOf(err), err)
@@ -506,10 +513,28 @@ func containerSummaries(list []container.Snapshot) []api.ContainerSummary {
 			labels = map[string]string{}
 		}
 		cs := api.ContainerSummary{ID: c.ID, Names: []string{"/" + c.Name}, Image: c.Config.Image, ImageID: c.Config.ImageID,
-			Command: strings.Join(c.Command(), " "), Created: c.Created.Unix(), Ports: []any{}, SizeRw: c.SizeRw,
+			Command: strings.Join(c.Command(), " "), Created: c.Created.Unix(), Ports: summaryPorts(c), SizeRw: c.SizeRw,
 			Labels: labels, State: string(c.State), Status: humanStatus(c, now)}
 		cs.HostConfig.NetworkMode = networkOf(c.Config)
 		out = append(out, cs)
+	}
+	return out
+}
+
+// summaryPorts is a summary's Ports, as Docker lists them: each binding
+// while the container runs, each exposed port without one.
+func summaryPorts(c container.Snapshot) []any {
+	out := []any{}
+	live := c.Ports
+	for _, k := range c.Config.Ports.Keys() {
+		bs := live[k]
+		if len(bs) == 0 {
+			out = append(out, api.Port{PrivatePort: k.Port, Type: k.Proto})
+			continue
+		}
+		for _, b := range bs {
+			out = append(out, api.Port{IP: b.Addr().String(), PrivatePort: k.Port, PublicPort: b.HostPort, Type: k.Proto})
+		}
 	}
 	return out
 }
@@ -653,6 +678,32 @@ func rfc3339(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
+// inspectPorts fills what inspect says of ports: the configured bindings
+// (HostConfig.PortBindings), the exposed ports (Config.ExposedPorts), and
+// what is bound while the container runs (NetworkSettings.Ports, every
+// exposed port with null for one not published; empty when not running).
+func inspectPorts(out *api.ContainerInspect, sn container.Snapshot) {
+	out.HostConfig.PublishAllPorts = sn.Config.PublishAll
+	out.NetworkSettings.Ports = portmap.APIMap{}
+	for _, k := range sn.Config.Ports.Keys() {
+		if out.Config.ExposedPorts == nil {
+			out.Config.ExposedPorts = map[string]struct{}{}
+		}
+		out.Config.ExposedPorts[k.String()] = struct{}{}
+		if bs := sn.Config.Ports[k]; len(bs) > 0 {
+			if out.HostConfig.PortBindings == nil {
+				out.HostConfig.PortBindings = portmap.APIMap{}
+			}
+			out.HostConfig.PortBindings[k.String()] = portmap.Map{k: bs}.API()[k.String()]
+		}
+	}
+	if sn.State == container.Running {
+		for k, bs := range sn.Ports {
+			out.NetworkSettings.Ports[k.String()] = portmap.Map{k: bs}.API()[k.String()]
+		}
+	}
+}
+
 func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 	c, err := s.d.Containers().Get(r.PathValue("id"))
 	if err != nil {
@@ -673,6 +724,7 @@ func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 		NetworkSettings: api.NetworkSettings{Networks: map[string]api.EndpointSettings{}},
 	}
 	out.NetworkSettings.Networks = s.endpointSettings(sn)
+	inspectPorts(&out, sn)
 	if sn.IPAddress.IsValid() {
 		out.NetworkSettings.IPAddress = sn.IPAddress.String()
 	}

@@ -83,8 +83,9 @@ not have.
 |---|---|
 | `pull IMAGE` | `IMAGE` is a registry reference or `oci:<dir>[:<ref.name>]` |
 | `images` | `-q` |
-| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one) |
-| `ps` | `-a/--all`, `-q` |
+| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one), `-p/--publish [ip:][hostPort:]containerPort[/tcp\|udp]` (ip defaults to **127.0.0.1**; ranges as Docker's), `-P/--publish-all`, `--expose PORT[/proto]` — see [Published ports](#published-ports) |
+| `port CONTAINER [PRIVATE_PORT[/PROTO]]` | where a running container's ports are published (`80/tcp -> 127.0.0.1:49153`) |
+| `ps` | `-a/--all`, `-q`; PORTS as Docker writes it (`127.0.0.1:8080->80/tcp, 9000/tcp`) |
 | `logs CONTAINER` | `-f/--follow` |
 | `rm CONTAINER...` | `-f/--force` |
 | `rmi IMAGE...` | `-f/--force` |
@@ -259,6 +260,46 @@ wait on, so the browser's engine worker keeps its event loop.
 - `--network none` (and `--wasi wazero`) gives no sockets: `sock_open`
   fails with `ENOTSUP`. `--network host` is refused.
 
+### Published ports
+
+```
+$ wctr run -d --name web -p 8080:80 netprobe serve 80
+$ curl http://127.0.0.1:8080/hi        # from the host, into the container
+$ wctr port web
+80/tcp -> 127.0.0.1:8080
+```
+
+A container has no socket on the host: its listeners live on the engine's
+networks. A published port is a listener **wctrd** opens on the host
+(package `portmap`), and each connection it accepts is dialed into the
+container through the container's own endpoint, at `127.0.0.1:PORT` — the
+port is reached on whichever of its networks the guest listens. Bytes are
+copied both ways, half-closes included (Docker's userland proxy, not
+iptables); UDP keeps one session per client, ended after 90 s of silence.
+
+- **⛔ A binding without an address listens on `127.0.0.1`, not on every
+  address as Docker does.** `-p 8080:80` makes a lab's container reachable
+  from this machine only; `-p 0.0.0.0:8080:80` says it should be reachable
+  from the network.
+- The Engine API shapes are Docker's: `HostConfig.PortBindings`,
+  `HostConfig.PublishAllPorts`, `Config.ExposedPorts`, inspect's
+  `NetworkSettings.Ports` (`null` for a port only exposed), the summary's
+  `Ports`. A host port range takes the first free port in it; a host port
+  of `""` or `0` is one the system picks, reported as picked.
+- A host port somebody holds refuses the start, as Docker words it:
+  `Bind for 127.0.0.1:8080 failed: port is already allocated`. Nothing of
+  that container is left listening. Ports are opened at start and freed
+  when the container stops, so a restart may pick other ones under `-P`.
+- A container on `--network none` cannot publish (refused at start, where
+  Docker would publish a port that never answers), nor can an engine with no
+  host to listen on (`container.Options.Ports` nil).
+- A start refused before the process exists (a port, a network, a volume)
+  is recorded as an exit with code 128 and the reason, as Docker records
+  it: a `run --rm` returns at once and its container is removed.
+- In a browser the host is the page, not a machine: the playground will
+  provide a `portmap.Host` behind a Service Worker route
+  (`/playground/port/<n>/…`).
+
 ## Images it runs
 
 Both shapes, selected from an index by platform `wasip1/wasm`:
@@ -400,8 +441,12 @@ open item.
   together), check every guest pointer, resolve programs only inside the
   container's root, and are limited per container (process count, memory
   reserved across instances, spawn rate).
+- **Published ports** listen on `127.0.0.1` unless a binding names an
+  address; each binding proxies at most 128 connections and 256 UDP
+  clients at once (8 KiB datagrams, larger ones dropped); at most 1024
+  bindings per container; the `-p` and PortBindings parsers are fuzzed.
 - **Fuzzed** in CI (corpus committed under `testdata/fuzz`): the WASIX
-  process calls, the socket
+  process calls, the `-p` and PortBindings parsers, the socket
   calls (sequences of them on two processes of one network), the DNS
   answerer, the layer
   unpacker and the writable-layer reader, the path resolver, the document
@@ -414,7 +459,10 @@ open item.
   -it`); `exec -it` has both. No `exec` in the browser executor yet.
   Process spawning is the WASIX subset above (no signals: a child is
   stopped only with its container; ^C in a terminal erases the line).
-- Networks: no published ports (`-p`) yet; a container on several networks
+- Published ports: no sctp; no browser host yet (the playground's Service
+  Worker route comes next); the source address the guest sees is its own,
+  not the client's.
+- Networks: a container on several networks
   binds to its primary address or to all (`0.0.0.0`), not to a secondary
   address alone; aliases only on in-engine networks; IPv4 only on in-engine
   networks, no `AF_UNIX`; the DNS

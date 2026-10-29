@@ -21,6 +21,7 @@ import (
 
 	"github.com/go-wasmcontainers/engine/events"
 	"github.com/go-wasmcontainers/engine/netdriver"
+	"github.com/go-wasmcontainers/engine/portmap"
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/runtime"
 	"github.com/go-wasmcontainers/engine/state"
@@ -69,6 +70,19 @@ type Config struct {
 	Networks []Attachment `json:"-"`
 	// Caps are device capabilities granted to it (run --gpu: "gpu").
 	Caps []string `json:"-"`
+	// Ports are its exposed ports and their host bindings (run -p,
+	// --expose, the image's ExposedPorts); PublishAll gives each exposed
+	// port without a binding one the system picks (run -P).
+	Ports      portmap.Map `json:"-"`
+	PublishAll bool        `json:"-"`
+}
+
+// published is what Start publishes: the bindings, with run -P applied.
+func (cfg Config) published() portmap.Map {
+	if cfg.PublishAll {
+		return cfg.Ports.PublishAll()
+	}
+	return cfg.Ports
 }
 
 // Mount is a volume mounted at Target.
@@ -115,6 +129,7 @@ type Container struct {
 	path       string
 	ip         netip.Addr
 	net        *netdriver.Multi // its networks while it runs
+	ports      *portmap.Set     // its published ports while it runs
 	proc       runtime.Process
 	// killPending is a kill that arrived while running but before proc
 	// was attached; Start delivers it.
@@ -145,6 +160,9 @@ type Snapshot struct {
 	IPAddress netip.Addr
 	// Networks are its networks, with their addresses while it runs.
 	Networks []NetworkInfo
+	// Ports are the published ports while it runs, as bound (a picked
+	// host port as picked); nil otherwise.
+	Ports portmap.Map
 }
 
 // Command is argv as configured.
@@ -191,12 +209,16 @@ func (c *Container) Snapshot() Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	rw, _ := c.fs.Usage()
-	return Snapshot{
+	s := Snapshot{
 		ID: c.id, Name: c.name, Created: c.created, Config: c.cfg,
 		State: c.state, ExitCode: c.exitCode, Error: c.errMsg, TimedOut: c.timedOut,
 		StartedAt: c.startedAt, FinishedAt: c.finishedAt, Path: c.path, SizeRw: rw, IPAddress: c.ip,
 		Networks: c.networksLocked(),
 	}
+	if c.ports != nil {
+		s.Ports = c.ports.Ports()
+	}
+	return s
 }
 
 // ID returns the container's ID.
@@ -238,6 +260,12 @@ type Options struct {
 	// Network attaches a container to one of Config.Networks under its DNS
 	// name and aliases; nil means containers have no network.
 	Network func(ctx context.Context, network, name string, aliases []string) (netdriver.Endpoint, error)
+	// Ports is where published ports listen (wctrd: portmap.OS); nil
+	// means this engine cannot publish them, and a container that asks
+	// is refused at start.
+	Ports portmap.Host
+	// PortLimits bound each published port (zero: portmap.DefaultLimits).
+	PortLimits portmap.Limits
 }
 
 var networkRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
@@ -361,6 +389,9 @@ func (m *Manager) create(o CreateOptions) (*Container, error) {
 	}
 	if len(o.Config.Entrypoint)+len(o.Config.Cmd) == 0 {
 		return nil, fmt.Errorf("%w: no command specified", ErrInvalid)
+	}
+	if err := checkPorts(o.Config); err != nil {
+		return nil, err
 	}
 	if err := checkMounts(o.Config.Mounts); err != nil {
 		return nil, err
@@ -573,17 +604,23 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 			vfs, err = m.opt.Volume(mt.Volume)
 		}
 		if err != nil {
-			c.mu.Unlock()
-			return fmt.Errorf("%w: volume %s: %v", ErrInvalid, mt.Volume, err)
+			return m.failStart(c, fmt.Errorf("%w: volume %s: %v", ErrInvalid, mt.Volume, err))
 		}
 		spec.Mounts = append(spec.Mounts, runtime.Mount{Path: mt.Target, FS: vfs, ReadOnly: mt.ReadOnly})
 	}
 	ep, err := m.attach(ctx, c)
 	if err != nil {
-		c.mu.Unlock()
-		return err
+		return m.failStart(c, err)
+	}
+	ports, err := m.publish(ctx, c, ep)
+	if err != nil {
+		if ep != nil {
+			ep.Detach()
+		}
+		return m.failStart(c, err)
 	}
 	c.net = ep
+	c.ports = ports
 	if ep != nil { // nil: no network
 		spec.Net = netdriver.WithDNS(ep)
 		c.ip = ep.Addr()
@@ -597,6 +634,9 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 	m.schedule(c)
 
 	detach := func() {
+		if ports != nil {
+			ports.Close() // the host ports are free again, as Docker frees them at stop
+		}
 		if ep != nil {
 			ep.Detach() // its listeners go; the name keeps its address
 		}
@@ -631,6 +671,23 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 		m.exited(c)
 	}()
 	return nil
+}
+
+// exitStartFailed is the exit code of a container that could not start
+// (a volume, a network or a published port it could not have): Docker's
+// 128 for the same.
+const exitStartFailed = 128
+
+// failStart records a start that failed before the process existed, the
+// way a process that could not run is recorded: the container has exited
+// with the error, a --rm container is removed, and every waiter is told.
+// Returning the error alone left a `run --rm` waiting for an exit that was
+// never going to come. The caller holds c.mu; failStart releases it.
+func (m *Manager) failStart(c *Container, err error) error {
+	c.mu.Unlock()
+	c.finish(runtime.Result{ExitCode: exitStartFailed, Error: err.Error()})
+	m.exited(c)
+	return err
 }
 
 // exited stores an exit, or removes a --rm container.
@@ -707,6 +764,7 @@ func (c *Container) finish(r runtime.Result) {
 	c.proc = nil
 	c.ip = netip.Addr{}
 	c.net = nil
+	c.ports = nil
 	c.killPending = false
 	c.exits++
 	c.notifyLocked()

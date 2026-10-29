@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-wasmcontainers/engine/portmap"
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/state"
 )
@@ -45,9 +46,13 @@ type record struct {
 	Mounts     []Mount           `json:"mounts,omitempty"`
 	// Network is the one network of a record written before v0.14.0;
 	// Networks replaces it.
-	Network    string       `json:"network,omitempty"`
-	Networks   []Attachment `json:"networks,omitempty"`
-	Caps       []string     `json:"caps,omitempty"`
+	Network  string       `json:"network,omitempty"`
+	Networks []Attachment `json:"networks,omitempty"`
+	Caps     []string     `json:"caps,omitempty"`
+	// Ports are the exposed ports and their bindings as configured (the
+	// Engine API's PortMap; UnmarshalJSON validates every entry).
+	Ports      portmap.Map  `json:"ports,omitempty"`
+	PublishAll bool         `json:"publishAll,omitempty"`
 	State      State        `json:"state"`
 	ExitCode   int          `json:"exitCode"`
 	Error      string       `json:"error,omitempty"`
@@ -92,6 +97,9 @@ func (r *record) check() error {
 		return err
 	}
 	r.Networks = atts
+	if err := checkPorts(Config{Ports: r.Ports, PublishAll: r.PublishAll}); err != nil {
+		return err
+	}
 	return checkMounts(r.Mounts)
 }
 
@@ -306,6 +314,7 @@ func (m *Manager) checkpointLocked(c *Container) error {
 		ID: c.id, Name: c.name, Created: c.created, Image: c.cfg.Image, ImageID: c.cfg.ImageID,
 		Entrypoint: c.cfg.Entrypoint, Cmd: c.cfg.Cmd, Env: c.cfg.Env, WorkingDir: c.cfg.WorkingDir,
 		Labels: c.cfg.Labels, Memory: c.cfg.MemoryLimitBytes, AutoRemove: c.cfg.AutoRemove, Mounts: c.cfg.Mounts, Networks: c.cfg.Networks, Caps: c.cfg.Caps,
+		Ports: c.cfg.Ports, PublishAll: c.cfg.PublishAll,
 		State: sn.State, ExitCode: sn.ExitCode, Error: sn.Error, TimedOut: sn.TimedOut,
 		StartedAt: sn.StartedAt, FinishedAt: sn.FinishedAt, Path: sn.Path,
 		Logs: logsKey, Diff: diffKey, Usage: usage, SavedAt: time.Now().UTC(),
@@ -452,7 +461,8 @@ func (m *Manager) Restore(lower func(imageID string) (*rootfs.FS, error), lim ro
 		c := &Container{
 			id: r.ID, name: r.Name, created: r.Created,
 			cfg: Config{Image: r.Image, ImageID: r.ImageID, Entrypoint: r.Entrypoint, Cmd: r.Cmd, Env: r.Env,
-				WorkingDir: r.WorkingDir, Labels: r.Labels, MemoryLimitBytes: r.Memory, AutoRemove: r.AutoRemove, Mounts: r.Mounts, Networks: r.Networks, Caps: r.Caps},
+				WorkingDir: r.WorkingDir, Labels: r.Labels, MemoryLimitBytes: r.Memory, AutoRemove: r.AutoRemove, Mounts: r.Mounts, Networks: r.Networks, Caps: r.Caps,
+				Ports: r.Ports, PublishAll: r.PublishAll},
 			fs: low.Clone(m.opt.Quota), logs: newLogs(m.opt.MaxLogBytes),
 			state: r.State, exitCode: r.ExitCode, errMsg: r.Error, timedOut: r.TimedOut,
 			startedAt: r.StartedAt, finishedAt: r.FinishedAt, path: r.Path, changed: make(chan struct{}),
