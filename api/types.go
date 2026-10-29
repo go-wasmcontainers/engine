@@ -158,6 +158,12 @@ type ContainerConfig struct {
 	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
 }
 
+// RestartPolicy is Docker's HostConfig.RestartPolicy.
+type RestartPolicy struct {
+	Name              string `json:"Name"`
+	MaximumRetryCount int    `json:"MaximumRetryCount"`
+}
+
 // HostConfig is the create body's host part (a subset).
 type HostConfig struct {
 	Memory     int64 `json:"Memory"`
@@ -169,6 +175,10 @@ type HostConfig struct {
 	// PublishAllPorts gives every exposed port without a binding a host
 	// port the system picks.
 	PublishAllPorts bool `json:"PublishAllPorts,omitempty"`
+	// RestartPolicy restarts the container when it exits: Name "no",
+	// "always", "unless-stopped" or "on-failure" (MaximumRetryCount
+	// bounding the last; 0: no bound).
+	RestartPolicy *RestartPolicy `json:"RestartPolicy,omitempty"`
 	// Binds are "VOLUME:/path[:ro|:rw]"; named volumes only.
 	Binds []string `json:"Binds,omitempty"`
 	// NetworkMode is the network to join ("default", "none", a name).

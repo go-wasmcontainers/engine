@@ -51,19 +51,25 @@ type record struct {
 	Caps     []string     `json:"caps,omitempty"`
 	// Ports are the exposed ports and their bindings as configured (the
 	// Engine API's PortMap; UnmarshalJSON validates every entry).
-	Ports      portmap.Map  `json:"ports,omitempty"`
-	PublishAll bool         `json:"publishAll,omitempty"`
-	State      State        `json:"state"`
-	ExitCode   int          `json:"exitCode"`
-	Error      string       `json:"error,omitempty"`
-	TimedOut   bool         `json:"timedOut,omitempty"`
-	StartedAt  time.Time    `json:"startedAt"`
-	FinishedAt time.Time    `json:"finishedAt"`
-	Path       string       `json:"path,omitempty"`
-	Logs       string       `json:"logs,omitempty"` // blob key
-	Diff       string       `json:"diff,omitempty"` // blob key
-	Usage      rootfs.Usage `json:"usage"`
-	SavedAt    time.Time    `json:"savedAt"`
+	Ports      portmap.Map `json:"ports,omitempty"`
+	PublishAll bool        `json:"publishAll,omitempty"`
+	// Restart is the restart policy; ManualStop says a user stopped the
+	// container (unless-stopped then leaves it stopped at the next engine
+	// start); RestartCount counts the policy's restarts.
+	Restart      RestartPolicy `json:"restart,omitempty"`
+	ManualStop   bool          `json:"manualStop,omitempty"`
+	RestartCount int           `json:"restartCount,omitempty"`
+	State        State         `json:"state"`
+	ExitCode     int           `json:"exitCode"`
+	Error        string        `json:"error,omitempty"`
+	TimedOut     bool          `json:"timedOut,omitempty"`
+	StartedAt    time.Time     `json:"startedAt"`
+	FinishedAt   time.Time     `json:"finishedAt"`
+	Path         string        `json:"path,omitempty"`
+	Logs         string        `json:"logs,omitempty"` // blob key
+	Diff         string        `json:"diff,omitempty"` // blob key
+	Usage        rootfs.Usage  `json:"usage"`
+	SavedAt      time.Time     `json:"savedAt"`
 }
 
 var (
@@ -99,6 +105,12 @@ func (r *record) check() error {
 	r.Networks = atts
 	if err := checkPorts(Config{Ports: r.Ports, PublishAll: r.PublishAll}); err != nil {
 		return err
+	}
+	if err := checkRestart(Config{Restart: r.Restart, AutoRemove: r.AutoRemove}); err != nil {
+		return err
+	}
+	if r.RestartCount < 0 {
+		return errors.New("bad restart count")
 	}
 	return checkMounts(r.Mounts)
 }
@@ -315,7 +327,8 @@ func (m *Manager) checkpointLocked(c *Container) error {
 		Entrypoint: c.cfg.Entrypoint, Cmd: c.cfg.Cmd, Env: c.cfg.Env, WorkingDir: c.cfg.WorkingDir,
 		Labels: c.cfg.Labels, Memory: c.cfg.MemoryLimitBytes, AutoRemove: c.cfg.AutoRemove, Mounts: c.cfg.Mounts, Networks: c.cfg.Networks, Caps: c.cfg.Caps,
 		Ports: c.cfg.Ports, PublishAll: c.cfg.PublishAll,
-		State: sn.State, ExitCode: sn.ExitCode, Error: sn.Error, TimedOut: sn.TimedOut,
+		Restart: c.cfg.Restart, ManualStop: c.manualStop, RestartCount: c.restartCount,
+		State: storedState(sn.State), ExitCode: sn.ExitCode, Error: sn.Error, TimedOut: sn.TimedOut,
 		StartedAt: sn.StartedAt, FinishedAt: sn.FinishedAt, Path: sn.Path,
 		Logs: logsKey, Diff: diffKey, Usage: usage, SavedAt: time.Now().UTC(),
 	}
@@ -462,7 +475,8 @@ func (m *Manager) Restore(lower func(imageID string) (*rootfs.FS, error), lim ro
 			id: r.ID, name: r.Name, created: r.Created,
 			cfg: Config{Image: r.Image, ImageID: r.ImageID, Entrypoint: r.Entrypoint, Cmd: r.Cmd, Env: r.Env,
 				WorkingDir: r.WorkingDir, Labels: r.Labels, MemoryLimitBytes: r.Memory, AutoRemove: r.AutoRemove, Mounts: r.Mounts, Networks: r.Networks, Caps: r.Caps,
-				Ports: r.Ports, PublishAll: r.PublishAll},
+				Ports: r.Ports, PublishAll: r.PublishAll, Restart: r.Restart},
+			manualStop: r.ManualStop, restartCount: r.RestartCount,
 			fs: low.Clone(m.opt.Quota), logs: newLogs(m.opt.MaxLogBytes),
 			state: r.State, exitCode: r.ExitCode, errMsg: r.Error, timedOut: r.TimedOut,
 			startedAt: r.StartedAt, finishedAt: r.FinishedAt, path: r.Path, changed: make(chan struct{}),

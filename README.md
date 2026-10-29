@@ -83,7 +83,7 @@ not have.
 |---|---|
 | `pull IMAGE` | `IMAGE` is a registry reference or `oci:<dir>[:<ref.name>]` |
 | `images` | `-q` |
-| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one), `-p/--publish [ip:][hostPort:]containerPort[/tcp\|udp]` (ip defaults to **127.0.0.1**; ranges as Docker's), `-P/--publish-all`, `--expose PORT[/proto]` — see [Published ports](#published-ports) |
+| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one), `-p/--publish [ip:][hostPort:]containerPort[/tcp\|udp]` (ip defaults to **127.0.0.1**; ranges as Docker's), `-P/--publish-all`, `--expose PORT[/proto]` — see [Published ports](#published-ports); `--restart no\|always\|unless-stopped\|on-failure[:N]` (see below; not with `--rm`) |
 | `port CONTAINER [PRIVATE_PORT[/PROTO]]` | where a running container's ports are published (`80/tcp -> 127.0.0.1:49153`) |
 | `ps` | `-a/--all`, `-q`; PORTS as Docker writes it (`127.0.0.1:8080->80/tcp, 9000/tcp`) |
 | `logs CONTAINER` | `-f/--follow` |
@@ -141,6 +141,18 @@ is a small sealed record (sha256-checked) naming content-addressed blobs for
 its logs and its layer (an OCI-style tar changeset), written blobs first, so
 an interrupted write leaves the previous state; a record or blob that fails
 its check is dropped and reported at start (`wctrd: repaired: …`).
+
+**Restart policies** (`run --restart`, `HostConfig.RestartPolicy`), as
+Docker's: `always` restarts a container whenever it exits and starts it with
+the engine; `unless-stopped` the same, except that the engine leaves it
+stopped if a user stopped it; `on-failure[:N]` restarts it when it exits
+with a code other than 0, at most N times (0: no bound). A user's `stop` or
+`kill` ends the policy until the next `start`, which counts from zero. Each
+restart waits first — 100 ms, doubled after every run shorter than 10 s, at
+most a minute — and meanwhile the container is `restarting` (listed by
+`ps`, `Restarting (code) … ago`; `rm` needs `-f`). A start the engine refuses
+(a volume, a network, a port) is not retried. `inspect` shows
+`HostConfig.RestartPolicy`, `RestartCount` and `State.Restarting`.
 
 **Shell completion.** `source <(wctr completion bash)` (or `zsh`, `fish`,
 `powershell`; see `wctr completion bash --help` to install it for good).
@@ -353,7 +365,7 @@ image.
 | `netdriver` | the `NetworkDriver` / `Endpoint` contract, `Local` (an in-engine network, `x/net/nettest`-conformant streams), `WithDNS` (the network's DNS server) |
 | `netdriver/relaynet` | a class network through the relay: join, connect, token refresh |
 | `network` | the named networks (`bridge`, `none`, created ones, host-provided drivers), kept in the state store |
-| `container` | lifecycle `created` → `running` → `exited` (restartable), exit codes, bounded logs, wait conditions, names, ID prefixes; checkpoints to and restores from a `state.Store` |
+| `container` | lifecycle `created` → `running` → `exited` (restartable; `restarting` under a restart policy), exit codes, bounded logs, wait conditions, names, ID prefixes; checkpoints to and restores from a `state.Store` |
 | `state` | the key-value `Store` the engine persists containers in (directory, memory; IndexedDB in the playground), sealed records, content-addressed blobs |
 | `daemon` | image store + unpacked image trees + container manager; the create override rules |
 | `api`, `api/server`, `api/inproc` | the API: types, client, multiplexed stream; the HTTP server; an in-memory transport for an in-process client (the browser has no sockets) |

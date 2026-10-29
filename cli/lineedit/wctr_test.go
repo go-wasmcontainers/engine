@@ -38,7 +38,7 @@ func TestWctrCompleter(t *testing.T) {
 	t0 := time.Now()
 	typ(e, "w\t")
 	typ(e, "ru\t")
-	typ(e, "--r\t")
+	typ(e, "--rm\t") // "--r" is --restart and --rm since run has --restart
 	typ(e, "hel\t")
 	check(t, e, "wctr run --rm hello", 19)
 	typ(e, ":\t")

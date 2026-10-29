@@ -17,6 +17,7 @@ import (
 	nethttp "net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -282,6 +283,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 		publish    []string
 		publishAll bool
 		expose     []string
+		restart    string
 	)
 	cmd := &cobra.Command{
 		Use:   "run [OPTIONS] IMAGE [COMMAND] [ARG...]",
@@ -310,6 +312,13 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 			}
 			if err := portFlags(&req, publish, expose, publishAll); err != nil {
 				return &exitError{code: 125, err: err}
+			}
+			if restart != "" {
+				rp, err := parseRestart(restart)
+				if err != nil {
+					return &exitError{code: 125, err: err}
+				}
+				req.HostConfig.RestartPolicy = &rp
 			}
 			if len(args) > 1 {
 				req.Cmd = args[1:]
@@ -346,7 +355,23 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 	f.StringArrayVarP(&publish, "publish", "p", nil, "publish a port on the host: [ip:][hostPort:]containerPort[/tcp|udp] (ip defaults to 127.0.0.1)")
 	f.BoolVarP(&publishAll, "publish-all", "P", false, "publish every exposed port on a host port the system picks")
 	f.StringArrayVar(&expose, "expose", nil, "expose a port or a range without publishing it (80, 8000-8010/udp)")
+	f.StringVar(&restart, "restart", "", "restart policy: no, always, unless-stopped, on-failure[:max-retries]")
 	return cmd
+}
+
+// parseRestart reads --restart into the API's RestartPolicy; the daemon
+// validates the name and the count.
+func parseRestart(s string) (api.RestartPolicy, error) {
+	name, n, hasN := strings.Cut(s, ":")
+	rp := api.RestartPolicy{Name: name}
+	if hasN {
+		v, err := strconv.Atoi(n)
+		if err != nil || v < 0 {
+			return rp, fmt.Errorf("invalid --restart %q: the retry count is not a number", s)
+		}
+		rp.MaximumRetryCount = v
+	}
+	return rp, nil
 }
 
 func run(cmd *cobra.Command, c *api.Client, name string, detach, rm bool, req api.ContainerCreateRequest) error {
