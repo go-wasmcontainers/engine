@@ -397,9 +397,13 @@ func run(cmd *cobra.Command, c *api.Client, name string, detach, rm bool, req ap
 	if startErr != nil {
 		logs.Close()
 		<-copied
+		// Docker's rule: the module could not be run (126) or found (127)
+		// is the command's failure and keeps its code; any other start the
+		// daemon refused (a volume, a network, a published port) is 125,
+		// while the container records 128 with the reason.
 		res, werr := waiter.Result()
 		code := 125
-		if werr == nil && res.StatusCode != 0 {
+		if werr == nil && (res.StatusCode == 126 || res.StatusCode == 127) {
 			code = int(res.StatusCode)
 		}
 		return &exitError{code: code, err: startErr}

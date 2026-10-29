@@ -163,7 +163,9 @@ func TestPublishedPorts(t *testing.T) {
 	// once, and removes the container: it used to wait for an exit that
 	// never came, two minutes per refusal.
 	began := time.Now()
-	if r := wctr(t, h, "run", "--rm", "--name", "nonet", "--network", "none", "-p", "80", "netprobe", "serve", "80"); r.code == 0 || !strings.Contains(r.stderr, "has no network") {
+	// The CLI exits 125 (the daemon refused the start, as `docker run`
+	// does); the container records 128.
+	if r := wctr(t, h, "run", "--rm", "--name", "nonet", "--network", "none", "-p", "80", "netprobe", "serve", "80"); r.code != 125 || !strings.Contains(r.stderr, "has no network") {
 		t.Fatalf("none: %+v", r)
 	}
 	if d := time.Since(began); d > 20*time.Second {
@@ -173,7 +175,7 @@ func TestPublishedPorts(t *testing.T) {
 		t.Fatalf("the --rm container of a refused start is still there: %+v", r)
 	}
 	// Without --rm it stays, exited with the reason (Docker's 128).
-	if r := wctr(t, h, "run", "-d", "--name", "kept", "--network", "none", "-p", "80", "netprobe", "serve", "80"); r.code == 0 {
+	if r := wctr(t, h, "run", "-d", "--name", "kept", "--network", "none", "-p", "80", "netprobe", "serve", "80"); r.code != 125 {
 		t.Fatalf("kept: %+v", r)
 	}
 	if out := must(t, wctr(t, h, "inspect", "kept"), 0).stdout; !strings.Contains(out, `"ExitCode": 128`) || !strings.Contains(out, "has no network") {

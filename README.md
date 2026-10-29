@@ -163,8 +163,12 @@ both optional. The playground's terminal and the dashboard's terminal
 widget drive the same model.
 
 Exit status of `wctr run`: the container's, or 125 (the CLI or daemon
-failed), 126 (not a WebAssembly module), 127 (module not found), 137 (killed
-or wall-clock timeout), 134 (the module trapped).
+failed, including a start the daemon refused: a volume, a network or a
+published port it could not have; the container then records exit code 128
+and the reason, as Docker's does, and `--rm` removes it), 126 (not a
+WebAssembly module), 127 (module not found), 137 (killed or wall-clock
+timeout), 134 (the module trapped). One difference from Docker: such a
+container shows `Exited (128)`, not `Created`.
 
 `wctrd` flags: `-H/--host unix:///path` (default `unix:///var/run/wctr.sock`),
 `--data-root` (default `$XDG_DATA_HOME/wasmcontainers` or
