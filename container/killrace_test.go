@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-wasmcontainers/engine/internal/testutil"
 	"github.com/go-wasmcontainers/engine/runtime"
 	"github.com/go-wasmcontainers/engine/runtime/wazero"
 )
@@ -23,7 +24,7 @@ func (g *gate) Start(ctx context.Context, s runtime.Spec) (runtime.Process, erro
 }
 
 func gated(t *testing.T) (*Manager, *gate) {
-	e := wazero.New(wazero.Options{})
+	e := wazero.New(wazero.Options{CompilationCache: testutil.CompilationCache()})
 	t.Cleanup(func() { e.Close(context.Background()) })
 	g := &gate{Executor: e, entered: make(chan struct{}), release: make(chan struct{})}
 	return NewManager(Options{Executor: g}), g

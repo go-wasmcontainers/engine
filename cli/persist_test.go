@@ -12,6 +12,7 @@ import (
 	"github.com/go-wasmcontainers/engine/api/server"
 	"github.com/go-wasmcontainers/engine/container"
 	"github.com/go-wasmcontainers/engine/daemon"
+	"github.com/go-wasmcontainers/engine/internal/testutil"
 	"github.com/go-wasmcontainers/engine/runtime/wazero"
 	"github.com/go-wasmcontainers/engine/state"
 )
@@ -20,7 +21,7 @@ import (
 // stop shuts it down as wctrd does on SIGTERM.
 func daemonAt(t *testing.T, dir string) (host string, stop func()) {
 	t.Helper()
-	e := wazero.New(wazero.Options{})
+	e := wazero.New(wazero.Options{CompilationCache: testutil.CompilationCache()})
 	st, err := state.OpenDir(filepath.Join(dir, "containers"))
 	if err != nil {
 		t.Fatal(err)

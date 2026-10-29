@@ -21,7 +21,7 @@ import (
 // TestWctrCompleter drives the editor against a real in-process engine:
 // typing and Tab, as the playground and the dashboard do.
 func TestWctrCompleter(t *testing.T) {
-	ex := wazero.New(wazero.Options{})
+	ex := wazero.New(wazero.Options{CompilationCache: testutil.CompilationCache()})
 	defer ex.Close(context.Background())
 	d, err := daemon.New(daemon.Options{Backend: image.NewMemoryBackend(0), Containers: container.Options{Executor: ex}})
 	if err != nil {
