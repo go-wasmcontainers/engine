@@ -59,17 +59,22 @@ type record struct {
 	Restart      RestartPolicy `json:"restart,omitempty"`
 	ManualStop   bool          `json:"manualStop,omitempty"`
 	RestartCount int           `json:"restartCount,omitempty"`
-	State        State         `json:"state"`
-	ExitCode     int           `json:"exitCode"`
-	Error        string        `json:"error,omitempty"`
-	TimedOut     bool          `json:"timedOut,omitempty"`
-	StartedAt    time.Time     `json:"startedAt"`
-	FinishedAt   time.Time     `json:"finishedAt"`
-	Path         string        `json:"path,omitempty"`
-	Logs         string        `json:"logs,omitempty"` // blob key
-	Diff         string        `json:"diff,omitempty"` // blob key
-	Usage        rootfs.Usage  `json:"usage"`
-	SavedAt      time.Time     `json:"savedAt"`
+	// Tty, OpenStdin, StdinOnce and ConsoleSize: run -t and -i (stdio.go).
+	Tty         bool         `json:"tty,omitempty"`
+	OpenStdin   bool         `json:"openStdin,omitempty"`
+	StdinOnce   bool         `json:"stdinOnce,omitempty"`
+	ConsoleSize [2]uint16    `json:"consoleSize,omitempty"`
+	State       State        `json:"state"`
+	ExitCode    int          `json:"exitCode"`
+	Error       string       `json:"error,omitempty"`
+	TimedOut    bool         `json:"timedOut,omitempty"`
+	StartedAt   time.Time    `json:"startedAt"`
+	FinishedAt  time.Time    `json:"finishedAt"`
+	Path        string       `json:"path,omitempty"`
+	Logs        string       `json:"logs,omitempty"` // blob key
+	Diff        string       `json:"diff,omitempty"` // blob key
+	Usage       rootfs.Usage `json:"usage"`
+	SavedAt     time.Time    `json:"savedAt"`
 }
 
 var (
@@ -328,6 +333,7 @@ func (m *Manager) checkpointLocked(c *Container) error {
 		Labels: c.cfg.Labels, Memory: c.cfg.MemoryLimitBytes, AutoRemove: c.cfg.AutoRemove, Mounts: c.cfg.Mounts, Networks: c.cfg.Networks, Caps: c.cfg.Caps,
 		Ports: c.cfg.Ports, PublishAll: c.cfg.PublishAll,
 		Restart: c.cfg.Restart, ManualStop: c.manualStop, RestartCount: c.restartCount,
+		Tty: c.cfg.Tty, OpenStdin: c.cfg.OpenStdin, StdinOnce: c.cfg.StdinOnce, ConsoleSize: c.cfg.ConsoleSize,
 		State: storedState(sn.State), ExitCode: sn.ExitCode, Error: sn.Error, TimedOut: sn.TimedOut,
 		StartedAt: sn.StartedAt, FinishedAt: sn.FinishedAt, Path: sn.Path,
 		Logs: logsKey, Diff: diffKey, Usage: usage, SavedAt: time.Now().UTC(),
@@ -475,7 +481,8 @@ func (m *Manager) Restore(lower func(imageID string) (*rootfs.FS, error), lim ro
 			id: r.ID, name: r.Name, created: r.Created,
 			cfg: Config{Image: r.Image, ImageID: r.ImageID, Entrypoint: r.Entrypoint, Cmd: r.Cmd, Env: r.Env,
 				WorkingDir: r.WorkingDir, Labels: r.Labels, MemoryLimitBytes: r.Memory, AutoRemove: r.AutoRemove, Mounts: r.Mounts, Networks: r.Networks, Caps: r.Caps,
-				Ports: r.Ports, PublishAll: r.PublishAll, Restart: r.Restart},
+				Ports: r.Ports, PublishAll: r.PublishAll, Restart: r.Restart,
+				Tty: r.Tty, OpenStdin: r.OpenStdin, StdinOnce: r.StdinOnce, ConsoleSize: r.ConsoleSize},
 			manualStop: r.ManualStop, restartCount: r.RestartCount,
 			fs: low.Clone(m.opt.Quota), logs: newLogs(m.opt.MaxLogBytes),
 			state: r.State, exitCode: r.ExitCode, errMsg: r.Error, timedOut: r.TimedOut,

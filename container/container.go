@@ -26,6 +26,7 @@ import (
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/runtime"
 	"github.com/go-wasmcontainers/engine/state"
+	"github.com/go-wasmcontainers/engine/wasi"
 )
 
 // State is a container's lifecycle state.
@@ -78,6 +79,15 @@ type Config struct {
 	PublishAll bool        `json:"-"`
 	// Restart is its restart policy (run --restart; see restart.go).
 	Restart RestartPolicy `json:"-"`
+	// Tty gives its first process a terminal (run -t); OpenStdin a stdin
+	// that attached clients write into (run -i); StdinOnce closes that
+	// stdin when the first attached client's input ends (stdio.go).
+	// ConsoleSize is the terminal's first size, height then width (0, 0:
+	// 80x24).
+	Tty         bool      `json:"-"`
+	OpenStdin   bool      `json:"-"`
+	StdinOnce   bool      `json:"-"`
+	ConsoleSize [2]uint16 `json:"-"`
 }
 
 // published is what Start publishes: the bindings, with run -P applied.
@@ -138,6 +148,9 @@ type Container struct {
 	net     *netdriver.Multi // its networks while it runs
 	ports   *portmap.Set     // its published ports while it runs
 	proc    runtime.Process
+	// stdin and term are the running process's (stdio.go), nil without.
+	stdin *stdinHub
+	term  *wasi.Terminal
 	// killPending is a kill that arrived while running but before proc
 	// was attached; Start delivers it.
 	killPending bool
@@ -657,6 +670,17 @@ func (m *Manager) start(ctx context.Context, c *Container, auto bool) error {
 		spec.Net = netdriver.WithDNS(ep)
 		c.ip = ep.Addr()
 	}
+	var endStdio func()
+	{
+		in, out, errw, term, end := c.stdioLocked(logWriter{c.logs, Stdout})
+		spec.Stdin, spec.Terminal, endStdio = in, term, end
+		if out != nil {
+			spec.Stdout, spec.Stderr = out, errw
+		}
+		if c.cfg.Tty {
+			spec.Env = appendIfMissing(spec.Env, "TERM=xterm")
+		}
+	}
 	c.state = Running
 	c.startedAt = time.Now().UTC()
 	c.finishedAt = time.Time{}
@@ -666,6 +690,7 @@ func (m *Manager) start(ctx context.Context, c *Container, auto bool) error {
 	m.schedule(c)
 
 	detach := func() {
+		endStdio()
 		if ports != nil {
 			ports.Close() // the host ports are free again, as Docker frees them at stop
 		}
