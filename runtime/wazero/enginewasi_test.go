@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-wasmcontainers/engine/internal/testutil"
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/runtime"
 )
@@ -12,7 +13,9 @@ import (
 // engineWASI switches the executor tests to the engine's own WASI host.
 var engineWASI bool
 
-func opts() Options { return Options{EngineWASI: engineWASI} }
+func opts() Options {
+	return Options{EngineWASI: engineWASI, CompilationCache: testutil.CompilationCache()}
+}
 
 // TestEngineWASI runs the executor's guest-level tests a second time with
 // the engine's WASI host (package wasi) in place of wazero's: the same

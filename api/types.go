@@ -165,6 +165,10 @@ type ContainerConfig struct {
 	// ExposedPorts are ports the container listens on ({"80/tcp": {}}):
 	// published by PublishAllPorts, shown by inspect.
 	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
+	// Healthcheck overrides the image's health check (Test ["NONE"]
+	// disables it); durations in nanoseconds, zero: the image's or the
+	// default.
+	Healthcheck *HealthConfig `json:"Healthcheck,omitempty"`
 }
 
 // RestartPolicy is Docker's HostConfig.RestartPolicy.
@@ -390,6 +394,23 @@ type ContainerState struct {
 	Error      string `json:"Error"`
 	StartedAt  string `json:"StartedAt"`
 	FinishedAt string `json:"FinishedAt"`
+	// Health is the health check's state, absent without a check.
+	Health *Health `json:"Health,omitempty"`
+}
+
+// Health is Docker's State.Health.
+type Health struct {
+	Status        string              `json:"Status"`
+	FailingStreak int                 `json:"FailingStreak"`
+	Log           []HealthcheckResult `json:"Log"`
+}
+
+// HealthcheckResult is one probe of State.Health.Log.
+type HealthcheckResult struct {
+	Start    string `json:"Start"`
+	End      string `json:"End"`
+	ExitCode int    `json:"ExitCode"`
+	Output   string `json:"Output"`
 }
 
 // ContainerInspect is GET /containers/{id}/json (a subset).

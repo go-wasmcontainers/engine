@@ -35,7 +35,7 @@ func execSetup(t *testing.T) (*Manager, *Container) {
 	f.WriteFile("/bin/wasixguest.wasm", testutil.Wasm(t, "wasixguest"), 0o755)
 	f.WriteFile("/etc-not-a-module", []byte("text"), 0o644)
 	f.Freeze()
-	e := wazero.New(wazero.Options{HostModules: []wasi.HostModule{wasi.WASIX}})
+	e := wazero.New(wazero.Options{HostModules: []wasi.HostModule{wasi.WASIX}, CompilationCache: testutil.CompilationCache()})
 	t.Cleanup(func() { e.Close(context.Background()) })
 	m := NewManager(Options{Executor: e})
 	c, err := m.Create(CreateOptions{Name: "/spin", Lower: f, Config: Config{Image: "probe", ImageID: "sha256:x",

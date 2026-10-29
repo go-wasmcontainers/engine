@@ -23,7 +23,7 @@ import (
 // sockets for published ports (wctrd's setup).
 func portDaemon(t *testing.T, dir string, host portmap.Host) string {
 	t.Helper()
-	e := wazero.New(wazero.Options{EngineWASI: true})
+	e := wazero.New(wazero.Options{EngineWASI: true, CompilationCache: testutil.CompilationCache()})
 	d, err := daemon.New(daemon.Options{Root: filepath.Join(dir, "data"), Containers: container.Options{Executor: e, Ports: host}})
 	if err != nil {
 		t.Fatal(err)

@@ -383,6 +383,9 @@ type CreateRequest struct {
 	Caps []string
 	// Restart is the restart policy (HostConfig.RestartPolicy).
 	Restart container.RestartPolicy
+	// Healthcheck overrides the image's health check field by field (an
+	// empty Test, a zero duration or retry count: the image's).
+	Healthcheck *container.HealthConfig
 	// Endpoints are the networks' aliases by network (Docker's
 	// NetworkingConfig.EndpointsConfig); a network named there and not in
 	// Network is joined too (API 1.44+), and with no Network the first of
@@ -507,6 +510,39 @@ func containerPorts(image map[string]struct{}, req CreateRequest) (portmap.Map, 
 	return m, nil
 }
 
+// mergeHealth is a container's health check: the request's, completed
+// field by field by the image's (Docker's merge of Config.Healthcheck).
+func mergeHealth(req *container.HealthConfig, img *image.HealthConfig) *container.HealthConfig {
+	if req == nil && img == nil {
+		return nil
+	}
+	out := container.HealthConfig{}
+	if req != nil {
+		out = *req
+	}
+	if img != nil {
+		if len(out.Test) == 0 {
+			out.Test = img.Test
+		}
+		pick := func(v *time.Duration, ns int64) {
+			if *v == 0 && ns > 0 {
+				*v = time.Duration(ns)
+			}
+		}
+		pick(&out.Interval, img.Interval)
+		pick(&out.Timeout, img.Timeout)
+		pick(&out.StartPeriod, img.StartPeriod)
+		pick(&out.StartInterval, img.StartInterval)
+		if out.Retries == 0 {
+			out.Retries = img.Retries
+		}
+	}
+	if len(out.Test) == 0 {
+		return nil
+	}
+	return &out
+}
+
 // CreateContainer makes a container from an image.
 func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error) {
 	name, img, err := d.ResolveImage(req.Image)
@@ -527,6 +563,7 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 		Env: mergeEnv(ec.Env, req.Env), WorkingDir: ec.WorkingDir, Labels: ec.Labels,
 		MemoryLimitBytes: req.Memory, AutoRemove: req.AutoRemove, Caps: req.Caps, Restart: req.Restart,
 		Tty: req.Tty, OpenStdin: req.OpenStdin, StdinOnce: req.OpenStdin && req.StdinOnce, ConsoleSize: req.ConsoleSize,
+		Healthcheck: mergeHealth(req.Healthcheck, ec.Healthcheck),
 	}
 	if req.Entrypoint != nil {
 		cfg.Entrypoint, cfg.Cmd = req.Entrypoint, nil

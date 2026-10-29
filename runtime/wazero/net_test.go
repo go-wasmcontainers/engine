@@ -46,7 +46,7 @@ func waitFor(t *testing.T, out *syncBuf, s string) {
 // container name, a UDP echo, a refused dial.
 func TestNetworkGuests(t *testing.T) {
 	img := lower(t, "netprobe")
-	e := New(Options{EngineWASI: true})
+	e := New(Options{EngineWASI: true, CompilationCache: testutil.CompilationCache()})
 	defer e.Close(context.Background())
 	n, err := netdriver.NewLocal(netdriver.DefaultPrefix)
 	if err != nil {
