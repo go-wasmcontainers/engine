@@ -3,9 +3,9 @@ module github.com/go-wasmcontainers/engine/cmd/wctr
 go 1.27.3
 
 require (
-	github.com/go-wasmcontainers/build v0.2.1
-	github.com/go-wasmcontainers/compose v0.3.0
-	github.com/go-wasmcontainers/engine v0.16.0
+	github.com/go-wasmcontainers/build v0.4.0
+	github.com/go-wasmcontainers/compose v0.3.2
+	github.com/go-wasmcontainers/engine v0.22.0
 	github.com/spf13/cobra v1.10.2
 )
 
@@ -22,6 +22,8 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/term v0.47.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/tools v0.52.0 // indirect
 )

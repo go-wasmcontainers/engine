@@ -199,7 +199,8 @@ jobs:
         include:
           - { mod: 'github.com/go-wasmcontainers/dashboard@v0.6.0', goos: js, goarch: wasm }
           - { mod: 'github.com/go-wasmcontainers/dashboard@v0.6.0', goos: linux, goarch: amd64 }
-          - { mod: 'github.com/go-wasmcontainers/build@v0.3.0', goos: linux, goarch: amd64 }
+          - { mod: 'github.com/go-wasmcontainers/build@v0.4.0', goos: linux, goarch: amd64 }
+          - { mod: 'github.com/go-wasmcontainers/compose@v0.3.2', goos: linux, goarch: amd64 }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
