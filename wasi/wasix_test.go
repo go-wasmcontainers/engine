@@ -1,6 +1,7 @@
 package wasi
 
 import (
+	"bytes"
 	"encoding/binary"
 	"strings"
 	"sync"
@@ -215,6 +216,33 @@ func TestReadCString(t *testing.T) {
 	}
 	if _, e := readBytes(m, 0xffffffff, 2); e != EFAULT {
 		t.Errorf("wrap: %d", e)
+	}
+}
+
+// fullMem is a 4 GiB memory of 'x' bytes whose address 0 holds a NUL: a
+// scan that wrapped from the end of memory would end there.
+type fullMem struct{}
+
+func (fullMem) Read(off, n uint32) ([]byte, bool) {
+	if uint64(off)+uint64(n) > 1<<32 {
+		return nil, false
+	}
+	b := bytes.Repeat([]byte{'x'}, int(n))
+	if off == 0 && n > 0 {
+		b[0] = 0
+	}
+	return b, true
+}
+func (fullMem) Write(uint32, []byte) bool { return false }
+
+func TestReadCStringDoesNotWrap(t *testing.T) {
+	for _, back := range []uint64{1, 10, 256, 300} {
+		if s, e := readCString(fullMem{}, uint32(1<<32-back), 1<<20); e != EFAULT {
+			t.Errorf("%d bytes before the end: %q, errno %d, want EFAULT", back, s, e)
+		}
+	}
+	if s, e := readCString(fullMem{}, 0, 10); e != 0 || s != "" {
+		t.Errorf("at 0: %q %d", s, e)
 	}
 }
 

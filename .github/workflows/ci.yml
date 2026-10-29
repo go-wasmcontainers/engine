@@ -78,6 +78,8 @@ jobs:
           - { target: FuzzDemux, pkg: ./api }
           # A guest's WASI calls are hostile input to the engine's host.
           - { target: FuzzCall, pkg: ./wasi }
+          # Keys typed into an exec -t terminal, in every mode.
+          - { target: FuzzLineDiscipline, pkg: ./container }
           # The WASIX process calls: spawn lists, fd ops, join, tty.
           - { target: FuzzWASIX, pkg: ./wasi }
           # Sequences of socket calls on two processes of one network.
@@ -183,6 +185,38 @@ jobs:
           "$BIN/govulncheck" -format json ./... > /tmp/vuln.json || true
           test -s /tmp/vuln.json || { echo "::error::govulncheck wrote nothing at all"; exit 1; }
           "$BIN/vulngate" -go "$(go env GOVERSION)" /tmp/vuln.json
+
+  # The modules that build on this API compile against this tree, at the
+  # versions named here: v0.18.0 changed three client method types without
+  # a single engine test failing, and dashboard v0.6.0 stopped compiling.
+  # A version here is bumped when its module adapts to an intended change.
+  downstream:
+    name: downstream modules compile (${{ matrix.mod }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mod: 'github.com/go-wasmcontainers/dashboard@v0.6.0', goos: js, goarch: wasm }
+          - { mod: 'github.com/go-wasmcontainers/dashboard@v0.6.0', goos: linux, goarch: amd64 }
+          - { mod: 'github.com/go-wasmcontainers/build@v0.3.0', goos: linux, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.27.3' }
+      - run: go version
+      - name: build ${{ matrix.mod }} in a workspace with this engine
+        env: { MOD: '${{ matrix.mod }}', GOOS_T: '${{ matrix.goos }}', GOARCH_T: '${{ matrix.goarch }}' }
+        run: |
+          set -eu
+          dir=$(go mod download -json "$MOD" | jq -r .Dir)
+          test -d "$dir"
+          cp -R "$dir" "$RUNNER_TEMP/dep"
+          chmod -R u+w "$RUNNER_TEMP/dep"
+          cd "$RUNNER_TEMP"
+          go work init "$GITHUB_WORKSPACE" ./dep
+          cd dep
+          GOOS=$GOOS_T GOARCH=$GOARCH_T CGO_ENABLED=0 go build ./...
 
   # The browser executor, the in-memory transport and everything the
   # playground's engine imports build for GOOS=js (they run in a Web Worker;

@@ -289,12 +289,45 @@ func (c *Client) Logs(ctx context.Context, id string, follow bool) (io.ReadClose
 	return resp.Body, nil
 }
 
-// Containers lists containers.
+// Filters is the Engine API's filters parameter: values by key, any value
+// of a key matching, every key applying ("label" values all apply:
+// "k", "k=v", "k!=v"). The engine refuses a key it does not know.
+type Filters map[string][]string
+
+// filtersQuery adds the filters given (merged, nil ones skipped) to q.
+func filtersQuery(q url.Values, fs []Filters) url.Values {
+	merged := Filters{}
+	for _, f := range fs {
+		for k, v := range f {
+			merged[k] = append(merged[k], v...)
+		}
+	}
+	if len(merged) == 0 {
+		return q
+	}
+	if q == nil {
+		q = url.Values{}
+	}
+	b, _ := json.Marshal(merged)
+	q.Set("filters", string(b))
+	return q
+}
+
+// Containers lists containers. Its signature is part of interfaces other
+// modules declare (the dashboard's engine), so filters come through
+// ContainersFiltered rather than a new parameter here.
 func (c *Client) Containers(ctx context.Context, all bool) ([]ContainerSummary, error) {
+	return c.ContainersFiltered(ctx, all, nil)
+}
+
+// ContainersFiltered lists containers matching filters (label, name, id,
+// status, network; nil: all).
+func (c *Client) ContainersFiltered(ctx context.Context, all bool, filters Filters) ([]ContainerSummary, error) {
 	q := url.Values{}
 	if all {
 		q.Set("all", "1")
 	}
+	q = filtersQuery(q, []Filters{filters})
 	var out []ContainerSummary
 	err := c.getJSON(ctx, http.MethodGet, "/containers/json", q, nil, &out)
 	return out, err
@@ -368,8 +401,14 @@ func (c *Client) VolumeCreate(ctx context.Context, o VolumeCreateOptions) (Volum
 
 // Volumes lists volumes.
 func (c *Client) Volumes(ctx context.Context) ([]Volume, error) {
+	return c.VolumesFiltered(ctx, nil)
+}
+
+// VolumesFiltered lists volumes matching filters (name, label, dangling;
+// nil: all).
+func (c *Client) VolumesFiltered(ctx context.Context, filters Filters) ([]Volume, error) {
 	var out VolumeListResponse
-	err := c.getJSON(ctx, http.MethodGet, "/volumes", nil, nil, &out)
+	err := c.getJSON(ctx, http.MethodGet, "/volumes", filtersQuery(nil, []Filters{filters}), nil, &out)
 	return out.Volumes, err
 }
 
@@ -510,8 +549,14 @@ func (c *Client) NetworkCreate(ctx context.Context, o NetworkCreateRequest) (Net
 
 // Networks lists networks.
 func (c *Client) Networks(ctx context.Context) ([]Network, error) {
+	return c.NetworksFiltered(ctx, nil)
+}
+
+// NetworksFiltered lists networks matching filters (label, name, id,
+// driver; nil: all).
+func (c *Client) NetworksFiltered(ctx context.Context, filters Filters) ([]Network, error) {
 	var out []Network
-	err := c.getJSON(ctx, http.MethodGet, "/networks", nil, nil, &out)
+	err := c.getJSON(ctx, http.MethodGet, "/networks", filtersQuery(nil, []Filters{filters}), nil, &out)
 	return out, err
 }
 

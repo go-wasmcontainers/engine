@@ -160,6 +160,22 @@ func TestNetworkConnect(t *testing.T) {
 	if code := getJSON(t, c, "/containers/json", url.Values{"all": {"1"}, "filters": {`{"network":["back"],"status":["running"]}`}}, &cs); code != 200 || len(cs) != 2 {
 		t.Fatalf("containers on back, running: %d %+v", code, cs)
 	}
+	// The same through the client's filtered lists.
+	if cs, err := c.ContainersFiltered(ctx, true, api.Filters{"network": {"back"}, "status": {"running"}}); err != nil || len(cs) != 2 {
+		t.Fatalf("Client.ContainersFiltered: %+v %v", cs, err)
+	}
+	if ns, err := c.NetworksFiltered(ctx, api.Filters{"label": {"com.docker.compose.project=demo"}}); err != nil || len(ns) != 1 || ns[0].Name != "back" {
+		t.Fatalf("Client.NetworksFiltered: %+v %v", ns, err)
+	}
+	if vs, err := c.VolumesFiltered(ctx, api.Filters{"label": {"nobody"}}); err != nil || len(vs) != 0 {
+		t.Fatalf("Client.VolumesFiltered: %+v %v", vs, err)
+	}
+	if _, err := c.NetworksFiltered(ctx, api.Filters{"nope": {"x"}}); err == nil {
+		t.Fatal("an unknown filter through the client was accepted")
+	}
+	if ns, err := c.Networks(ctx); err != nil || len(ns) < 5 {
+		t.Fatalf("Client.Networks without filters: %d %v", len(ns), err)
+	}
 
 	// Prune: the unused networks matching the filter, nothing in use.
 	if r := must(t, wctr(t, h, "network", "prune", "-f", "--filter", "label=com.docker.compose.project=other"), 0); !strings.Contains(r.stdout, "spare") || strings.Contains(r.stdout, "back") {

@@ -318,6 +318,8 @@ type Manager struct {
 	queue    []*Container
 	flushers []chan struct{}
 	wake     chan struct{}
+
+	execs execTable // exec instances (exec.go)
 }
 
 // NewManager returns a manager running modules on opt.Executor.
