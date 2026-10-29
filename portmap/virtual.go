@@ -99,11 +99,22 @@ func (v *Virtual) Dial(ctx context.Context, port uint16) (net.Conn, error) {
 		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
 	}
 	client, server := net.Pipe()
-	select {
-	case l.queue <- server:
+	// Under the listener's lock, so a Dial and a Close cannot cross: once
+	// Close has drained the queue, nothing is enqueued after it -- a
+	// connection is either Accepted or closed, never left in a dead queue
+	// for its client to wait on until a timeout.
+	l.mu.Lock()
+	queued := false
+	if !l.closed {
+		select {
+		case l.queue <- server:
+			queued = true
+		default: // the backlog is full
+		}
+	}
+	l.mu.Unlock()
+	if queued {
 		return client, nil
-	case <-l.done:
-	default:
 	}
 	client.Close()
 	server.Close()
@@ -141,6 +152,9 @@ type vListener struct {
 	queue chan net.Conn
 	done  chan struct{}
 	once  sync.Once
+
+	mu     sync.Mutex // Dial's enqueue and Close's drain
+	closed bool
 }
 
 func (l *vListener) Accept() (net.Conn, error) {
@@ -159,15 +173,18 @@ func (l *vListener) Close() error {
 			delete(l.v.ls, l.port)
 		}
 		l.v.mu.Unlock()
+		l.mu.Lock()
+		l.closed = true
 		close(l.done)
-		for {
+		for drained := false; !drained; {
 			select {
 			case c := <-l.queue:
 				c.Close()
 			default:
-				return
+				drained = true
 			}
 		}
+		l.mu.Unlock()
 	})
 	return nil
 }
