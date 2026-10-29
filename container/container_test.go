@@ -26,7 +26,7 @@ func image(t *testing.T) *rootfs.FS {
 }
 
 func manager(t *testing.T, opt Options) *Manager {
-	e := wazero.New(wazero.Options{})
+	e := wazero.New(wazero.Options{CompilationCache: testutil.CompilationCache()})
 	t.Cleanup(func() { e.Close(context.Background()) })
 	opt.Executor = e
 	return NewManager(opt)

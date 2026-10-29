@@ -78,6 +78,9 @@ type Config struct {
 	PublishAll bool        `json:"-"`
 	// Restart is its restart policy (run --restart; see restart.go).
 	Restart RestartPolicy `json:"-"`
+	// Healthcheck is its health check (the image's, or run --health-*;
+	// see health.go); nil or NONE for none.
+	Healthcheck *HealthConfig `json:"-"`
 }
 
 // published is what Start publishes: the bindings, with run -P applied.
@@ -148,6 +151,8 @@ type Container struct {
 	restartCount int
 	restartDelay time.Duration
 	restartTimer *time.Timer
+	// health is its health state while a check runs (health.go).
+	health *Health
 
 	persisted persisted // guarded by Manager.pmu
 	queued    bool      // guarded by Manager.qmu
@@ -179,6 +184,8 @@ type Snapshot struct {
 	// RestartCount is how many times its policy restarted it since a user
 	// last started it.
 	RestartCount int
+	// Health is its health state, nil without a check.
+	Health *Health
 }
 
 // Command is argv as configured.
@@ -229,7 +236,7 @@ func (c *Container) Snapshot() Snapshot {
 		ID: c.id, Name: c.name, Created: c.created, Config: c.cfg,
 		State: c.state, ExitCode: c.exitCode, Error: c.errMsg, TimedOut: c.timedOut,
 		StartedAt: c.startedAt, FinishedAt: c.finishedAt, Path: c.path, SizeRw: rw, IPAddress: c.ip,
-		Networks: c.networksLocked(), RestartCount: c.restartCount,
+		Networks: c.networksLocked(), RestartCount: c.restartCount, Health: c.healthLocked(),
 	}
 	if c.ports != nil {
 		s.Ports = c.ports.Ports()
@@ -408,6 +415,9 @@ func (m *Manager) create(o CreateOptions) (*Container, error) {
 	}
 	if len(o.Config.Entrypoint)+len(o.Config.Cmd) == 0 {
 		return nil, fmt.Errorf("%w: no command specified", ErrInvalid)
+	}
+	if err := checkHealth(o.Config.Healthcheck); err != nil {
+		return nil, err
 	}
 	if err := checkRestart(o.Config); err != nil {
 		return nil, err
@@ -688,6 +698,7 @@ func (m *Manager) start(ctx context.Context, c *Container, auto bool) error {
 	c.proc = proc
 	pending := c.killPending
 	c.killPending = false
+	stopHealth := m.startHealthLocked(c)
 	c.notifyLocked() // an exec waiting for the process (CreateExec)
 	c.mu.Unlock()
 	if pending {
@@ -699,6 +710,7 @@ func (m *Manager) start(ctx context.Context, c *Container, auto bool) error {
 	go func() {
 		defer m.exits.Done()
 		res := proc.Wait()
+		stopHealth()
 		detach()
 		c.finish(res)
 		m.exitedAfterRun(c)

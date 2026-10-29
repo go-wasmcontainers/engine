@@ -76,7 +76,7 @@ func TestStreaming(t *testing.T) {
 // the transport, the way the playground does: run streams logs and the
 // exit code comes back.
 func TestCLI(t *testing.T) {
-	e := wazero.New(wazero.Options{EngineWASI: true})
+	e := wazero.New(wazero.Options{EngineWASI: true, CompilationCache: testutil.CompilationCache()})
 	defer e.Close(context.Background())
 	d, err := daemon.New(daemon.Options{Backend: image.NewMemoryBackend(0), Containers: container.Options{Executor: e}})
 	if err != nil {

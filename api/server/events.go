@@ -68,7 +68,9 @@ func eventFilter(raw string) (func(events.Event) bool, error) {
 	}
 	return func(e events.Event) bool {
 		return any(f["type"], func(v string) bool { return e.Type == v }) &&
-			any(f["event"], func(v string) bool { return e.Action == v }) &&
+			// "health_status" also matches "health_status: healthy", and
+			// "exec_start" "exec_start: sh -c …", as in Docker.
+			any(f["event"], func(v string) bool { return e.Action == v || strings.HasPrefix(e.Action, v+": ") }) &&
 			any(f["container"], func(v string) bool {
 				return e.Type == events.Container && (e.Attributes["name"] == v || (v != "" && strings.HasPrefix(e.ID, v)))
 			}) &&

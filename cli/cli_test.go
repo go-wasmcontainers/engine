@@ -36,7 +36,7 @@ func shortDir(t *testing.T) string {
 func startDaemon(t *testing.T, copt container.Options) string {
 	t.Helper()
 	dir := shortDir(t)
-	e := wazero.New(wazero.Options{})
+	e := wazero.New(wazero.Options{CompilationCache: testutil.CompilationCache()})
 	copt.Executor = e
 	d, err := daemon.New(daemon.Options{Root: filepath.Join(dir, "data"), Containers: copt})
 	if err != nil {
