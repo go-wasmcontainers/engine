@@ -77,13 +77,17 @@ func TestRestartKeepsContainers(t *testing.T) {
 	}
 	// A restored container starts again.
 	must(t, wctr(t, h, "start", "failed"), 0) // returns once started, as docker start does
+	// Its second output, then its exit: the output arrives before the
+	// process has ended, and a container still running when `system
+	// prune` runs below is left alone (seen once on macOS CI: "left: <id>").
 	for i := 0; ; i++ {
 		r := must(t, wctr(t, h, "logs", "failed"), 0)
-		if r.stderr == "bye\nbye\n" {
+		in := must(t, wctr(t, h, "inspect", "failed"), 0).stdout
+		if r.stderr == "bye\nbye\n" && strings.Contains(in, `"Status": "exited"`) {
 			break
 		}
 		if i > 300 {
-			t.Fatalf("%q", r.stderr)
+			t.Fatalf("%q\n%s", r.stderr, in)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
