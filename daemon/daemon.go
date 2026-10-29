@@ -161,6 +161,11 @@ func New(opt Options) (*Daemon, error) {
 		return nil, fmt.Errorf("daemon: restoring containers: %w", err)
 	}
 	rep.Repaired = append(repairedVols, rep.Repaired...)
+	// Restart policies: always, and unless-stopped when no user stopped it,
+	// start with the engine.
+	for _, err := range d.mgr.AutoStart(context.Background()) {
+		rep.Repaired = append(rep.Repaired, "restart policy: "+err.Error())
+	}
 	d.restored = rep
 	return d, nil
 }
@@ -376,6 +381,8 @@ type CreateRequest struct {
 	Network string
 	// Caps are device capabilities granted to the container ("gpu").
 	Caps []string
+	// Restart is the restart policy (HostConfig.RestartPolicy).
+	Restart container.RestartPolicy
 	// Endpoints are the networks' aliases by network (Docker's
 	// NetworkingConfig.EndpointsConfig); a network named there and not in
 	// Network is joined too (API 1.44+), and with no Network the first of
@@ -514,7 +521,7 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 		Image: req.Image, ImageID: string(img.ID()),
 		Entrypoint: ec.Entrypoint, Cmd: ec.Cmd,
 		Env: mergeEnv(ec.Env, req.Env), WorkingDir: ec.WorkingDir, Labels: ec.Labels,
-		MemoryLimitBytes: req.Memory, AutoRemove: req.AutoRemove, Caps: req.Caps,
+		MemoryLimitBytes: req.Memory, AutoRemove: req.AutoRemove, Caps: req.Caps, Restart: req.Restart,
 	}
 	if req.Entrypoint != nil {
 		cfg.Entrypoint, cfg.Cmd = req.Entrypoint, nil

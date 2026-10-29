@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-wasmcontainers/engine/events"
@@ -75,6 +76,8 @@ type Config struct {
 	// port without a binding one the system picks (run -P).
 	Ports      portmap.Map `json:"-"`
 	PublishAll bool        `json:"-"`
+	// Restart is its restart policy (run --restart; see restart.go).
+	Restart RestartPolicy `json:"-"`
 }
 
 // published is what Start publishes: the bindings, with run -P applied.
@@ -135,6 +138,12 @@ type Container struct {
 	// was attached; Start delivers it.
 	killPending bool
 	changed     chan struct{}
+	// The restart policy's state (restart.go): stopped by a user, restarts
+	// so far, the current delay, and the pending restart.
+	manualStop   bool
+	restartCount int
+	restartDelay time.Duration
+	restartTimer *time.Timer
 
 	persisted persisted // guarded by Manager.pmu
 	queued    bool      // guarded by Manager.qmu
@@ -163,6 +172,9 @@ type Snapshot struct {
 	// Ports are the published ports while it runs, as bound (a picked
 	// host port as picked); nil otherwise.
 	Ports portmap.Map
+	// RestartCount is how many times its policy restarted it since a user
+	// last started it.
+	RestartCount int
 }
 
 // Command is argv as configured.
@@ -213,7 +225,7 @@ func (c *Container) Snapshot() Snapshot {
 		ID: c.id, Name: c.name, Created: c.created, Config: c.cfg,
 		State: c.state, ExitCode: c.exitCode, Error: c.errMsg, TimedOut: c.timedOut,
 		StartedAt: c.startedAt, FinishedAt: c.finishedAt, Path: c.path, SizeRw: rw, IPAddress: c.ip,
-		Networks: c.networksLocked(),
+		Networks: c.networksLocked(), RestartCount: c.restartCount,
 	}
 	if c.ports != nil {
 		s.Ports = c.ports.Ports()
@@ -320,6 +332,9 @@ type Manager struct {
 	wake     chan struct{}
 
 	execs execTable // exec instances (exec.go)
+
+	// stopping is set by Shutdown: no restart policy acts any more.
+	stopping atomic.Bool
 }
 
 // NewManager returns a manager running modules on opt.Executor.
@@ -389,6 +404,9 @@ func (m *Manager) create(o CreateOptions) (*Container, error) {
 	}
 	if len(o.Config.Entrypoint)+len(o.Config.Cmd) == 0 {
 		return nil, fmt.Errorf("%w: no command specified", ErrInvalid)
+	}
+	if err := checkRestart(o.Config); err != nil {
+		return nil, err
 	}
 	if err := checkPorts(o.Config); err != nil {
 		return nil, err
@@ -495,7 +513,7 @@ func (m *Manager) List(all bool) []Snapshot {
 	out := make([]Snapshot, 0, len(cs))
 	for _, c := range cs {
 		s := c.Snapshot()
-		if all || s.State == Running {
+		if all || s.State == Running || s.State == Restarting {
 			out = append(out, s)
 		}
 	}
@@ -561,16 +579,26 @@ func resolveModule(fs *rootfs.FS, argv0, workdir string, env []string) string {
 	return path.Join("/", argv0)
 }
 
-// Start runs a created or exited container.
+// Start runs a created or exited container (a user's start: its restart
+// policy acts again, counting from zero).
 func (m *Manager) Start(ctx context.Context, ref string) error {
 	c, err := m.Get(ref)
 	if err != nil {
 		return err
 	}
+	return m.start(ctx, c, false)
+}
+
+// start runs c; auto is a restart its policy asked for.
+func (m *Manager) start(ctx context.Context, c *Container, auto bool) error {
 	c.mu.Lock()
 	if c.state == Running {
 		c.mu.Unlock()
 		return ErrAlreadyStarted
+	}
+	c.cancelRestartLocked()
+	if !auto {
+		c.manualStop, c.restartCount, c.restartDelay = false, 0, 0
 	}
 	argv := append(append([]string{}, c.cfg.Entrypoint...), c.cfg.Cmd...)
 	env := append([]string{}, c.cfg.Env...)
@@ -668,9 +696,27 @@ func (m *Manager) Start(ctx context.Context, ref string) error {
 		res := proc.Wait()
 		detach()
 		c.finish(res)
-		m.exited(c)
+		m.exitedAfterRun(c)
 	}()
 	return nil
+}
+
+// exitedAfterRun is exited for a process that ran: its restart policy may
+// start it again.
+func (m *Manager) exitedAfterRun(c *Container) {
+	c.mu.Lock()
+	restart := m.shouldRestartLocked(c)
+	code := c.exitCode
+	if restart {
+		m.scheduleRestartLocked(c)
+	}
+	c.mu.Unlock()
+	if !restart {
+		m.exited(c)
+		return
+	}
+	m.emit("die", c, map[string]string{"exitCode": strconv.Itoa(code)})
+	m.schedule(c)
 }
 
 // exitStartFailed is the exit code of a container that could not start
@@ -776,6 +822,10 @@ func (m *Manager) Kill(ref string) error {
 	if err != nil {
 		return err
 	}
+	if c.stopByUser() { // waiting for its policy's restart: it stays stopped
+		m.schedule(c)
+		return nil
+	}
 	if !c.kill() {
 		return ErrNotRunning
 	}
@@ -790,6 +840,11 @@ func (m *Manager) Stop(ctx context.Context, ref string) error {
 	c, err := m.Get(ref)
 	if err != nil {
 		return err
+	}
+	if c.stopByUser() { // waiting for its policy's restart: it stays stopped
+		m.schedule(c)
+		m.emit("stop", c, nil)
+		return nil
 	}
 	if !c.kill() {
 		return ErrNotRunning
@@ -928,12 +983,13 @@ func (m *Manager) Remove(ctx context.Context, ref string, force bool) error {
 		return err
 	}
 	c.mu.Lock()
-	running := c.state == Running
+	running := c.state == Running || c.state == Restarting
 	c.mu.Unlock()
 	if running {
 		if !force {
 			return fmt.Errorf("%w: stop the container before removing it or force remove", ErrRunning)
 		}
+		c.stopByUser()
 		c.kill()
 		if _, err := c.Wait(ctx, WaitNotRunning); err != nil {
 			return err
@@ -984,12 +1040,20 @@ func (m *Manager) Logs(ctx context.Context, ref string, follow bool, fn func(Rec
 
 // Shutdown kills every running container and waits for them.
 func (m *Manager) Shutdown(ctx context.Context) {
+	m.stopping.Store(true) // no policy restarts anything from here on
 	m.mu.Lock()
 	cs := make([]*Container, 0, len(m.byID))
 	for _, c := range m.byID {
 		cs = append(cs, c)
 	}
 	m.mu.Unlock()
+	for _, c := range cs {
+		c.mu.Lock()
+		if c.cancelRestartLocked() {
+			m.schedule(c)
+		}
+		c.mu.Unlock()
+	}
 	for _, c := range cs {
 		if c.kill() { // also one still being attached
 			c.Wait(ctx, WaitNotRunning)

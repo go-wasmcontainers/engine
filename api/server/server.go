@@ -447,12 +447,17 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	var restart container.RestartPolicy
+	if rp := req.HostConfig.RestartPolicy; rp != nil {
+		restart = container.RestartPolicy{Name: rp.Name, MaximumRetryCount: rp.MaximumRetryCount}
+	}
 	c, err := s.d.CreateContainer(daemon.CreateRequest{
 		Name: r.URL.Query().Get("name"), Image: req.Image,
 		Entrypoint: req.Entrypoint, Cmd: req.Cmd, Env: req.Env, WorkingDir: req.WorkingDir, Labels: req.Labels,
 		Memory: req.HostConfig.Memory, AutoRemove: req.HostConfig.AutoRemove, Binds: req.HostConfig.Binds,
 		Network: req.HostConfig.NetworkMode, Endpoints: endpoints, Caps: caps,
 		Ports: ports, ExposedPorts: req.ExposedPorts, PublishAll: req.HostConfig.PublishAllPorts,
+		Restart: restart,
 	})
 	if err != nil {
 		writeError(w, statusOf(err), err)
@@ -471,6 +476,8 @@ func humanStatus(s container.Snapshot, now time.Time) string {
 		return "Up " + humanDuration(now.Sub(s.StartedAt))
 	case container.Exited:
 		return fmt.Sprintf("Exited (%d) %s ago", s.ExitCode, humanDuration(now.Sub(s.FinishedAt)))
+	case container.Restarting:
+		return fmt.Sprintf("Restarting (%d) %s ago", s.ExitCode, humanDuration(now.Sub(s.FinishedAt)))
 	}
 	return "Created"
 }
@@ -704,6 +711,14 @@ func inspectPorts(out *api.ContainerInspect, sn container.Snapshot) {
 	}
 }
 
+// restartName is inspect's RestartPolicy.Name: "no" for none, as Docker's.
+func restartName(n string) string {
+	if n == "" {
+		return "no"
+	}
+	return n
+}
+
 func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 	c, err := s.d.Containers().Get(r.PathValue("id"))
 	if err != nil {
@@ -716,10 +731,13 @@ func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 		ID: sn.ID, Created: rfc3339(sn.Created), Path: sn.Path, Image: sn.Config.ImageID, Name: "/" + sn.Name,
 		Driver: "rootfs (in-memory, copy-on-write)", Platform: "wasip1", SizeRw: sn.SizeRw,
 		State: api.ContainerState{Status: string(sn.State), Running: sn.State == container.Running, ExitCode: sn.ExitCode,
-			Error: sn.Error, StartedAt: rfc3339(sn.StartedAt), FinishedAt: rfc3339(sn.FinishedAt)},
+			Restarting: sn.State == container.Restarting,
+			Error:      sn.Error, StartedAt: rfc3339(sn.StartedAt), FinishedAt: rfc3339(sn.FinishedAt)},
+		RestartCount: sn.RestartCount,
 		Config: api.ContainerConfig{Image: sn.Config.Image, Cmd: sn.Config.Cmd, Entrypoint: sn.Config.Entrypoint,
 			Env: sn.Config.Env, WorkingDir: sn.Config.WorkingDir, Labels: sn.Config.Labels},
-		HostConfig:      api.HostConfig{Memory: sn.Config.MemoryLimitBytes, NetworkMode: networkOf(sn.Config)},
+		HostConfig: api.HostConfig{Memory: sn.Config.MemoryLimitBytes, NetworkMode: networkOf(sn.Config),
+			RestartPolicy: &api.RestartPolicy{Name: restartName(sn.Config.Restart.Name), MaximumRetryCount: sn.Config.Restart.MaximumRetryCount}},
 		Mounts:          []api.MountPoint{},
 		NetworkSettings: api.NetworkSettings{Networks: map[string]api.EndpointSettings{}},
 	}
