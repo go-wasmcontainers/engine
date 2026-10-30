@@ -83,7 +83,8 @@ not have.
 |---|---|
 | `pull IMAGE` | `IMAGE` is a registry reference or `oci:<dir>[:<ref.name>]` |
 | `images` | `-q` |
-| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one), `-p/--publish [ip:][hostPort:]containerPort[/tcp\|udp]` (ip defaults to **127.0.0.1**; ranges as Docker's), `-P/--publish-all`, `--expose PORT[/proto]` — see [Published ports](#published-ports); `--restart no\|always\|unless-stopped\|on-failure[:N]` (see below; not with `--rm`); `--health-cmd`, `--health-interval`, `--health-timeout`, `--health-start-period`, `--health-start-interval`, `--health-retries`, `--no-healthcheck` (see Health checks below) |
+| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one), `-p/--publish [ip:][hostPort:]containerPort[/tcp\|udp]` (ip defaults to **127.0.0.1**; ranges as Docker's), `-P/--publish-all`, `--expose PORT[/proto]` — see [Published ports](#published-ports); `--restart no\|always\|unless-stopped\|on-failure[:N]` (see below; not with `--rm`); `--health-cmd`, `--health-interval`, `--health-timeout`, `--health-start-period`, `--health-start-interval`, `--health-retries`, `--no-healthcheck` (see Health checks below); `-i/--interactive`, `-t/--tty`, `--detach-keys` (see Terminals below) |
+| `attach [--no-stdin] [--detach-keys K] CONTAINER` | this terminal to a running container: its output, and its input if it was created with `-i`; Ctrl-P Ctrl-Q detaches and leaves it running; exits with its status when it stops |
 | `port CONTAINER [PRIVATE_PORT[/PROTO]]` | where a running container's ports are published (`80/tcp -> 127.0.0.1:49153`) |
 | `ps` | `-a/--all`, `-q`; PORTS as Docker writes it (`127.0.0.1:8080->80/tcp, 9000/tcp`) |
 | `logs CONTAINER` | `-f/--follow` |
@@ -95,7 +96,7 @@ not have.
 | `inspect NAME\|ID...` | containers, then images |
 | `kill CONTAINER...` | |
 | `exec [-d] [-i] [-t] [-e K=V] [-w DIR] [-u USER] CONTAINER CMD...` | a further process in a running container (needs `--wasi engine`): same files, network and capabilities, in its process group (counted against its limits, killed with it); exits with the command's status. `-t` gives it a terminal: the engine does the line editing and echo (`tty_set` switches them), output gets CR LF, and the window's size follows the local terminal's; `-u` accepts only `root`/`0` (`POST /containers/{id}/exec`, `POST /exec/{id}/start`, `POST /exec/{id}/resize`, `GET /exec/{id}/json`) |
-| `start CONTAINER...` | starts stopped containers (they keep their files and logs); `-a/--attach` (one container) prints this run's output and exits with its status |
+| `start CONTAINER...` | starts stopped containers (they keep their files and logs); `-a/--attach` (one container) prints this run's output and exits with its status; `-i` also sends this terminal's input (a container created with `-i`) |
 | `stop CONTAINER...`, `restart CONTAINER...` | `-t/--time` accepted and ignored: a wasm guest has no signals, so stopping is killing, at once |
 | `diff CONTAINER` | the files it added (`A`), changed (`C`) or deleted (`D`) |
 | `events` | `--since`, `--until` (Unix seconds, RFC 3339, or a duration such as `10m`), `-f/--filter` `type=`, `event=`, `container=`, `image=`, `volume=`, `network=`, `label=`; streams container `create start die kill stop restart destroy prune`, image `pull untag delete prune` and network `create connect disconnect destroy prune` (`GET /events`; the last 1024 events are kept for `--since`) |
@@ -153,6 +154,30 @@ most a minute — and meanwhile the container is `restarting` (listed by
 `ps`, `Restarting (code) … ago`; `rm` needs `-f`). A start the engine refuses
 (a volume, a network, a port) is not retried. `inspect` shows
 `HostConfig.RestartPolicy`, `RestartCount` and `State.Restarting`.
+
+**Terminals and input** (`run -i`, `run -t`; Docker's `Config.OpenStdin`,
+`StdinOnce` and `Tty`, `HostConfig.ConsoleSize`):
+
+- With `-i`, the container's first process gets a stdin that attached
+  clients write into. `run -i` closes it when this client's input ends
+  (StdinOnce), so `echo hi | wctr run -i IMAGE cat` ends.
+- With `-t`, the process has a terminal, as `exec -t` has:
+  - the engine does the line editing and the echo, which `tty_set`
+    switches;
+  - output gets CR LF and goes to the logs as stdout;
+  - `POST /containers/{id}/resize` follows the window.
+- `wctr attach CONTAINER` and `wctr start -ai CONTAINER` reattach. Ctrl-P
+  Ctrl-Q detaches and leaves the container running; `--detach-keys`
+  changes the keys, in Docker's format (`ctrl-a`…`ctrl-z`, `ctrl-@`,
+  `ctrl-[`, `ctrl-\`, `ctrl-]`, `ctrl-^`, `ctrl-_`, one character, at most
+  16 keys).
+
+As with exec, `POST /containers/{id}/attach` does not hijack the
+connection. The response streams the output (multiplexed, or raw with a
+terminal). With `stdin=1`, the request body is the input, and the body's
+end is the client's end of input. Up to 64 KiB of input waits for a guest
+that is not reading. No host call ever blocks on stdin, natively or in
+the browser.
 
 **Health checks** (`run --health-cmd CMD`, `--health-interval`,
 `--health-timeout`, `--health-start-period`, `--health-start-interval`,
@@ -493,10 +518,7 @@ open item.
 
 ## Limitations
 
-- No stdin attach and no terminal for a container's first process (`run
-  -it`); `exec -it` has both, natively and in the browser (a new worker
-  on the container's bridge).
-  Process spawning is the WASIX subset above (no signals: a child is
+- Process spawning is the WASIX subset above (no signals: a child is
   stopped only with its container; ^C in a terminal erases the line).
 - Published ports: no sctp; no browser host yet (the playground's Service
   Worker route comes next); the source address the guest sees is its own,
