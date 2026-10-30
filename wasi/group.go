@@ -373,6 +373,17 @@ type Terminal struct {
 	TTY [3]bool
 	// Echo and Line are the line discipline's echo and canonical mode.
 	echo, line bool
+	// onMode, if set, is told of every SetMode (the line discipline
+	// hands its pending line over when line mode is turned off).
+	onMode func(echo, line bool)
+}
+
+// OnMode registers f to be called, outside the terminal's lock, after
+// every SetMode. f must not block: SetMode runs in a guest's tty_set.
+func (t *Terminal) OnMode(f func(echo, line bool)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onMode = f
 }
 
 // NewTerminal returns a terminal of the given size, echoing, in line mode.
@@ -404,8 +415,12 @@ func (t *Terminal) Mode() (echo, line bool) {
 // SetMode sets echo and line mode.
 func (t *Terminal) SetMode(echo, line bool) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.echo, t.line = echo, line
+	f := t.onMode
+	t.mu.Unlock()
+	if f != nil {
+		f(echo, line)
+	}
 }
 
 // Terminal is the process's terminal, nil without one.
