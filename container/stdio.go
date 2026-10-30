@@ -76,8 +76,10 @@ func (h *stdinHub) closeLocked() {
 		return
 	}
 	h.closed = true
-	if h.ld != nil && len(h.ld.line) > 0 {
-		h.pw.Write(h.ld.line)
+	if h.ld != nil {
+		h.ld.mu.Lock()
+		h.ld.flushLocked() // a pending line is delivered before the end
+		h.ld.mu.Unlock()
 	}
 	h.pw.Close()
 	close(h.done)
@@ -290,7 +292,7 @@ func (c *Container) stdioLocked(out io.Writer) (stdin io.Reader, stdout, stderr 
 		pr, pw := io.Pipe()
 		var ld *ldisc
 		if term != nil {
-			ld = &ldisc{term: term, pw: pw, echo: rawEcho{cr}}
+			ld = newLdisc(term, pw, rawEcho{cr}) // hands typed-ahead keys over at a switch to raw mode
 		}
 		hub = newStdinHub(pw, ld)
 		stdin = pr
