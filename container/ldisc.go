@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-wasmcontainers/engine/wasi"
 )
@@ -34,6 +35,9 @@ type ldisc struct {
 
 	mu   sync.Mutex // orders the pending line's hand-over with new keys
 	line []byte
+	// flushing bounds the hand-over to one goroutine at a time: a guest
+	// that loops on tty_set without reading cannot grow host goroutines.
+	flushing atomic.Bool
 }
 
 // newLdisc returns the line discipline of term, writing to pw. When the
@@ -43,10 +47,15 @@ type ldisc struct {
 func newLdisc(term *wasi.Terminal, pw *io.PipeWriter, echo io.Writer) *ldisc {
 	l := &ldisc{term: term, pw: pw, echo: echo}
 	term.OnMode(func(_, line bool) {
-		if !line {
-			// Not here: SetMode runs in the guest's tty_set, and the
-			// pipe write waits for the guest to read.
-			go l.flush()
+		// Not here: SetMode runs in the guest's tty_set, and the pipe
+		// write waits for the guest to read. A switch made while a flush
+		// runs needs no second one: the pending line is handed over by
+		// that flush, or by the key path (key flushes first in raw mode).
+		if !line && l.flushing.CompareAndSwap(false, true) {
+			go func() {
+				defer l.flushing.Store(false)
+				l.flush()
+			}()
 		}
 	})
 	return l

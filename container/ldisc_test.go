@@ -3,6 +3,7 @@ package container
 import (
 	"bytes"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +98,39 @@ func TestLineModeOffHandsPendingOver(t *testing.T) {
 	keys.Close()
 	if rest, _ := io.ReadAll(pr); len(rest) != 0 {
 		t.Fatalf("rest %q", rest)
+	}
+}
+
+// A guest with a pending line that loops on tty_set(raw) and never reads
+// stdin does not grow host goroutines: one hand-over runs at a time.
+func TestLineModeOffNoGoroutineLeak(t *testing.T) {
+	term := wasi.NewTerminal(80, 24, [3]bool{true, true, true})
+	pr, pw := io.Pipe()
+	defer pr.Close() // unblocks the stuck hand-over at the end
+	l := newLdisc(term, pw, io.Discard)
+	in, keys := io.Pipe()
+	defer keys.Close()
+	go l.run(in)
+	keys.Write([]byte("pending")) // returns once the ldisc has the bytes
+	for {
+		l.mu.Lock()
+		n := len(l.line)
+		l.mu.Unlock()
+		if n == len("pending") {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	settle := func() int {
+		time.Sleep(50 * time.Millisecond)
+		return runtime.NumGoroutine()
+	}
+	before := settle()
+	for range 10000 {
+		term.SetMode(false, false)
+	}
+	if after := settle(); after > before+2 {
+		t.Fatalf("goroutines %d -> %d after 10000 tty_set(raw)", before, after)
 	}
 }
 
