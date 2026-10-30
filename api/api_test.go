@@ -98,7 +98,7 @@ func TestDefaultHost(t *testing.T) {
 }
 
 func newServer(t *testing.T) (*httptest.Server, *api.Client, string) {
-	e := wazero.New(wazero.Options{})
+	e := wazero.New(wazero.Options{CompilationCache: testutil.CompilationCache()})
 	t.Cleanup(func() { e.Close(context.Background()) })
 	d, err := daemon.New(daemon.Options{Root: t.TempDir(), Containers: container.Options{Executor: e}})
 	if err != nil {

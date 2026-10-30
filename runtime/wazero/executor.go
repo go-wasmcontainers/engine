@@ -45,6 +45,11 @@ type Options struct {
 	// wasi:webgpu, …). They run in the engine's WASI host, so setting any
 	// implies EngineWASI.
 	HostModules []wasi.HostModule
+	// CompilationCache, when set, is used instead of a cache of the
+	// executor's own, so executors share their machine code (and, made
+	// with wazero.NewCompilationCacheWithDir, processes too). The caller
+	// owns it: Close leaves it open.
+	CompilationCache wazero.CompilationCache
 }
 
 // Executor runs modules with wazero. Compiled modules are cached by the
@@ -82,9 +87,13 @@ func New(opt Options) *Executor {
 	if len(opt.HostModules) > 0 {
 		opt.EngineWASI = true
 	}
+	cache := opt.CompilationCache
+	if cache == nil {
+		cache = wazero.NewCompilationCache()
+	}
 	return &Executor{
 		opt:      opt,
-		cache:    wazero.NewCompilationCache(),
+		cache:    cache,
 		runtimes: map[uint32]wazero.Runtime{},
 		compiled: map[cacheKey]*cacheEntry{},
 	}
@@ -202,7 +211,9 @@ func (e *Executor) Close(ctx context.Context) error {
 	for _, r := range e.runtimes {
 		errs = append(errs, r.Close(ctx))
 	}
-	errs = append(errs, e.cache.Close(ctx))
+	if e.opt.CompilationCache == nil {
+		errs = append(errs, e.cache.Close(ctx))
+	}
 	return errors.Join(errs...)
 }
 
@@ -297,6 +308,9 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 		group = wasi.NewGroup(spec.Processes)
 		mem := int64(pagesFor(limit)) * pageSize
 		cspec := spec
+		// One *wasi.Stdin for the process and its children: no two
+		// readers race for the input.
+		stdin = wasi.NewStdin(stdin)
 		cspec.Stdin, cspec.Stdout, cspec.Stderr = stdin, stdout, stderr
 		sp = &spawner{e: e, r: r, pages: pagesFor(limit), spec: cspec, ctx: runCtx, group: group, mem: mem}
 		proc = wasi.New(wasi.Config{
