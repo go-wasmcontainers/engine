@@ -1,6 +1,7 @@
 package container
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -156,17 +157,16 @@ func (d *detachScanner) scan(p []byte) ([]byte, bool) {
 			}
 			continue
 		}
-		// A mismatch: the held prefix was input after all.
-		out = append(out, d.keys[:d.matched]...)
-		d.matched = 0
-		if c == d.keys[0] {
-			d.matched = 1
-			if len(d.keys) == 1 {
-				return out, true
+		// A mismatch: of the held prefix and c, keep the longest tail that
+		// still begins the sequence ("aab" in "aaab"), pass on the rest.
+		held := append(append([]byte(nil), d.keys[:d.matched]...), c)
+		for l := len(held) - 1; l >= 0; l-- {
+			if bytes.Equal(held[len(held)-l:], d.keys[:l]) {
+				out = append(out, held[:len(held)-l]...)
+				d.matched = l
+				break
 			}
-			continue
 		}
-		out = append(out, c)
 	}
 	return out, false
 }

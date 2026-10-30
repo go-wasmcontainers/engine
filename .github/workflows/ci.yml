@@ -83,6 +83,8 @@ jobs:
           - { target: FuzzCall, pkg: ./wasi }
           # Keys typed into an exec -t terminal, in every mode.
           - { target: FuzzLineDiscipline, pkg: ./container }
+          # Detach keys (attach's detachKeys) and the input they cut.
+          - { target: FuzzDetach, pkg: ./container }
           # The WASIX process calls: spawn lists, fd ops, join, tty.
           - { target: FuzzWASIX, pkg: ./wasi }
           # Sequences of socket calls on two processes of one network.
