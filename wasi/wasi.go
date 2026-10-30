@@ -300,6 +300,8 @@ type Proc struct {
 	children  []*Child
 	childWake chan struct{} // closed and replaced at each child exit
 	closed    bool
+	// stdin is cfg.Stdin, wrapped (nil: an empty stdin).
+	stdin *Stdin
 }
 
 // MaxFDs bounds the descriptors a process may hold.
@@ -319,7 +321,14 @@ func New(cfg Config) *Proc {
 	if cfg.Stderr == nil {
 		cfg.Stderr = io.Discard
 	}
-	p := &Proc{cfg: cfg, fds: map[uint32]*fdEntry{}, next: 4, start: time.Now(), host: newHostState(cfg.Modules)}
+	// Stdin never blocks a host call (stdin.go). A host that spawns
+	// children hands them the same *Stdin (NewStdin returns it as is).
+	var stdin *Stdin
+	if cfg.Stdin != nil {
+		stdin = NewStdin(cfg.Stdin)
+		cfg.Stdin = stdin
+	}
+	p := &Proc{cfg: cfg, stdin: stdin, fds: map[uint32]*fdEntry{}, next: 4, start: time.Now(), host: newHostState(cfg.Modules)}
 	p.netInit()
 	p.childWake = make(chan struct{})
 	if cfg.FDs != nil {
@@ -948,6 +957,12 @@ func (p *Proc) rw(fd, iovs, n uint32, off int64, positional, write bool, resultP
 		}
 		return p.pipeRW(f, iovs, n, write, resultPtr, m)
 	}
+	if f.kind == kindStdin && !write {
+		if positional {
+			return fail(ESPIPE)
+		}
+		return p.stdinRead(f, iovs, n, resultPtr, m)
+	}
 	if positional && (f.file == nil || off < 0) {
 		if f.file == nil {
 			return fail(ESPIPE)
@@ -1002,12 +1017,6 @@ func (p *Proc) rw(fd, iovs, n uint32, off int64, positional, write bool, resultP
 			var k int
 			var err error
 			switch {
-			case f.kind == kindStdin:
-				if p.cfg.Stdin == nil {
-					k, err = 0, io.EOF
-				} else {
-					k, err = p.cfg.Stdin.Read(buf)
-				}
 			case positional:
 				k, err = f.file.ReadAt(buf, off+int64(total))
 			default:
@@ -1324,6 +1333,14 @@ func (p *Proc) pollUntil(in, out, nsubs, resultPtr uint32, deadline time.Time, m
 				ok, hup, nb := p.sockReady(f.sock, e.typ == eventFdWrite)
 				if !ok {
 					sockets = true
+					continue
+				}
+				e.hangup, e.nbytes = hup, nb
+			case f.kind == kindStdin && e.typ == eventFdRead && p.stdin != nil:
+				ok, hup, nb, wk := p.stdin.readiness()
+				if !ok {
+					sockets = true
+					pipeWakes = append(pipeWakes, wk)
 					continue
 				}
 				e.hangup, e.nbytes = hup, nb
