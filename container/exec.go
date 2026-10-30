@@ -276,7 +276,7 @@ func (m *Manager) startExec(ctx context.Context, x *Exec, sio ExecIO, events boo
 		spec.Stdout, spec.Stderr, spec.Terminal = cr, cr, x.term
 		if cfg.AttachStdin && sio.Stdin != nil {
 			pr, pw := io.Pipe()
-			l := &ldisc{term: x.term, pw: pw, echo: rawEcho{cr}}
+			l := newLdisc(x.term, pw, rawEcho{cr})
 			spec.Stdin = pr
 			feed = func() { l.run(sio.Stdin) }
 		}
