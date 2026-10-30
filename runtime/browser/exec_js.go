@@ -52,6 +52,9 @@ func (p *process) Exec(ctx context.Context, es runtime.ExecSpec) (runtime.Proces
 	if stderr == nil {
 		stderr = io.Discard
 	}
+	// Never read on the event loop: one *wasi.Stdin for the exec and its
+	// children, served by waits.
+	stdin = wasi.NewStdin(stdin)
 	sp := *base
 	sp.spec.Stdin, sp.spec.Stdout, sp.spec.Stderr, sp.spec.Terminal = stdin, stdout, stderr, es.Terminal
 	mounts := make([]wasi.Mount, len(base.spec.Mounts))

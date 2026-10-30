@@ -307,6 +307,11 @@ func (e *Executor) Start(ctx context.Context, spec runtime.Spec) (runtime.Proces
 	}
 	group := wasi.NewGroup(spec.Processes)
 	mem := int64(pagesFor(limit)) * 65536
+	// Stdin is read off the engine's event loop (a guest's fd_read waits
+	// instead), and shared with the children.
+	if spec.Stdin != nil {
+		spec.Stdin = wasi.NewStdin(spec.Stdin)
+	}
 	sp := &spawner{e: e, pages: pagesFor(limit), spec: spec, imports: imports, group: group, mem: mem}
 	proc := wasi.New(wasi.Config{Args: args, Env: spec.Env, FS: spec.FS, Mounts: mounts, Stdin: spec.Stdin, Stdout: spec.Stdout, Stderr: spec.Stderr, Net: spec.Net,
 		Modules: e.opt.HostModules, Caps: spec.Caps, Group: group, Spawner: sp, Terminal: spec.Terminal, MemoryLimitBytes: mem, Label: spec.ID})
