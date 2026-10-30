@@ -25,6 +25,7 @@ import (
 	units "github.com/docker/go-units"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/term"
 
 	"github.com/go-wasmcontainers/engine/api"
 	"github.com/go-wasmcontainers/engine/image"
@@ -135,7 +136,7 @@ func RootCmd(o Options) *cobra.Command {
 		rmCmd(client), rmiCmd(client), inspectCmd(client), killCmd(client), versionCmd(client, o.Version),
 		systemCmd(client), startCmd(client), diffCmd(client), stopCmd(client, false), stopCmd(client, true),
 		eventsCmd(client), statsCmd(client), volumeCmd(client), networkCmd(client),
-		commitCmd(client), tagCmd(client), execCmd(client, o.LookupEnv),
+		commitCmd(client), tagCmd(client), execCmd(client, o.LookupEnv), attachCmd(client),
 	)
 	for _, mk := range o.Extra {
 		if c := mk(Engine{Client: client}); c != nil {
@@ -285,6 +286,9 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 		publishAll bool
 		expose     []string
 		restart    string
+		stdinOpen  bool
+		tty        bool
+		detachKeys string
 		health     healthFlags
 	)
 	cmd := &cobra.Command{
@@ -343,6 +347,20 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 				}
 				req.HostConfig.Memory = n
 			}
+			// -i: a stdin, closed when this client's input ends (Docker's
+			// StdinOnce); -t: a terminal, sized as this one.
+			req.OpenStdin, req.AttachStdin = stdinOpen, stdinOpen && !detach
+			req.StdinOnce = stdinOpen && !detach
+			req.Tty = tty
+			req.AttachStdout, req.AttachStderr = !detach, !detach
+			if out, ok := cmd.OutOrStdout().(*os.File); ok && tty && term.IsTerminal(int(out.Fd())) {
+				if w, h, err := term.GetSize(int(out.Fd())); err == nil && w > 0 && h > 0 && w <= 0xffff && h <= 0xffff {
+					req.HostConfig.ConsoleSize = []uint16{uint16(h), uint16(w)}
+				}
+			}
+			if (stdinOpen || tty) && !detach {
+				return runAttached(cmd, c, name, rm, stdinOpen, tty, detachKeys, req)
+			}
 			return run(cmd, c, name, detach, rm, req)
 		},
 	}
@@ -363,8 +381,59 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 	f.BoolVarP(&publishAll, "publish-all", "P", false, "publish every exposed port on a host port the system picks")
 	f.StringArrayVar(&expose, "expose", nil, "expose a port or a range without publishing it (80, 8000-8010/udp)")
 	f.StringVar(&restart, "restart", "", "restart policy: no, always, unless-stopped, on-failure[:max-retries]")
+	f.BoolVarP(&stdinOpen, "interactive", "i", false, "keep stdin open: send this terminal's input")
+	f.BoolVarP(&tty, "tty", "t", false, "allocate a terminal (line editing and echo by the engine)")
+	f.StringVar(&detachKeys, "detach-keys", "", "the key sequence that detaches (default ctrl-p,ctrl-q)")
 	health.register(f)
 	return cmd
+}
+
+// runAttached is run -i and/or -t without -d: create (pulling if needed),
+// attach, start, copy until the container stops or the user detaches.
+func runAttached(cmd *cobra.Command, c *api.Client, name string, rm, interactive, tty bool, keys string, req api.ContainerCreateRequest) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stderr := cmd.ErrOrStderr()
+	created, err := c.Create(ctx, name, req)
+	if api.IsNotFound(err) && strings.Contains(err.Error(), "no such image") {
+		fmt.Fprintf(stderr, "Unable to find image '%s' locally\n", req.Image)
+		if perr := pull(ctx, c, stderr, req.Image); perr != nil {
+			return &exitError{code: 125, err: perr}
+		}
+		created, err = c.Create(ctx, name, req)
+	}
+	if err != nil {
+		return &exitError{code: 125, err: err}
+	}
+	for _, w := range created.Warnings {
+		fmt.Fprintln(stderr, "WARNING:", w)
+	}
+	var in io.Reader
+	if interactive {
+		in = cmd.InOrStdin()
+	}
+	cond := "next-exit"
+	if rm {
+		cond = "removed"
+	}
+	code, detached, err := attachSession(cmd, c, created.ID, session{stdin: in, tty: tty, detachKeys: keys, start: true, cond: cond,
+		onStartErr: func(err error) error { return &exitError{code: 125, err: err} }})
+	if err != nil {
+		var ee *exitError
+		if errors.As(err, &ee) {
+			return err
+		}
+		return &exitError{code: 125, err: err}
+	}
+	if detached {
+		return nil
+	}
+	if code != 0 {
+		return &exitError{code: code}
+	}
+	return nil
 }
 
 // healthFlags are run's --health-* flags and --no-healthcheck.
@@ -700,7 +769,8 @@ func killCmd(client clientFunc) *cobra.Command {
 }
 
 func startCmd(client clientFunc) *cobra.Command {
-	var attach bool
+	var attach, interactive bool
+	var keys string
 	cmd := &cobra.Command{
 		Use:   "start [OPTIONS] CONTAINER [CONTAINER...]",
 		Short: "Start one or more stopped containers",
@@ -709,6 +779,9 @@ func startCmd(client clientFunc) *cobra.Command {
 			c, err := client()
 			if err != nil {
 				return err
+			}
+			if interactive {
+				attach = true // as Docker: -i attaches
 			}
 			if !attach {
 				return each(cmd, args, func(id string) error {
@@ -722,10 +795,30 @@ func startCmd(client clientFunc) *cobra.Command {
 			if len(args) > 1 {
 				return &exitError{code: 1, err: errors.New("you cannot start and attach multiple containers at once")}
 			}
-			return startAttached(cmd.Context(), c, cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0])
+			cfg, err := containerIO(cmd.Context(), c, args[0])
+			if err != nil {
+				return err
+			}
+			if !cfg.Tty && !(interactive && cfg.OpenStdin) {
+				return startAttached(cmd.Context(), c, cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0])
+			}
+			var in io.Reader
+			if interactive && cfg.OpenStdin {
+				in = cmd.InOrStdin()
+			}
+			code, _, err := attachSession(cmd, c, args[0], session{stdin: in, tty: cfg.Tty, detachKeys: keys, start: true, cond: "next-exit"})
+			if err != nil {
+				return err
+			}
+			if code != 0 {
+				return &exitError{code: code}
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVarP(&attach, "attach", "a", false, "attach its output and exit with its status")
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "attach its stdin (a container created with -i)")
+	cmd.Flags().StringVar(&keys, "detach-keys", "", "the key sequence that detaches (default ctrl-p,ctrl-q)")
 	return cmd
 }
 

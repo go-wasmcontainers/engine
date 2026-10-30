@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	units "github.com/docker/go-units"
@@ -75,6 +76,7 @@ func New(d *daemon.Daemon, info Info) http.Handler {
 	s.mux.HandleFunc("POST /containers/{id}/stop", s.containersStop)
 	s.mux.HandleFunc("POST /containers/{id}/restart", s.containersRestart)
 	s.mux.HandleFunc("POST /containers/{id}/attach", s.containersAttach)
+	s.mux.HandleFunc("POST /containers/{id}/resize", s.containersResize)
 	s.mux.HandleFunc("POST /containers/{id}/exec", s.containersExec)
 	s.mux.HandleFunc("POST /exec/{id}/start", s.execStart)
 	s.mux.HandleFunc("POST /exec/{id}/resize", s.execResize)
@@ -173,6 +175,7 @@ func statusOf(err error) int {
 		errors.Is(err, runtime.ErrInvalid), errors.Is(err, container.ErrTooMany):
 		return http.StatusBadRequest
 	case errors.Is(err, container.ErrNotRunning), errors.Is(err, container.ErrExecStarted),
+		errors.Is(err, container.ErrNoStdin), errors.Is(err, container.ErrNoTerminal),
 		errors.Is(err, container.ErrExecNotRunning), errors.Is(err, runtime.ErrNoExec):
 		return http.StatusConflict
 	case errors.Is(err, container.ErrNoSuchExec):
@@ -431,8 +434,13 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var warnings []string
-	if req.Tty {
-		warnings = append(warnings, "TTY is not supported; output is multiplexed")
+	var console [2]uint16
+	switch n := len(req.HostConfig.ConsoleSize); {
+	case n == 2:
+		console = [2]uint16{req.HostConfig.ConsoleSize[0], req.HostConfig.ConsoleSize[1]}
+	case n != 0:
+		writeError(w, http.StatusBadRequest, errors.New("ConsoleSize is [height, width]"))
+		return
 	}
 	var endpoints map[string][]string
 	if req.NetworkingConfig != nil {
@@ -458,6 +466,7 @@ func (s *server) containersCreate(w http.ResponseWriter, r *http.Request) {
 		Network: req.HostConfig.NetworkMode, Endpoints: endpoints, Caps: caps,
 		Ports: ports, ExposedPorts: req.ExposedPorts, PublishAll: req.HostConfig.PublishAllPorts,
 		Restart: restart, Healthcheck: healthFromAPI(req.Healthcheck),
+		Tty: req.Tty, OpenStdin: req.OpenStdin, StdinOnce: req.StdinOnce, ConsoleSize: console,
 	})
 	if err != nil {
 		writeError(w, statusOf(err), err)
@@ -621,10 +630,21 @@ func (s *server) containersRestart(w http.ResponseWriter, r *http.Request) {
 // Docker hijacks the connection for attach; this engine has no stdin to
 // carry, so it answers an ordinary streamed response (which also works
 // over the in-process transport).
+// containersAttach is POST /containers/{id}/attach. As for exec start,
+// the connection is not hijacked: the response streams the output
+// (multiplexed, or raw for a terminal) and, with stdin=1, the request
+// body is the container's input until the client closes it. The stream
+// ends when the container stops, the client hangs up, or the input
+// carries the detach keys (detachKeys, default ctrl-p,ctrl-q).
 func (s *server) containersAttach(w http.ResponseWriter, r *http.Request) {
-	stdout, stderr := boolParam(r, "stdout"), boolParam(r, "stderr")
-	if !boolParam(r, "stream") || (!stdout && !stderr) {
-		writeError(w, http.StatusBadRequest, errors.New("bad parameters: attach needs stream=1 and stdout=1 or stderr=1"))
+	stdin, stdout, stderr := boolParam(r, "stdin"), boolParam(r, "stdout"), boolParam(r, "stderr")
+	if !boolParam(r, "stream") || (!stdin && !stdout && !stderr) {
+		writeError(w, http.StatusBadRequest, errors.New("bad parameters: attach needs stream=1 and one of stdin, stdout, stderr"))
+		return
+	}
+	keys, err := container.ParseDetachKeys(r.URL.Query().Get("detachKeys"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	c, err := s.d.Containers().Get(r.PathValue("id"))
@@ -632,16 +652,63 @@ func (s *server) containersAttach(w http.ResponseWriter, r *http.Request) {
 		writeError(w, statusOf(err), err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/vnd.docker.multiplexed-stream")
+	tty := c.Snapshot().Config.Tty
+	if stdin && !c.Snapshot().Config.OpenStdin {
+		stdin = false // Docker ignores stdin on a container without OpenStdin
+	}
+	ctype := "application/vnd.docker.multiplexed-stream"
+	if tty {
+		ctype = "application/vnd.docker.raw-stream"
+	}
+	rc := http.NewResponseController(w)
+	rc.EnableFullDuplex() // read stdin while writing output (not on every transport)
+	w.Header().Set("Content-Type", ctype)
 	w.WriteHeader(http.StatusOK)
 	fw := newFlushWriter(w)
 	fw.rc.Flush()
-	c.Attach(r.Context(), boolParam(r, "logs"), func(rec container.Record) error {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	if stdin {
+		go func() {
+			if errors.Is(c.AttachStdin(ctx, r.Body, keys), container.ErrDetached) {
+				cancel() // ends the output stream: the client detached
+			}
+		}()
+	}
+	var mu sync.Mutex
+	c.Attach(ctx, boolParam(r, "logs"), func(rec container.Record) error {
 		if (rec.Stream == container.Stdout && !stdout) || (rec.Stream == container.Stderr && !stderr) {
 			return nil
 		}
+		mu.Lock()
+		defer mu.Unlock()
+		if tty {
+			_, err := fw.Write(rec.Data)
+			return err
+		}
 		return api.WriteFrame(fw, rec.Stream, rec.Data)
 	})
+}
+
+// containersResize is POST /containers/{id}/resize?h=&w=: the terminal of
+// a running container (run -t).
+func (s *server) containersResize(w http.ResponseWriter, r *http.Request) {
+	h, err1 := strconv.ParseUint(r.URL.Query().Get("h"), 10, 16)
+	wd, err2 := strconv.ParseUint(r.URL.Query().Get("w"), 10, 16)
+	if err1 != nil || err2 != nil {
+		writeError(w, http.StatusBadRequest, errors.New("bad parameters: resize needs h and w"))
+		return
+	}
+	c, err := s.d.Containers().Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	if err := c.Resize(uint16(h), uint16(wd)); err != nil {
+		writeError(w, statusOf(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *server) containersKill(w http.ResponseWriter, r *http.Request) {
@@ -775,6 +842,7 @@ func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 		RestartCount: sn.RestartCount,
 		Config: api.ContainerConfig{Image: sn.Config.Image, Cmd: sn.Config.Cmd, Entrypoint: sn.Config.Entrypoint,
 			Env: sn.Config.Env, WorkingDir: sn.Config.WorkingDir, Labels: sn.Config.Labels,
+			Tty: sn.Config.Tty, OpenStdin: sn.Config.OpenStdin, StdinOnce: sn.Config.StdinOnce, AttachStdin: sn.Config.OpenStdin,
 			Healthcheck: healthToAPI(sn.Config.Healthcheck)},
 		HostConfig: api.HostConfig{Memory: sn.Config.MemoryLimitBytes, NetworkMode: networkOf(sn.Config),
 			RestartPolicy: &api.RestartPolicy{Name: restartName(sn.Config.Restart.Name), MaximumRetryCount: sn.Config.Restart.MaximumRetryCount}},

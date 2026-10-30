@@ -178,9 +178,13 @@ func TestServerEdges(t *testing.T) {
 	if err != nil || len(imgs) != 1 || imgs[0].SharedSize != -1 || imgs[0].RepoDigests == nil || imgs[0].Labels == nil {
 		t.Fatalf("%+v %v", imgs, err)
 	}
-	// Cmd given as a JSON string, a TTY warning, a label.
-	status, body := get(t, ts, "POST", "/containers/create?name=s", `{"Image":"probe","Cmd":"args","Tty":true,"Labels":{"a":"b"},"HostConfig":{"Memory":33554432}}`)
-	if status != 201 || !strings.Contains(body, "TTY is not supported") {
+	// Cmd given as a JSON string, a terminal (no warning: supported), a
+	// label; a ConsoleSize that is not [h, w] is refused.
+	if status, _ := get(t, ts, "POST", "/containers/create?name=bad", `{"Image":"probe","Tty":true,"HostConfig":{"ConsoleSize":[1]}}`); status != 400 {
+		t.Fatal("ConsoleSize of one entry:", status)
+	}
+	status, body := get(t, ts, "POST", "/containers/create?name=s", `{"Image":"probe","Cmd":"args","Tty":true,"Labels":{"a":"b"},"HostConfig":{"Memory":33554432,"ConsoleSize":[30,100]}}`)
+	if status != 201 || !strings.Contains(body, `"Warnings":[]`) {
 		t.Fatal(status, body)
 	}
 	if status, _ = get(t, ts, "POST", "/containers/s/start", ""); status != 204 {
