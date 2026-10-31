@@ -112,8 +112,8 @@ func TestRunPrograms(t *testing.T) {
 }
 
 // A guest's exit code is a u32 on the wire: os.Exit(-1) is 4294967295. The
-// container's status follows wasmtime (0..125 kept, otherwise 1) and is
-// always a Docker status.
+// container's status is a Docker one: 0..255 kept (126, 127, 130 mean
+// something), anything outside is 1 as in wasmtime.
 func TestExitCodeBounded(t *testing.T) {
 	img := lower(t, "probe")
 	e := New(opts())
@@ -122,7 +122,7 @@ func TestExitCodeBounded(t *testing.T) {
 	for _, tc := range []struct {
 		arg  string
 		want int
-	}{{"0", 0}, {"125", 125}, {"126", 1}, {"255", 1}, {"256", 1}, {"-1", 1}, {"-2147483648", 1}} {
+	}{{"0", 0}, {"125", 125}, {"126", 126}, {"127", 127}, {"130", 130}, {"255", 255}, {"256", 1}, {"-1", 1}, {"-2147483648", 1}} {
 		r := start(t, e, runtime.Spec{FS: fsys, Path: "/bin/probe.wasm", Args: []string{"probe", "exit", tc.arg}})
 		if r.res.ExitCode != tc.want || r.res.Error != "" {
 			t.Errorf("exit %s: status %d (%q), want %d", tc.arg, r.res.ExitCode, r.res.Error, tc.want)

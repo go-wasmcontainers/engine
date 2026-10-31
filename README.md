@@ -227,9 +227,11 @@ WebAssembly module), 127 (module not found), 137 (killed or wall-clock
 timeout), 134 (the module trapped). One difference from Docker: such a
 container shows `Exited (128)`, not `Created`.
 
-A guest's own `proc_exit` code follows wasmtime: 0 to 125 is kept; anything
-else (`os.Exit(-1)` arrives as 4294967295, or 126 and above) is status 1, so
-the Docker API and `wctr` never see a code outside 0 to 255. Stdin, stdout
+A guest's own `proc_exit` code is a Docker status: 0 to 255 is kept (126, 127
+and 130 keep their meaning); a code outside that range (`os.Exit(-1)` arrives
+as 4294967295, or 256 and above) is status 1, as in wasmtime, so the Docker
+API and `wctr` never see a code outside 0 to 255. (wasmtime itself also turns
+126 to 255 into 1; the engine does not, Docker being the target.) Stdin, stdout
 and stderr report a character device with terminal rights only under `run -t`
 (or `exec -t`); a pipe is reported as `unknown`, as wasmtime does, so
 `isatty()` and Go's terminal checks answer false for piped input.

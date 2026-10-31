@@ -101,13 +101,18 @@ const (
 )
 
 // ExitCodeOf bounds a guest's proc_exit code (a u32: os.Exit(-1) arrives as
-// 4294967295) the way wasmtime does. Its preview 1 proc_exit
-// (crates/wasi/src/p1.rs) fails with "exit with invalid exit status outside
-// of [0..126)" for a status >= 126, and the CLI then exits 1. So 0..125 is
-// kept and anything else is 1: never 4294967295, never above 255, never
-// negative, whatever the Docker API or wctr relays.
+// 4294967295) to a Docker status. 0..255 is kept; anything else is 1.
+//
+// This deliberately diverges from wasmtime: its preview 1 proc_exit
+// (crates/wasi/src/p1.rs l.2615-2625) fails with "exit with invalid exit
+// status outside of [0..126)" for a status >= 126, and the CLI then exits 1.
+// Docker is our compatibility target, and Docker statuses are 0..255 with
+// meaning above 125 (126 not executable, 127 not found, 130 interrupted,
+// 128+n signals): `wctr run IMG sh -c 'exit 127'` must report 127. Only a
+// value no Docker status can hold (os.Exit(-1), 256 and above) is mapped to
+// 1, which is what wasmtime reports for those too.
 func ExitCodeOf(code uint32) int {
-	if code > 125 {
+	if code > 255 {
 		return 1
 	}
 	return int(code)
