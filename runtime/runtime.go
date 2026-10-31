@@ -57,6 +57,10 @@ type Spec struct {
 // Result is how a process ended.
 type Result struct {
 	ExitCode int
+	// ProcExit reports that the guest ended with proc_exit(ProcCode), the
+	// raw u32; ExitCode is then bounded to 0..125 (see ExitCodeOf).
+	ProcExit bool
+	ProcCode uint32
 	// TimedOut reports a wall-clock cancel.
 	TimedOut bool
 	// Killed reports a cancel through Process.Kill or the context.
@@ -74,7 +78,17 @@ func (r Result) ExitStatus() wasi.ExitStatus {
 	case r.ExitCode == ExitTrap && r.Error != "":
 		return wasi.ExitStatus{Signal: 6}
 	}
+	if r.ProcExit {
+		return wasi.ExitStatus{Code: r.ProcCode}
+	}
 	return wasi.ExitStatus{Code: uint32(r.ExitCode)}
+}
+
+// GuestExit is the Result of a guest's proc_exit(code): ExitCode is the
+// bounded Docker-compatible status (ExitCodeOf), ProcCode the raw u32 a
+// WASIX parent still sees.
+func GuestExit(code uint32) Result {
+	return Result{ExitCode: ExitCodeOf(code), ProcExit: true, ProcCode: code}
 }
 
 // Exit codes the engine uses for ends that are not a proc_exit, following
@@ -85,6 +99,19 @@ const (
 	ExitNoExec  = 126 // found but not runnable (not a valid module)
 	ExitMissing = 127 // module not found
 )
+
+// ExitCodeOf bounds a guest's proc_exit code (a u32: os.Exit(-1) arrives as
+// 4294967295) the way wasmtime does. Its preview 1 proc_exit
+// (crates/wasi/src/p1.rs) fails with "exit with invalid exit status outside
+// of [0..126)" for a status >= 126, and the CLI then exits 1. So 0..125 is
+// kept and anything else is 1: never 4294967295, never above 255, never
+// negative, whatever the Docker API or wctr relays.
+func ExitCodeOf(code uint32) int {
+	if code > 125 {
+		return 1
+	}
+	return int(code)
+}
 
 // Errors a Start may return; the exit code to record goes with each.
 var (

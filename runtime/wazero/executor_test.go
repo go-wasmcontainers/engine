@@ -17,6 +17,7 @@ import (
 	"github.com/go-wasmcontainers/engine/internal/testutil"
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/runtime"
+	"github.com/go-wasmcontainers/engine/wasi"
 )
 
 // syncBuf is a goroutine-safe buffer: the guest writes from its goroutine.
@@ -107,6 +108,53 @@ func TestRunPrograms(t *testing.T) {
 	}
 	if e.CacheLen() != 3 {
 		t.Fatalf("cache holds %d modules, want 3", e.CacheLen())
+	}
+}
+
+// A guest's exit code is a u32 on the wire: os.Exit(-1) is 4294967295. The
+// container's status follows wasmtime (0..125 kept, otherwise 1) and is
+// always a Docker status.
+func TestExitCodeBounded(t *testing.T) {
+	img := lower(t, "probe")
+	e := New(opts())
+	defer e.Close(context.Background())
+	fsys := img.Clone(rootfs.Quota{})
+	for _, tc := range []struct {
+		arg  string
+		want int
+	}{{"0", 0}, {"125", 125}, {"126", 1}, {"255", 1}, {"256", 1}, {"-1", 1}, {"-2147483648", 1}} {
+		r := start(t, e, runtime.Spec{FS: fsys, Path: "/bin/probe.wasm", Args: []string{"probe", "exit", tc.arg}})
+		if r.res.ExitCode != tc.want || r.res.Error != "" {
+			t.Errorf("exit %s: status %d (%q), want %d", tc.arg, r.res.ExitCode, r.res.Error, tc.want)
+		}
+	}
+}
+
+// Go's os.File.Stat reports a character device only for a terminal: a pipe
+// (no Terminal, or one not attached to that descriptor) is not one.
+func TestStdioModes(t *testing.T) {
+	img := lower(t, "probe")
+	e := New(opts())
+	defer e.Close(context.Background())
+	fsys := img.Clone(rootfs.Quota{})
+	for _, tc := range []struct {
+		name string
+		term *wasi.Terminal
+		want string
+	}{
+		{"pipes", nil, "---\n"},
+		{"tty", wasi.NewTerminal(80, 24, [3]bool{true, true, true}), "ccc\n"},
+		{"stdin pipe", wasi.NewTerminal(80, 24, [3]bool{false, true, true}), "-cc\n"},
+		{"stdout pipe", wasi.NewTerminal(80, 24, [3]bool{true, false, true}), "c-c\n"},
+	} {
+		if tc.term != nil && !engineWASI {
+			continue // only the engine's WASI host has a terminal (wazero's cannot report one)
+		}
+		r := start(t, e, runtime.Spec{FS: fsys, Path: "/bin/probe.wasm", Args: []string{"probe", "stdmodes"},
+			Stdin: strings.NewReader(""), Terminal: tc.term})
+		if r.stdout != tc.want || r.res.ExitCode != 0 {
+			t.Errorf("%s: stdout %q (exit %d, %q), want %q", tc.name, r.stdout, r.res.ExitCode, r.stderr, tc.want)
+		}
 	}
 }
 

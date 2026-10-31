@@ -253,10 +253,10 @@ func TestFiles(t *testing.T) {
 	if r := call(t, p, m, "fd_pread", 0, 100, 1, 0, 8); r.Errno != ESPIPE {
 		t.Fatal(r)
 	}
-	if r := call(t, p, m, "fd_filestat_get", 1, 400); r.Errno != 0 || m[416] != ftCharDev {
+	if r := call(t, p, m, "fd_filestat_get", 1, 400); r.Errno != 0 || m[416] != ftUnknown {
 		t.Fatal(r)
 	}
-	if r := call(t, p, m, "fd_fdstat_get", 0, 400); r.Errno != 0 || m[400] != ftCharDev {
+	if r := call(t, p, m, "fd_fdstat_get", 0, 400); r.Errno != 0 || m[400] != ftUnknown {
 		t.Fatal(r)
 	}
 	if r := call(t, p, m, "fd_write", 3, 100, 1, 8); r.Errno != EISDIR {

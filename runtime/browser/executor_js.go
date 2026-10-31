@@ -446,7 +446,7 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 			}
 			serve(current, r.Then(ptr, mem))
 		case "exit":
-			p.finish(runtime.Result{ExitCode: data.Get("code").Int()})
+			p.finish(runtime.GuestExit(uint32(int32(data.Get("code").Int()))))
 		case "trap":
 			p.finish(runtime.Result{ExitCode: runtime.ExitTrap, Error: data.Get("message").String()})
 		}

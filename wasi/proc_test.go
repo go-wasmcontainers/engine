@@ -322,7 +322,7 @@ func TestDup2Flags(t *testing.T) {
 		t.Errorf("dup2 onto a preopen: %d", e)
 	}
 	m := make(mem, 64)
-	if x := call(t, p, m, "fd_fdstat_get", 1, 0); x.Errno != 0 || m[0] != ftCharDev || binary.LittleEndian.Uint16(m[2:]) != 0 {
+	if x := call(t, p, m, "fd_fdstat_get", 1, 0); x.Errno != 0 || m[0] != ftUnknown || binary.LittleEndian.Uint16(m[2:]) != 0 {
 		t.Errorf("stdout fdstat %v", m[:4])
 	}
 	p.fds[1].nonblock = true

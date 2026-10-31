@@ -429,8 +429,13 @@ func (p *Proc) Terminal() *Terminal { return p.cfg.Terminal }
 // IsTerminal reports whether fd is the terminal: one of fds 0..2 marked
 // TTY and still the descriptor the process started with there.
 func (p *Proc) IsTerminal(fd uint32) bool {
+	return p.isTTY(p.fds[fd])
+}
+
+// isTTY reports whether the descriptor entry is a stdio descriptor the
+// container's terminal is attached to.
+func (p *Proc) isTTY(f *fdEntry) bool {
 	t := p.cfg.Terminal
-	f := p.fds[fd]
 	if t == nil || f == nil {
 		return false
 	}

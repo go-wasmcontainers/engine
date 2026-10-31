@@ -374,7 +374,7 @@ func result(err error, killed, timedOut bool) runtime.Result {
 	}
 	var ee *sys.ExitError
 	if errors.As(err, &ee) {
-		return runtime.Result{ExitCode: int(ee.ExitCode())}
+		return runtime.GuestExit(ee.ExitCode())
 	}
 	return runtime.Result{ExitCode: runtime.ExitTrap, Error: err.Error()}
 }
