@@ -29,6 +29,8 @@ func TestEngineWASI(t *testing.T) {
 	t.Run("limits", TestLimits)
 	t.Run("concurrent", TestConcurrentContainers)
 	t.Run("mounts", TestMountsThroughWASI)
+	t.Run("exit", TestExitCodeBounded)
+	t.Run("stdio", TestStdioModes)
 
 	// What only the engine host does: ENOSPC instead of EIO.
 	img := lower(t, "probe")

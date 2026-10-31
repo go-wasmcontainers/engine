@@ -2,6 +2,7 @@
 // engine's tests can check the guest's view of its world.
 //
 //	probe exit N        writes "bye" to stderr and exits N
+//	probe stdmodes      prints c or - for fds 0, 1, 2: a character device or not
 //	probe args ...      prints each argument on its own line
 //	probe env           prints the environment, one variable per line
 //	probe cwd           prints the working directory
@@ -35,6 +36,21 @@ func main() {
 		}
 		fmt.Fprintln(os.Stderr, "bye")
 		os.Exit(code)
+	case "stdmodes":
+		// Go's terminal check: os.File.Stat reports a character device
+		// from the descriptor's preview 1 filetype.
+		for _, f := range []*os.File{os.Stdin, os.Stdout, os.Stderr} {
+			fi, err := f.Stat()
+			switch {
+			case err != nil:
+				fmt.Print("e")
+			case fi.Mode()&os.ModeCharDevice != 0:
+				fmt.Print("c")
+			default:
+				fmt.Print("-")
+			}
+		}
+		fmt.Println()
 	case "args":
 		for _, a := range args {
 			fmt.Println(a)

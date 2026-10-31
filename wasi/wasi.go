@@ -681,6 +681,9 @@ func (p *Proc) Call(fn int, args []uint64, m Memory) Result {
 	case "poll_oneoff":
 		return p.poll(a(0), a(1), a(2), a(3), m)
 	case "proc_exit":
+		// The raw u32: a WASIX parent sees it as is (wasix_test "exit
+		// codes travel raw"); the container's own status is bounded by
+		// runtime.ExitCodeOf.
 		return Result{Exit: true, Code: a(0)}
 	case "sched_yield":
 		return ok()
@@ -854,10 +857,17 @@ func typeOf(in *rootfs.Info) uint8 {
 
 // fileType is a descriptor's preview 1 file type. A pipe end is
 // "unknown": preview 1 has no FIFO type.
-func fileType(f *fdEntry) uint8 {
+func (p *Proc) fileType(f *fdEntry) uint8 {
 	switch f.kind {
 	case kindStdin, kindStdout, kindStderr:
-		return ftCharDev
+		// wasmtime's preview 1 (crates/wasi/src/p1.rs, From<IsATTY> for
+		// Filetype): a terminal is a character device, anything else (a
+		// pipe, a file, /dev/null) is "unknown". wasi-libc's isatty() and
+		// Go's terminal checks read exactly this.
+		if p.isTTY(f) {
+			return ftCharDev
+		}
+		return ftUnknown
 	case kindPreopen, kindDir:
 		return ftDirectory
 	case kindSocket:
@@ -874,7 +884,17 @@ func (p *Proc) fdstat(fd, ptr uint32, m Memory) Result {
 		return fail(EBADF)
 	}
 	var b [24]byte
-	b[0] = fileType(f)
+	b[0] = p.fileType(f)
+	rights := allRights
+	switch f.kind {
+	case kindStdin:
+		// As wasmtime p1.rs fd_fdstat_get: no FD_SEEK/FD_TELL, which
+		// wasi-libc's isatty() (libc-bottom-half/sources/isatty.c) requires
+		// of a terminal.
+		rights = rightFdRead
+	case kindStdout, kindStderr:
+		rights = rightFdWrite
+	}
 	var flags uint16
 	if f.append {
 		flags |= fdflagAppend
@@ -883,8 +903,8 @@ func (p *Proc) fdstat(fd, ptr uint32, m Memory) Result {
 		flags |= fdflagNonblock
 	}
 	binary.LittleEndian.PutUint16(b[2:], flags)
-	put64(b[8:], allRights)
-	put64(b[16:], allRights)
+	put64(b[8:], rights)
+	put64(b[16:], rights)
 	if !m.Write(ptr, b[:]) {
 		return fail(EFAULT)
 	}
@@ -916,7 +936,7 @@ func (p *Proc) fdFilestat(fd, ptr uint32, m Memory) Result {
 	switch f.kind {
 	case kindStdin, kindStdout, kindStderr, kindSocket, kindPipe:
 		var b [64]byte
-		b[16] = fileType(f)
+		b[16] = p.fileType(f)
 		put64(b[24:], 1)
 		if !m.Write(ptr, b[:]) {
 			return fail(EFAULT)
