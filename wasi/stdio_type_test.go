@@ -55,4 +55,3 @@ func TestStdioFdstatPipeVsTTY(t *testing.T) {
 		})
 	}
 }
-
