@@ -208,8 +208,13 @@ Tab then completes subcommands and flags, image names for `run`, `pull`,
 the daemon, through cobra's hidden `__complete` command — the same code the
 playground's terminal calls in-process (`cli.Complete`).
 
-**Line editor for embedders.** `cli/lineedit` is wctr's interactive line
-editor as a pure model (no terminal, DOM or widget type): `New(Options)`,
+**Line editor for embedders.** `lineedit` is its own module
+(`github.com/go-wasmcontainers/engine/lineedit`, standard library only, so
+the guest shell links it without net/http; tags `lineedit/vX.Y.Z`): the
+interactive line editor as a pure model (no terminal, DOM or widget type),
+with a `Reader` that drives it from a raw-mode byte stream and wide-character
+aware columns. `cli/lineedit` re-exports it with wctr's completer. The model:
+`New(Options)`,
 `Key(ctx, Key) Event` (editing keys, history Up/Down and Ctrl-P/N, Ctrl-A/E/
 B/F/U/K/W/L/C/D, reverse search Ctrl-R, Tab completion — unique match,
 longest common prefix, second Tab lists, "Display all N possibilities?"

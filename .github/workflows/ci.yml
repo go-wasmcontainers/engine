@@ -103,6 +103,12 @@ jobs:
           # Keys and lines a user types; a front end feeds them raw.
           - { target: FuzzEditor, pkg: ./cli/lineedit }
           - { target: FuzzSplitPartial, pkg: ./cli/lineedit }
+          # The core's own copies (nested module lineedit) and the raw
+          # terminal byte stream the Reader decodes.
+          - { target: FuzzReader, pkg: ., dir: lineedit }
+          - { target: FuzzEditor, pkg: ., dir: lineedit }
+          - { target: FuzzSplitPartial, pkg: ., dir: lineedit }
+          - { target: FuzzSplit, pkg: ., dir: lineedit }
           # What the state store hands back after a restart or a reload.
           - { target: FuzzApplyDiff, pkg: ./rootfs }
           - { target: FuzzUnseal, pkg: ./state }
@@ -114,7 +120,8 @@ jobs:
       - uses: actions/setup-go@v7
         with: { go-version: '1.27.3' }
       - run: go version
-      - run: go test -run '^$' -fuzz '^${{ matrix.target }}$' -fuzztime 45s ${{ matrix.pkg }}
+      - working-directory: ${{ matrix.dir || '.' }}
+        run: go test -run '^$' -fuzz '^${{ matrix.target }}$' -fuzztime 45s ${{ matrix.pkg }}
 
   vulns:
     name: govulncheck, judged by vulngate
@@ -181,6 +188,46 @@ jobs:
           for t in linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 linux/386 windows/amd64; do
             GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go build -o /dev/null . || exit 1
           done
+      - name: govulncheck, judged by vulngate
+        run: |
+          set -eu
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/go-fleettools/fleettools/cmd/vulngate@v0.20.1
+          BIN="$(go env GOPATH)/bin"
+          "$BIN/govulncheck" -format json ./... > /tmp/vuln.json || true
+          test -s /tmp/vuln.json || { echo "::error::govulncheck wrote nothing at all"; exit 1; }
+          "$BIN/vulngate" -go "$(go env GOVERSION)" /tmp/vuln.json
+
+  # lineedit is a nested module with the standard library as its only
+  # dependency: the guest shell links it, and net/http would cost it
+  # +1.8 MB (engine#47). It is held at 100% coverage.
+  lineedit:
+    name: lineedit module
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: lineedit } }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version: '1.27.3' }
+      - run: go version
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "::error::not gofmt-ed:"; echo "$out"; exit 1; fi
+      - name: go.mod has no requirement and the package imports the standard library only
+        run: |
+          if grep -q '^require' go.mod; then echo "::error::lineedit/go.mod requires a module"; exit 1; fi
+          deps=$(go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' .)
+          if [ "$deps" != "github.com/go-wasmcontainers/engine/lineedit" ]; then echo "::error::non-standard dependencies: $deps"; exit 1; fi
+      - run: go vet ./...
+      - run: GOOS=wasip1 GOARCH=wasm go vet ./...
+      - run: GOOS=js GOARCH=wasm go vet ./...
+      - name: go test -race, 100% coverage
+        run: |
+          go test -race -count=1 -coverprofile=cov.out ./...
+          total=$(go tool cover -func=cov.out | tail -1)
+          echo "$total"
+          case "$total" in *100.0%) ;; *) echo "::error::lineedit below 100%"; exit 1;; esac
       - name: govulncheck, judged by vulngate
         run: |
           set -eu
