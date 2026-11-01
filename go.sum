@@ -9,6 +9,8 @@ github.com/docker/go-units v0.5.0 h1:69rxXcBk27SvSaaxTtLh/8llcHD8vYHT7WSdRZ/jvr4
 github.com/docker/go-units v0.5.0/go.mod h1:fgPhTUdO+D/Jk86RDLlptpiXQzgHJF7gydDDbaIK4Dk=
 github.com/go-authn/oidc v0.4.3 h1:H2L1YtpwGQCMoc65vhH5wLPM+09Wygh/32hjtYI052k=
 github.com/go-authn/oidc v0.4.3/go.mod h1:H/Hodeu9kh/Xz3y51XfYu6MZdMJaNfXClyVH0GTUebE=
+github.com/go-wasmcontainers/engine/lineedit v0.1.0 h1:GCVxUFzuyD5WRwOMNgRuMox+TvjpkNO/5LfVYZ82Ymg=
+github.com/go-wasmcontainers/engine/lineedit v0.1.0/go.mod h1:k3V5txHVOaeqBZaPcKJ88jCUSCB7jLO1Ezl7SuFEZmQ=
 github.com/go-wasmcontainers/relay v0.3.1 h1:KJBOwZ6L+XHB3VAWVx1n+0TAA4UJTnFwJOMS6wfbd9U=
 github.com/go-wasmcontainers/relay v0.3.1/go.mod h1:orl1CRgrYjvsy8pFIGVadebO7EE8x3pT92kAVvJp8Ok=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

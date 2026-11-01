@@ -6,6 +6,7 @@ import (
 	"time"
 
 	units "github.com/docker/go-units"
+	"github.com/go-wasmcontainers/engine/lineedit"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -136,11 +137,10 @@ func (c *completer) containers(cmd *cobra.Command, all bool, toComplete string) 
 
 const noFiles = cobra.ShellCompDirectiveNoFileComp
 
-// Candidate is one completion choice.
-type Candidate struct {
-	Value       string `json:"value"`
-	Description string `json:"description,omitempty"`
-}
+// Candidate is one completion choice; it is the line editor's type
+// (github.com/go-wasmcontainers/engine/lineedit), so that the editor and
+// the completion share it without the editor importing this package.
+type Candidate = lineedit.Candidate
 
 // Completion is what cobra's __complete answered.
 type Completion struct {
