@@ -1,0 +1,2 @@
+go test fuzz v1
+string("wctr r\t\t\x1b[D\x7f\x12ru\r\x1b[A\x01\x0b\x15'two \t")
