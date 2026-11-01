@@ -3,20 +3,21 @@ package lineedit
 import (
 	"fmt"
 	"strings"
-	"unicode"
 )
 
 // RuneWidth is the number of terminal columns r takes: 0 for a combining
-// mark or a format character (a zero-width joiner), 2 for the wide and
+// mark or a zero-width character (a joiner, a variation selector), 2 for the wide and
 // fullwidth East Asian characters and the emoji blocks, 1 otherwise. The
 // wide ranges are an approximation of Unicode's East Asian Width property
 // (UAX #11), enough to place the cursor for CJK text and emoji.
 func RuneWidth(r rune) int {
-	switch {
-	case r < 0x300:
+	if r < 0x300 {
 		return 1
-	case unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf):
-		return 0
+	}
+	for _, w := range zeroRanges {
+		if r >= w[0] && r <= w[1] {
+			return 0
+		}
 	}
 	for _, w := range wideRanges {
 		if r >= w[0] && r <= w[1] {
@@ -24,6 +25,16 @@ func RuneWidth(r rune) int {
 		}
 	}
 	return 1
+}
+
+// zeroRanges are the main combining-mark blocks and the zero-width and
+// variation-selector characters; the Unicode tables (unicode.Mn) would link
+// tens of kilobytes into a WebAssembly guest for the same purpose.
+var zeroRanges = [...][2]rune{
+	{0x300, 0x36F}, {0x483, 0x489}, {0x591, 0x5BD}, {0x610, 0x61A}, {0x64B, 0x65F},
+	{0x1AB0, 0x1AFF}, {0x1DC0, 0x1DFF}, {0x200B, 0x200F}, {0x2028, 0x202E},
+	{0x2060, 0x2064}, {0x20D0, 0x20FF}, {0xFE00, 0xFE0F}, {0xFE20, 0xFE2F},
+	{0xFEFF, 0xFEFF}, {0xE0100, 0xE01EF},
 }
 
 var wideRanges = [...][2]rune{
