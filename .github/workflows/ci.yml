@@ -100,11 +100,9 @@ jobs:
           - { target: FuzzApplyChanges, pkg: ./daemon }
           # The filters query parameter of list and prune requests.
           - { target: FuzzParseFilters, pkg: ./api/server }
-          # Keys and lines a user types; a front end feeds them raw.
-          - { target: FuzzEditor, pkg: ./cli/lineedit }
-          - { target: FuzzSplitPartial, pkg: ./cli/lineedit }
-          # The core's own copies (nested module lineedit) and the raw
-          # terminal byte stream the Reader decodes.
+          # Keys and lines a user types; a front end feeds them raw, and
+          # the raw terminal byte stream the Reader decodes (nested module
+          # lineedit, the core of cli/lineedit).
           - { target: FuzzReader, pkg: ., dir: lineedit }
           - { target: FuzzEditor, pkg: ., dir: lineedit }
           - { target: FuzzSplitPartial, pkg: ., dir: lineedit }

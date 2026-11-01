@@ -3,8 +3,18 @@ module github.com/go-wasmcontainers/engine
 go 1.27.3
 
 require (
+	connectrpc.com/cors v0.1.0 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
+	github.com/go-authn/oidc v0.4.3 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
+)
+
+require (
 	connectrpc.com/connect/v2 v2.0.2
 	github.com/docker/go-units v0.5.0
+	github.com/go-wasmcontainers/engine/lineedit v0.1.0
 	github.com/go-wasmcontainers/relay v0.3.1
 	github.com/klauspost/compress v1.20.3
 	github.com/spf13/cobra v1.10.2
@@ -12,13 +22,4 @@ require (
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/net v0.62.0
 	golang.org/x/term v0.47.0
-)
-
-require (
-	connectrpc.com/cors v0.1.0 // indirect
-	github.com/coder/websocket v1.8.15 // indirect
-	github.com/go-authn/oidc v0.4.3 // indirect
-	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 )
