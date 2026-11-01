@@ -175,7 +175,10 @@ func (r *Reader) ReadLine(ctx context.Context, prompt string) (string, error) {
 			case ev.Submit:
 				// The line may have come from a search: show it as it is.
 				end := State{Prompt: tail, Line: ev.Line, Cursor: utf8.RuneCountInString(ev.Line)}
-				io.WriteString(r.Out, rd.Render(end)+rd.Leave(end))
+				if st.Prompt != tail {
+					io.WriteString(r.Out, rd.Render(end))
+				}
+				io.WriteString(r.Out, rd.Leave(end))
 				return ev.Line, nil
 			case ev.Interrupt:
 				st.Line += "^C"
