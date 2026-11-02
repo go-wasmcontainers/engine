@@ -52,9 +52,19 @@ func TestEvents(t *testing.T) {
 			t.Fatalf("live events: %v", got)
 		}
 	}
-	want := "create:ev-e,start:ev-e,die:ev-e,create:ev-s,start:ev-s,kill:ev-s,die:ev-s,stop:ev-s,destroy:ev-e,destroy:ev-s"
-	if strings.Join(got, ",") != want {
-		t.Fatalf("live events\n got %s\nwant %s", strings.Join(got, ","), want)
+	// Each container's events come in order. Across containers only the
+	// order each `run` or `stop` call imposes is guaranteed: `run` returns
+	// when the process has exited, which can be just before the "die" is
+	// published, so ev-e's "die" may follow ev-s's "create".
+	perName := map[string][]string{}
+	for _, e := range got {
+		action, name, _ := strings.Cut(e, ":")
+		perName[name] = append(perName[name], action)
+	}
+	wantE := "create,start,die,destroy"
+	wantS := "create,start,kill,die,stop,destroy"
+	if strings.Join(perName["ev-e"], ",") != wantE || strings.Join(perName["ev-s"], ",") != wantS {
+		t.Fatalf("live events\n got %s\nwant ev-e %s, ev-s %s", strings.Join(got, ","), wantE, wantS)
 	}
 
 	// The same from history, with --since/--until, in docker's format.
