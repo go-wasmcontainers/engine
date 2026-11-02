@@ -110,6 +110,15 @@ func TestExec(t *testing.T) {
 	}
 }
 
+// echoedBefore reports whether first appears in out and later is found
+// after it. The process output of an earlier line (for example "ac\r\n")
+// may be written between the echo "zz" and the "^C" echo, so the two are
+// not required to be adjacent.
+func echoedBefore(out, first, later string) bool {
+	i := strings.Index(out, first)
+	return i >= 0 && strings.Contains(out[i+len(first):], later)
+}
+
 func TestExecTerminal(t *testing.T) {
 	m, _ := execSetup(t)
 	tty := ExecConfig{Tty: true, AttachStdin: true, AttachStdout: true, AttachStderr: true, ConsoleSize: [2]uint16{40, 120}}
@@ -126,7 +135,7 @@ func TestExecTerminal(t *testing.T) {
 	cfg.Cmd = []string{"wasixguest", "child-cat"}
 	out, _, in := execRun(t, m, cfg, "ab\x7fc\rzz\x03ok\r\x04")
 	if !strings.HasPrefix(out, "ab\b \bc\r\n") || !strings.Contains(out, "ac\r\n") ||
-		!strings.Contains(out, "zz^C\r\n") || strings.Count(out, "ok\r\n") != 2 || in.ExitCode != 0 {
+		!echoedBefore(out, "zz", "^C\r\n") || strings.Count(out, "ok\r\n") != 2 || in.ExitCode != 0 {
 		t.Errorf("ldisc output %q", out)
 	}
 	if strings.Contains(out, "zz\r\n") {
