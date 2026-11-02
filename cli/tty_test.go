@@ -1,15 +1,84 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-wasmcontainers/engine/api"
 	"github.com/go-wasmcontainers/engine/internal/testutil"
 )
+
+// lockedBuffer is a bytes.Buffer safe for the command's writer and the
+// test's reader.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// gatedInput yields first, then waits (up to 30 s) until the command's
+// output holds marker before yielding rest.
+type gatedInput struct {
+	out          *lockedBuffer
+	first, rest  string
+	marker       string
+	sentFirst    bool
+	waited, done bool
+}
+
+func (g *gatedInput) Read(p []byte) (int, error) {
+	if !g.sentFirst {
+		g.sentFirst = true
+		return copy(p, g.first), nil
+	}
+	if !g.waited {
+		g.waited = true
+		for end := time.Now().Add(30 * time.Second); time.Now().Before(end) && !strings.Contains(g.out.String(), g.marker); {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if g.done {
+		return 0, io.EOF
+	}
+	g.done = true
+	return copy(p, g.rest), nil
+}
+
+// wctrGated is wctrIn with the input sent in two parts: rest goes only
+// once the output holds marker.
+func wctrGated(t *testing.T, host, first, marker, rest string, args ...string) result {
+	t.Helper()
+	cmd := RootCmd(Options{})
+	out, errb := &lockedBuffer{}, &lockedBuffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(errb)
+	cmd.SetIn(&gatedInput{out: out, first: first, rest: rest, marker: marker})
+	cmd.SetArgs(append([]string{"-H", host}, args...))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	code := 0
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		code = Report(errb, err)
+	}
+	return result{out.String(), errb.String(), code}
+}
 
 // TestRunInteractive: run -i sends this client's input to the container's
 // first process, run -it gives it a terminal (the engine's line
@@ -43,7 +112,10 @@ func TestRunInteractive(t *testing.T) {
 
 	// Detach and reattach.
 	must(t, wctr(t, h, "run", "-dit", "--name", "d", "--entrypoint", "wasixguest", "probe", "child-cat"), 0)
-	r := wctrIn(t, h, "one\r\x10\x11ignored\r", "attach", "d")
+	// The detach keys must follow the echo of "one": the server ends the
+	// output stream at once on the detach keys, dropping whatever it has
+	// not written yet (engine#56). So the keys wait for the echo.
+	r := wctrGated(t, h, "one\r", "one\r\n", "\x10\x11ignored\r", "attach", "d")
 	if r.code != 0 || !strings.Contains(r.stdout, "one\r\n") || strings.Contains(r.stdout, "ignored") {
 		t.Fatalf("attach, then ctrl-p ctrl-q: %+v", r)
 	}
