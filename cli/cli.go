@@ -396,6 +396,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 	f.StringVar(&network, "network", "", "connect to a network (default bridge; none: no network)")
 	f.BoolVar(&gpu, "gpu", false, "give the container the local GPU (wasi:webgpu, wasi-nn on the GPU)")
 	f.StringVar(&gpuMemory, "gpu-memory", "", "GPU memory quota of the container's webgpu-batch contexts, with --gpu (e.g. 1g; default 256m, at most 1.5g)")
+	f.StringSliceVar(&modelNames, "model", nil, "mount a pinned model read-only at /models/NAME.gguf (downloaded once, size and sha256 checked before use); repeatable")
 	f.StringArrayVar(&aliases, "network-alias", nil, "add a name the container answers to on --network (replicas may share one)")
 	f.StringArrayVarP(&publish, "publish", "p", nil, "publish a port on the host: [ip:][hostPort:]containerPort[/tcp|udp] (ip defaults to 127.0.0.1)")
 	f.BoolVarP(&publishAll, "publish-all", "P", false, "publish every exposed port on a host port the system picks")

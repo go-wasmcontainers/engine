@@ -269,6 +269,10 @@ func TestRunErrors(t *testing.T) {
 	}
 	// 1.5 GiB exactly passes the check (the container then runs).
 	must(t, wctr(t, host, "run", "--rm", "--gpu", "--gpu-memory", "1536m", "probe", "args"), 0)
+	// --model exists, and an unknown name is refused before any container.
+	if r = wctr(t, host, "run", "--model", "no-such-model", "probe"); r.code == 0 || strings.Contains(r.stderr, "unknown flag") || !strings.Contains(r.stderr, "no-such-model") {
+		t.Fatalf("--model: %+v", r)
+	}
 	// Names: invalid, conflicting.
 	if r = wctr(t, host, "run", "--name", "bad name", "probe", "args"); r.code != 125 || !strings.Contains(r.stderr, "invalid container name") {
 		t.Fatalf("%+v", r)
