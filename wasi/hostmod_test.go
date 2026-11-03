@@ -88,6 +88,13 @@ func TestCallImport(t *testing.T) {
 	if !p.HasCap("gpu") || p.HasCap("tpu") || p.Parent() != parent || parent.Parent() != nil {
 		t.Error("caps or parent")
 	}
+	if _, ok := p.CapValue("gpu-memory"); ok {
+		t.Error("a grant nobody made")
+	}
+	g := wasi.New(wasi.Config{FS: rootfs.New(), Caps: []string{"gpu", "gpu-memory=1073741824"}})
+	if v, ok := g.CapValue("gpu-memory"); !ok || v != "1073741824" || g.HasCap("gpu-memory") {
+		t.Errorf("CapValue = %q, %v", v, ok)
+	}
 	// The preview functions still answer through the same entry point.
 	if r := p.CallImport(wasi.FuncIndex["sched_yield"], nil, m); r.Errno != 0 || r.Trap != "" {
 		t.Errorf("sched_yield: %+v", r)

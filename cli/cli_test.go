@@ -254,6 +254,21 @@ func TestRunErrors(t *testing.T) {
 	if r = wctr(t, host, "run", "-m", "lots", "probe"); r.code != 125 {
 		t.Fatalf("%+v", r)
 	}
+	// --gpu-memory: refused without --gpu, above 1.5 GiB, or unparsable,
+	// before any container is created.
+	for _, args := range [][]string{
+		{"run", "--gpu-memory", "512m", "probe"},
+		{"run", "--gpu", "--gpu-memory", "1537m", "probe"},
+		{"run", "--gpu", "--gpu-memory", "2g", "probe"},
+		{"run", "--gpu", "--gpu-memory", "0", "probe"},
+		{"run", "--gpu", "--gpu-memory", "lots", "probe"},
+	} {
+		if r = wctr(t, host, args...); r.code != 125 || !strings.Contains(r.stderr, "gpu-memory") {
+			t.Fatalf("%v: %+v", args, r)
+		}
+	}
+	// 1.5 GiB exactly passes the check (the container then runs).
+	must(t, wctr(t, host, "run", "--rm", "--gpu", "--gpu-memory", "1536m", "probe", "args"), 0)
 	// Names: invalid, conflicting.
 	if r = wctr(t, host, "run", "--name", "bad name", "probe", "args"); r.code != 125 || !strings.Contains(r.stderr, "invalid container name") {
 		t.Fatalf("%+v", r)

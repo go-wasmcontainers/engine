@@ -226,6 +226,18 @@ func (h *hostState) closeAll() {
 // "gpu", from run --gpu).
 func (p *Proc) HasCap(c string) bool { return slices.Contains(p.cfg.Caps, c) }
 
+// CapValue returns the value of a capability granted as "name=value" (run
+// --gpu --gpu-memory=SIZE grants "gpu-memory=BYTES"), and whether it was
+// granted.
+func (p *Proc) CapValue(name string) (string, bool) {
+	for _, c := range p.cfg.Caps {
+		if v, ok := strings.CutPrefix(c, name+"="); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
 // Parent is the process that started this one (nil for a container's
 // first process), so a module can share state across a process tree.
 func (p *Proc) Parent() *Proc { return p.cfg.Parent }
