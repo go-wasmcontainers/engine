@@ -18,6 +18,7 @@ import (
 	"github.com/go-wasmcontainers/engine/container"
 	"github.com/go-wasmcontainers/engine/daemon"
 	"github.com/go-wasmcontainers/engine/internal/testutil"
+	"github.com/go-wasmcontainers/engine/models"
 	"github.com/go-wasmcontainers/engine/runtime/wazero"
 )
 
@@ -272,6 +273,11 @@ func TestRunErrors(t *testing.T) {
 	// --model exists, and an unknown name is refused before any container.
 	if r = wctr(t, host, "run", "--model", "no-such-model", "probe"); r.code == 0 || strings.Contains(r.stderr, "unknown flag") || !strings.Contains(r.stderr, "no-such-model") {
 		t.Fatalf("--model: %+v", r)
+	}
+	// A registry model is a mount, not a volume: it must get past volume
+	// creation (it then stops at the empty cache, or runs if one exists).
+	if r = wctr(t, host, "run", "--rm", "--model", models.Registry[0].Name, "probe"); strings.Contains(r.stderr, "invalid volume") {
+		t.Fatalf("a model mount was created as a volume: %+v", r)
 	}
 	// Names: invalid, conflicting.
 	if r = wctr(t, host, "run", "--name", "bad name", "probe", "args"); r.code != 125 || !strings.Contains(r.stderr, "invalid container name") {
