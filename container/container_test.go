@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-wasmcontainers/engine/events"
 	"github.com/go-wasmcontainers/engine/internal/testutil"
 	"github.com/go-wasmcontainers/engine/rootfs"
 	"github.com/go-wasmcontainers/engine/runtime"
@@ -350,5 +351,37 @@ func TestLogsCallbackError(t *testing.T) {
 	l.append(Stdout, []byte("123456"))
 	if recs, _, _ := l.since(0); len(recs) != 1 || string(recs[0].Data) != "3456" {
 		t.Fatal(recs)
+	}
+}
+
+// emitExec reports a GPU sanction through the spec's OnEvent, as a host
+// module does with wasi.Proc.Emit, then runs the module.
+type emitExec struct{ runtime.Executor }
+
+func (e emitExec) Start(ctx context.Context, spec runtime.Spec) (runtime.Process, error) {
+	spec.OnEvent("gpu", "sanction", map[string]string{"submit_ms": "2100", "budget_ms": "250"})
+	return e.Executor.Start(ctx, spec)
+}
+
+// TestHostModuleSanction: what a host module reports is published as the
+// container event "gpu-sanction" and kept in the snapshot (inspect).
+func TestHostModuleSanction(t *testing.T) {
+	bus := events.New()
+	m := manager(t, Options{Events: bus})
+	m.opt.Executor = emitExec{m.opt.Executor}
+	_, sub := bus.Subscribe(time.Time{}, func(e events.Event) bool { return e.Action == "gpu-sanction" })
+	defer sub.Close()
+	c, _ := runToExit(t, m, CreateOptions{Name: "s", Lower: image(t), Config: Config{Cmd: []string{"/app/greet.wasm"}}})
+	sn := c.Snapshot()
+	if sn.Sanction == nil || sn.Sanction.Module != "gpu" || sn.Sanction.Attributes["submit_ms"] != "2100" {
+		t.Fatalf("sanction %+v", sn.Sanction)
+	}
+	select {
+	case e := <-sub.C:
+		if e.ID != c.ID() || e.Attributes["budget_ms"] != "250" {
+			t.Errorf("event %+v", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("no gpu-sanction event")
 	}
 }

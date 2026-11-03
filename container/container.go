@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"path"
 	"regexp"
@@ -167,6 +168,7 @@ type Container struct {
 	// health is its health state while a check runs (health.go).
 	health *Health
 
+	sanction  *Sanction // guarded by mu
 	persisted persisted // guarded by Manager.pmu
 	queued    bool      // guarded by Manager.qmu
 }
@@ -199,6 +201,18 @@ type Snapshot struct {
 	RestartCount int
 	// Health is its health state, nil without a check.
 	Health *Health
+	// Sanction is the last sanction a host module applied to it (a GPU
+	// overrun), nil if none.
+	Sanction *Sanction
+}
+
+// Sanction is what a host module reported with wasi.Proc.Emit with the
+// action "sanction": the module, when, and its attributes (for the GPU: the
+// submit's measured time and the budget it overran).
+type Sanction struct {
+	Module     string
+	Time       time.Time
+	Attributes map[string]string
 }
 
 // Command is argv as configured.
@@ -250,6 +264,11 @@ func (c *Container) Snapshot() Snapshot {
 		State: c.state, ExitCode: c.exitCode, Error: c.errMsg, TimedOut: c.timedOut,
 		StartedAt: c.startedAt, FinishedAt: c.finishedAt, Path: c.path, SizeRw: rw, IPAddress: c.ip,
 		Networks: c.networksLocked(), RestartCount: c.restartCount, Health: c.healthLocked(),
+	}
+	if c.sanction != nil {
+		cp := *c.sanction
+		cp.Attributes = maps.Clone(cp.Attributes)
+		s.Sanction = &cp
 	}
 	if c.ports != nil {
 		s.Ports = c.ports.Ports()
@@ -334,6 +353,20 @@ func (m *Manager) emit(action string, c *Container, extra map[string]string) {
 		attrs[k] = v
 	}
 	m.opt.Events.Publish(events.Event{Type: events.Container, Action: action, ID: c.id, Attributes: attrs})
+}
+
+// hostEvent is what a host module of the container's process reported
+// (runtime.Spec.OnEvent). It is published as a container event whose action
+// is "<module>-<action>" ("gpu-sanction"); a "sanction" is also kept for
+// inspect. It runs on the module's goroutine and never blocks on the
+// container's state beyond its mutex.
+func (m *Manager) hostEvent(c *Container, module, action string, attrs map[string]string) {
+	if action == "sanction" {
+		c.mu.Lock()
+		c.sanction = &Sanction{Module: module, Time: time.Now(), Attributes: maps.Clone(attrs)}
+		c.mu.Unlock()
+	}
+	m.emit(module+"-"+action, c, attrs)
 }
 
 // Manager owns every container of a daemon.
@@ -649,6 +682,7 @@ func (m *Manager) start(ctx context.Context, c *Container, auto bool) error {
 		ID: c.id, FS: c.fs, Path: c.path, Args: argv, Env: env,
 		Stdout: logWriter{c.logs, Stdout}, Stderr: logWriter{c.logs, Stderr},
 		MemoryLimitBytes: mem, Timeout: m.opt.Timeout, Caps: c.cfg.Caps,
+		OnEvent: func(module, action string, attrs map[string]string) { m.hostEvent(c, module, action, attrs) },
 	}
 	for _, mt := range c.cfg.Mounts {
 		var vfs *rootfs.FS

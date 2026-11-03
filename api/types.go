@@ -396,6 +396,17 @@ type ContainerState struct {
 	FinishedAt string `json:"FinishedAt"`
 	// Health is the health check's state, absent without a check.
 	Health *Health `json:"Health,omitempty"`
+	// Sanction is the last sanction a host module applied (a GPU overrun:
+	// the container's GPU grant is revoked), absent if none.
+	Sanction *Sanction `json:"Sanction,omitempty"`
+}
+
+// Sanction is State.Sanction: which host module, when, and its details
+// (for the GPU: submit_ms, budget_ms, reason).
+type Sanction struct {
+	Module     string            `json:"Module"`
+	Time       string            `json:"Time"`
+	Attributes map[string]string `json:"Attributes"`
 }
 
 // Health is Docker's State.Health.

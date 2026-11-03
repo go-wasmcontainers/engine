@@ -226,6 +226,21 @@ type Config struct {
 	// Label names the process's container (runtime.Spec.ID): host modules
 	// report it with what they show of the process (a surface's pane).
 	Label string
+	// OnEvent receives what host modules report with Proc.Emit (a GPU
+	// sanction); nil drops them. A child process reports through its parent.
+	OnEvent func(module, action string, attrs map[string]string)
+}
+
+// Emit reports an event of host module `module` about this process's
+// container (the engine publishes it on its event bus and shows it in
+// inspect). It never blocks the guest: the callback must return quickly.
+func (p *Proc) Emit(module, action string, attrs map[string]string) {
+	switch {
+	case p.cfg.OnEvent != nil:
+		p.cfg.OnEvent(module, action, attrs)
+	case p.cfg.Parent != nil:
+		p.cfg.Parent.Emit(module, action, attrs)
+	}
 }
 
 // Label is the process's container label (Config.Label).
