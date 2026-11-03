@@ -46,6 +46,9 @@ type Spec struct {
 	// Caps are capabilities granted to the process ("gpu", from run
 	// --gpu); host modules read them through the engine's WASI host.
 	Caps []string
+	// OnEvent receives what the process's host modules report (wasi.Proc.Emit):
+	// module, action, attributes. It may be called from any goroutine.
+	OnEvent func(module, action string, attrs map[string]string)
 	// Terminal is the container's terminal (run -t), if any; the engine's
 	// WASI host reports it to the guest's processes.
 	Terminal *wasi.Terminal

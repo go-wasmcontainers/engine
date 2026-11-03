@@ -824,6 +824,14 @@ func restartName(n string) string {
 	return n
 }
 
+// sanctionState is inspect's State.Sanction.
+func sanctionState(s *container.Sanction) *api.Sanction {
+	if s == nil {
+		return nil
+	}
+	return &api.Sanction{Module: s.Module, Time: rfc3339(s.Time), Attributes: s.Attributes}
+}
+
 func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 	c, err := s.d.Containers().Get(r.PathValue("id"))
 	if err != nil {
@@ -838,7 +846,7 @@ func (s *server) containersInspect(w http.ResponseWriter, r *http.Request) {
 		State: api.ContainerState{Status: string(sn.State), Running: sn.State == container.Running, ExitCode: sn.ExitCode,
 			Restarting: sn.State == container.Restarting,
 			Error:      sn.Error, StartedAt: rfc3339(sn.StartedAt), FinishedAt: rfc3339(sn.FinishedAt),
-			Health: healthState(sn.Health)},
+			Health: healthState(sn.Health), Sanction: sanctionState(sn.Sanction)},
 		RestartCount: sn.RestartCount,
 		Config: api.ContainerConfig{Image: sn.Config.Image, Cmd: sn.Config.Cmd, Entrypoint: sn.Config.Entrypoint,
 			Env: sn.Config.Env, WorkingDir: sn.Config.WorkingDir, Labels: sn.Config.Labels,

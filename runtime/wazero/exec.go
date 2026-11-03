@@ -69,7 +69,7 @@ func (p *process) Exec(ctx context.Context, es runtime.ExecSpec) (runtime.Proces
 	proc := wasi.New(wasi.Config{
 		Args: es.Args, Env: es.Env, FS: base.spec.FS, Mounts: WASIMounts(base.spec.Mounts),
 		Stdin: stdin, Stdout: stdout, Stderr: stderr, Net: base.spec.Net,
-		Modules: base.e.opt.HostModules, Caps: base.spec.Caps,
+		Modules: base.e.opt.HostModules, Caps: base.spec.Caps, OnEvent: base.spec.OnEvent,
 		Group: base.group, Spawner: &sp, Terminal: es.Terminal, MemoryLimitBytes: base.mem, Admitted: true,
 	})
 	admitted = false

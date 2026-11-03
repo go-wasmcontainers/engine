@@ -180,3 +180,20 @@ func FuzzCheckBlock(f *testing.F) {
 		}
 	})
 }
+
+// TestEmit: a host module's report reaches the process's OnEvent, a child
+// reports through its parent, and a process with no callback drops it.
+func TestEmit(t *testing.T) {
+	var got []string
+	parent := wasi.New(wasi.Config{FS: rootfs.New(), OnEvent: func(module, action string, attrs map[string]string) {
+		got = append(got, module+"/"+action+"/"+attrs["k"])
+	}})
+	child := wasi.New(wasi.Config{FS: rootfs.New(), Parent: parent})
+	orphan := wasi.New(wasi.Config{FS: rootfs.New()})
+	parent.Emit("gpu", "sanction", map[string]string{"k": "a"})
+	child.Emit("gpu", "sanction", map[string]string{"k": "b"})
+	orphan.Emit("gpu", "sanction", nil) // must not panic
+	if len(got) != 2 || got[0] != "gpu/sanction/a" || got[1] != "gpu/sanction/b" {
+		t.Errorf("got %v", got)
+	}
+}
