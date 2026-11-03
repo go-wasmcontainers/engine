@@ -235,3 +235,51 @@ func TestFetch(t *testing.T) {
 		t.Fatalf("temporary files left: %v", left)
 	}
 }
+
+func TestHTTPSource(t *testing.T) {
+	data := make([]byte, 100_000)
+	for i := range data {
+		data[i] = byte(i * 7)
+	}
+	var ranges int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/m", func(w http.ResponseWriter, r *http.Request) {
+		ranges++
+		http.ServeContent(w, r, "m", time.Time{}, bytes.NewReader(data))
+	})
+	mux.HandleFunc("/whole", func(w http.ResponseWriter, r *http.Request) { w.Write(data) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	hosts := []string{u.Hostname()}
+	s, err := NewHTTPSource(srv.URL+"/m", int64(len(data)), hosts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ChunkSize = 4096
+	e := entryFor(data)
+	if err := Verify(s, e); err != nil {
+		t.Fatal(err)
+	}
+	if want := (len(data) + 4095) / 4096; ranges != want {
+		t.Fatalf("%d range requests, want %d (one per chunk)", ranges, want)
+	}
+	p := make([]byte, 5000) // spans two chunks
+	if n, err := s.ReadAt(p, 4000); n != 5000 || err != nil || !bytes.Equal(p, data[4000:9000]) {
+		t.Fatalf("%d %v", n, err)
+	}
+	if n, err := s.ReadAt(p, int64(len(data))-10); n != 10 || err != io.EOF {
+		t.Fatalf("%d %v", n, err)
+	}
+	// A server that ignores Range (a 200) is refused; so is a host off the list.
+	w, _ := NewHTTPSource(srv.URL+"/whole", int64(len(data)), hosts, nil)
+	if _, err := w.ReadAt(p, 0); err == nil {
+		t.Fatal("accepted a whole-body answer to a range request")
+	}
+	if _, err := NewHTTPSource(srv.URL+"/m", int64(len(data)), nil, nil); !errors.Is(err, ErrHost) {
+		t.Fatal(err)
+	}
+	if _, err := NewHTTPSource(srv.URL+"/m", MaxSize+1, hosts, nil); !errors.Is(err, ErrSize) {
+		t.Fatal(err)
+	}
+}

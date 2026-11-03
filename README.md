@@ -393,6 +393,22 @@ The module sees the container's root filesystem as its preopened `/`
 `WorkingDir` (default `/`), the image's `Env` plus `-e`, `PATH` and
 `HOSTNAME` defaults, real clocks and `crypto/rand`.
 
+## Models (read-only mount)
+
+`wctr run --model NAME IMAGE` mounts a pinned model read-only at
+`/models/NAME.gguf`; the module reads it with ordinary file reads (ranges
+included) and cannot write to it or name a URL. `NAME` is an entry of
+`models.Registry`: a Hugging Face repository, a commit (never a branch), a size and a
+sha256. The size (and a cap of 2 GiB) is checked first, then the whole file's
+sha256, before the container exists; the bytes are never copied into memory
+(`rootfs.FS.AddExternal`). Natively the file is
+`os.UserCacheDir()/go-wasmcontainers/models/<sha256>.gguf` (`models.Fetcher`
+downloads it, refusing any host but huggingface.co and us.aws.cdn.hf.co, at
+every redirect). In a browser, `models.OpenOPFS` fetches it by 16 MiB ranges
+into the origin's OPFS, verifies it, and reads it through a synchronous
+access handle (a guest's `fd_read` cannot wait for the network).
+`run -v model=NAME:/path` is the same mount at another path.
+
 ## Processes (WASIX subset)
 
 With the engine's WASI host (`wctrd --wasi engine`, the default), a guest
