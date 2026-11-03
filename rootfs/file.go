@@ -107,6 +107,9 @@ func (f *FS) OpenFile(p string, flag Flag, perm fs.FileMode) (*File, error) {
 		dir.kids[name] = n
 		dir.mtime = time.Now()
 	} else if flag.writable() || flag&O_TRUNC != 0 {
+		if n.ext != nil {
+			return nil, pathErr("open", p, ErrReadOnly)
+		}
 		dir, err := f.mutDirLocked(r.comps[:len(r.comps)-1])
 		if err != nil {
 			return nil, pathErr("open", p, err)
@@ -174,6 +177,9 @@ func (h *File) check(op string, write bool) error {
 	if h.n.isDir() {
 		return pathErr(op, h.name, ErrIsDir)
 	}
+	if write && h.n.ext != nil {
+		return pathErr(op, h.name, ErrReadOnly)
+	}
 	if write && !h.flag.writable() {
 		return pathErr(op, h.name, ErrBadFile)
 	}
@@ -190,12 +196,15 @@ func (h *File) Read(p []byte) (int, error) {
 	if err := h.check("read", false); err != nil {
 		return 0, err
 	}
-	if h.off >= int64(len(h.n.data)) {
+	n, err := h.n.readAt(p, h.off)
+	h.off += int64(n)
+	if n == 0 && len(p) > 0 && err == io.EOF {
 		return 0, io.EOF
 	}
-	n := copy(p, h.n.data[h.off:])
-	h.off += int64(n)
-	return n, nil
+	if err == io.EOF {
+		err = nil
+	}
+	return n, err
 }
 
 // ReadAt implements io.ReaderAt.
@@ -208,14 +217,7 @@ func (h *File) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, pathErr("pread", h.name, fs.ErrInvalid)
 	}
-	if off >= int64(len(h.n.data)) {
-		return 0, io.EOF
-	}
-	n := copy(p, h.n.data[off:])
-	if n < len(p) {
-		return n, io.EOF
-	}
-	return n, nil
+	return h.n.readAt(p, off)
 }
 
 // Write implements io.Writer.
@@ -309,7 +311,7 @@ func (h *File) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekCurrent:
 		abs = h.off + offset
 	case io.SeekEnd:
-		abs = int64(len(h.n.data)) + offset
+		abs = h.n.size() + offset
 	default:
 		return 0, pathErr("seek", h.name, fs.ErrInvalid)
 	}
@@ -413,5 +415,86 @@ func (h *File) Close() error {
 		return pathErr("close", h.name, fs.ErrClosed)
 	}
 	h.closed = true
+	return nil
+}
+
+// size is the length of the file's content.
+func (n *node) size() int64 {
+	if n.ext != nil {
+		return n.ext.size
+	}
+	return int64(len(n.data))
+}
+
+// readAt reads at off from the node's content, whichever way it is held.
+// Like io.ReaderAt it returns io.EOF with a short read.
+func (n *node) readAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, fs.ErrInvalid
+	}
+	if n.ext != nil {
+		if off >= n.ext.size {
+			return 0, io.EOF
+		}
+		want := int64(len(p))
+		short := false
+		if want > n.ext.size-off {
+			want, short = n.ext.size-off, true
+		}
+		m, err := n.ext.r.ReadAt(p[:want], off)
+		if err == io.EOF && int64(m) == want {
+			err = nil
+		}
+		if err == nil && short {
+			err = io.EOF
+		}
+		return m, err
+	}
+	if off >= int64(len(n.data)) {
+		return 0, io.EOF
+	}
+	m := copy(p, n.data[off:])
+	if m < len(p) {
+		return m, io.EOF
+	}
+	return m, nil
+}
+
+// external is a regular file whose bytes live outside the tree: a
+// read-only, range-readable source (a model file, see package models).
+type external struct {
+	r    io.ReaderAt
+	size int64
+}
+
+// AddExternal adds a read-only regular file at p (parents are created)
+// whose content is read from r on demand: nothing is copied into memory and
+// nothing is charged to the quota. Every write, truncation or open for
+// writing of it fails with ErrReadOnly, in this tree and in its clones.
+func (f *FS) AddExternal(p string, r io.ReaderAt, size int64) error {
+	if r == nil || size < 0 {
+		return pathErr("add", p, fs.ErrInvalid)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	res, err := f.resolveLocked(p, true)
+	if err != nil {
+		return pathErr("add", p, err)
+	}
+	if res.node != nil {
+		return pathErr("add", p, fs.ErrExist)
+	}
+	if len(res.comps) == 0 {
+		return pathErr("add", p, fs.ErrInvalid)
+	}
+	dir, err := f.mutDirLocked(res.comps[:len(res.comps)-1])
+	if err != nil {
+		return pathErr("add", p, err)
+	}
+	n := f.newNode(0o444)
+	n.ext = &external{r: r, size: size}
+	dir.kids[baseOf(res.comps)] = n
+	dir.mtime = time.Now()
+	f.changes++
 	return nil
 }
