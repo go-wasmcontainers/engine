@@ -18,6 +18,7 @@ import (
 	"github.com/go-wasmcontainers/engine/container"
 	"github.com/go-wasmcontainers/engine/events"
 	"github.com/go-wasmcontainers/engine/image"
+	"github.com/go-wasmcontainers/engine/models"
 	"github.com/go-wasmcontainers/engine/network"
 	"github.com/go-wasmcontainers/engine/portmap"
 	"github.com/go-wasmcontainers/engine/rootfs"
@@ -58,6 +59,45 @@ type Options struct {
 	// Networks configures networks (they share Containers.Store); every
 	// engine has "bridge", its default, and "none".
 	Networks network.Options
+	// ModelSource opens the verified source of a registry model for the
+	// read-only model mount (run --model NAME). Nil: the native cache
+	// (models.CacheDir), where "wctr model pull" puts files. The browser
+	// engine supplies the OPFS cache.
+	ModelSource func(models.Entry) (models.Source, error)
+}
+
+// ModelPrefix starts the Volume of a model mount: "model=a,b" mounts the
+// registry models a and b read-only at the mount's target, as /a.gguf and
+// /b.gguf.
+const ModelPrefix = "model="
+
+// modelFS builds the tree of a model mount. Every source is verified
+// (size, then sha256) by the source function before the tree exists.
+func modelFS(open func(models.Entry) (models.Source, error), names string) (*rootfs.FS, error) {
+	if open == nil {
+		open = func(e models.Entry) (models.Source, error) {
+			dir, err := models.CacheDir()
+			if err != nil {
+				return nil, err
+			}
+			return models.Open(dir, e)
+		}
+	}
+	srcs := map[string]models.Source{}
+	var es []models.Entry
+	for _, n := range strings.Split(names, ",") {
+		e, err := models.Lookup(n)
+		if err != nil {
+			return nil, err
+		}
+		s, err := open(e)
+		if err != nil {
+			return nil, err
+		}
+		srcs[e.Name] = s
+		es = append(es, e)
+	}
+	return models.Mount(srcs, es)
 }
 
 // Daemon is one engine instance.
@@ -130,6 +170,9 @@ func New(opt Options) (*Daemon, error) {
 		return nil, fmt.Errorf("daemon: restoring volumes: %w", err)
 	}
 	opt.Containers.Volume = func(name string) (*rootfs.FS, error) {
+		if names, ok := strings.CutPrefix(name, ModelPrefix); ok {
+			return modelFS(opt.ModelSource, names)
+		}
 		v, err := vols.Get(name)
 		if err != nil {
 			return nil, err
@@ -411,6 +454,21 @@ func ParseBind(b string) (container.Mount, error) {
 		return container.Mount{}, fmt.Errorf("%w: invalid volume specification %q (want VOLUME:/path[:ro])", container.ErrInvalid, b)
 	}
 	m := container.Mount{Volume: parts[0], Target: parts[1]}
+	if names, ok := strings.CutPrefix(m.Volume, ModelPrefix); ok {
+		// A model mount (run --model NAME): the registry's pinned files,
+		// read-only, at Target. Nothing the container can name but a registry
+		// entry.
+		if len(parts) == 3 && parts[2] != "ro" {
+			return m, fmt.Errorf("%w: a model mount is read-only (%q)", container.ErrInvalid, b)
+		}
+		for _, n := range strings.Split(names, ",") {
+			if _, err := models.Lookup(n); err != nil {
+				return m, fmt.Errorf("%w: %v", container.ErrInvalid, err)
+			}
+		}
+		m.ReadOnly = true
+		return m, nil
+	}
 	if strings.HasPrefix(m.Volume, "/") || strings.HasPrefix(m.Volume, ".") {
 		return m, fmt.Errorf("%w: %q is a host path: this engine mounts named volumes only (VOLUME:/path)", container.ErrInvalid, m.Volume)
 	}

@@ -49,6 +49,7 @@ type node struct {
 	mode   fs.FileMode // type bits and permissions
 	mtime  time.Time
 	data   []byte           // regular file
+	ext    *external        // regular file held outside the tree (read-only)
 	target string           // symlink
 	kids   map[string]*node // directory
 	owner  uint64           // generation that may mutate it in place
@@ -311,7 +312,7 @@ func infoOf(name string, n *node) *Info {
 	in := &Info{name: name, mode: n.mode, mtime: n.mtime, Ino: n.ino, Nlink: uint64(n.nlink)}
 	switch {
 	case n.isRegular():
-		in.size = int64(len(n.data))
+		in.size = n.size()
 	case n.isSymlink():
 		in.size = int64(len(n.target))
 	case n.isDir():

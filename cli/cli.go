@@ -279,6 +279,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 		workdir    string
 		memory     string
 		volumes    []string
+		modelNames []string
 		network    string
 		gpu        bool
 		gpuMemory  string
@@ -307,6 +308,10 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 			req.WorkingDir = workdir
 			req.HostConfig.AutoRemove = rm
 			req.HostConfig.Binds = volumes
+			if len(modelNames) > 0 {
+				// One read-only mount of the registry's pinned models: /models/NAME.gguf.
+				req.HostConfig.Binds = append(append([]string(nil), volumes...), "model="+strings.Join(modelNames, ",")+":/models:ro")
+			}
 			req.HostConfig.NetworkMode = network
 			if gpu {
 				req.HostConfig.DeviceRequests = []api.DeviceRequest{api.GPURequest()}
