@@ -652,6 +652,9 @@ func (d *Daemon) CreateContainer(req CreateRequest) (*container.Container, error
 	// Named volumes are created on first use, as Docker does; after the
 	// mounts are known to be well formed.
 	for _, mt := range cfg.Mounts {
+		if strings.HasPrefix(mt.Volume, ModelPrefix) {
+			continue // a model mount is not a volume: nothing to create
+		}
 		if _, err := d.CreateVolume(mt.Volume, nil); err != nil {
 			return nil, err
 		}
