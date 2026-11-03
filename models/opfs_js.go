@@ -140,12 +140,16 @@ func OpenOPFS(ctx context.Context, e Entry, remote func() (Source, error)) (Sour
 			delete(opfsOpen, name)
 		}
 		if attempt == 1 {
+			// Never keep a model that failed its check.
+			await(dir.Call("removeEntry", name))
 			return nil, fmt.Errorf("opfs: %s still fails after a fresh download: %w", e.Name, err)
 		}
 		if _, rerr := await(dir.Call("removeEntry", name)); rerr != nil && !isNotFound(rerr) {
 			return nil, rerr
 		}
 		if err := fill(ctx, dir, name, e, co, remote); err != nil {
+			// A failed or cancelled download leaves no partial file.
+			await(dir.Call("removeEntry", name))
 			return nil, err
 		}
 	}
@@ -211,7 +215,113 @@ func fill(ctx context.Context, dir js.Value, name string, e Entry, co js.Value, 
 			return fmt.Errorf("opfs: wrote %d of %d bytes (storage quota?)", w, n)
 		}
 		off += int64(n)
+		ReportProgress(ctx, e, off, e.Size)
 	}
 	ah.Call("flush")
 	return nil
+}
+
+func cacheDir(create bool) (js.Value, error) {
+	nav := js.Global().Get("navigator").Get("storage")
+	if !nav.Truthy() || !nav.Get("getDirectory").Truthy() {
+		return js.Value{}, errors.New("opfs: not available in this browser context")
+	}
+	root, err := await(nav.Call("getDirectory"))
+	if err != nil {
+		return js.Value{}, err
+	}
+	co := js.Global().Get("Object").New()
+	co.Set("create", create)
+	return await(root.Call("getDirectoryHandle", opfsDir, co))
+}
+
+// ListOPFS lists the cached model files. It must be called outside a
+// syscall/js callback. A cache that was never created is empty.
+func ListOPFS() ([]Cached, error) {
+	dir, err := cacheDir(false)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []Cached
+	names, err := await(js.Global().Get("Array").Call("fromAsync", dir.Call("entries")))
+	if err != nil {
+		return nil, err
+	}
+	for i := 0; i < names.Length(); i++ {
+		pair := names.Index(i)
+		file := pair.Index(0).String()
+		if pair.Index(1).Get("kind").String() != "file" {
+			continue
+		}
+		c := Cached{File: file}
+		fh, err := await(pair.Index(1).Call("getFile"))
+		if err == nil {
+			c.Size = int64(fh.Get("size").Float())
+		}
+		for _, e := range Registry {
+			if e.SHA256+".gguf" == file {
+				c.Name, c.Pinned = e.Name, true
+			}
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// RemoveOPFS removes the cached file of a registry model (or of an unlisted
+// file, by its File name). It returns the bytes freed. A model a container
+// of this page has open is closed first; removing an absent one is an error
+// that says so.
+func RemoveOPFS(name string) (int64, error) {
+	file := name
+	for _, e := range Registry {
+		if e.Name == name {
+			file = e.SHA256 + ".gguf"
+		}
+	}
+	if len(file) < 6 || file[len(file)-5:] != ".gguf" || containsSlash(file) {
+		return 0, fmt.Errorf("%w: %q", ErrUnknown, name)
+	}
+	dir, err := cacheDir(false)
+	if err != nil {
+		if isNotFound(err) {
+			return 0, fmt.Errorf("opfs: %s is not cached", name)
+		}
+		return 0, err
+	}
+	opfsMu.Lock()
+	defer opfsMu.Unlock()
+	if s, ok := opfsOpen[file]; ok {
+		s.mu.Lock()
+		s.closed = true
+		s.handle.Call("close")
+		s.mu.Unlock()
+		delete(opfsOpen, file)
+		delete(opfsReady, file)
+	}
+	var size int64
+	if fh, err := await(dir.Call("getFileHandle", file)); err == nil {
+		if f, err := await(fh.Call("getFile")); err == nil {
+			size = int64(f.Get("size").Float())
+		}
+	}
+	if _, err := await(dir.Call("removeEntry", file)); err != nil {
+		if isNotFound(err) {
+			return 0, fmt.Errorf("opfs: %s is not cached", name)
+		}
+		return 0, err
+	}
+	return size, nil
+}
+
+func containsSlash(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '/' || s[i] == '\\' {
+			return true
+		}
+	}
+	return false
 }

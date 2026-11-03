@@ -407,6 +407,10 @@ downloads it, refusing any host but huggingface.co and us.aws.cdn.hf.co, at
 every redirect). In a browser, `models.OpenOPFS` fetches it by 16 MiB ranges
 into the origin's OPFS, verifies it, and reads it through a synchronous
 access handle (a guest's `fd_read` cannot wait for the network).
+`models.WithProgress(ctx, fn)` makes that download report bytes done and
+total per chunk; a failed or refused download leaves no file in OPFS;
+`models.ListOPFS` and `models.RemoveOPFS` list and remove cached files (the
+playground's `models` command).
 `run -v model=NAME:/path` is the same mount at another path.
 
 ## Processes (WASIX subset)
