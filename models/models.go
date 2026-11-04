@@ -66,6 +66,9 @@ var Registry = []Entry{
 	{Name: "smollm2-135m-instruct-q4_0", Repo: "bartowski/SmolLM2-135M-Instruct-GGUF",
 		Revision: "09816acd5d99df7be770d85ea30822623dab342c", File: "SmolLM2-135M-Instruct-Q4_0.gguf",
 		Size: 91893088, SHA256: "bcc3af2849ad6095af57e9b5cd43775256efdc66e306acb529172f92d0c04b03", License: "apache-2.0"},
+	{Name: "qwen2.5-0.5b-instruct-q4_0", Repo: "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+		Revision: "9217f5db79a29953eb74d5343926648285ec7e67", File: "qwen2.5-0.5b-instruct-q4_0.gguf",
+		Size: 428730208, SHA256: "7671c0c304e6ce5a7fc577bcb12aba01e2c155cc2efd29b2213c95b18edaf6ed", License: "apache-2.0"},
 }
 
 // Lookup finds an entry by name.
