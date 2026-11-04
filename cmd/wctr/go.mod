@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/go-wasmcontainers/build v0.4.0
 	github.com/go-wasmcontainers/compose v0.6.0
-	github.com/go-wasmcontainers/engine v0.32.0
+	github.com/go-wasmcontainers/engine v0.38.0
 	github.com/spf13/cobra v1.10.2
 )
 
