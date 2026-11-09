@@ -1,7 +1,8 @@
 // Package lineedit is wctr's interactive line editor: a thin adapter over
-// the standard-library-only core, github.com/go-wasmcontainers/engine/
-// lineedit (see its documentation for the editor, ParseKeys, Renderer and
-// Reader), plus WctrCompleter, which completes through cobra's __complete
+// the standard-library-only core, github.com/go-widgets/lineedit (moved
+// there from engine/lineedit for go-widgets/toolkit#548; see its
+// documentation for the editor, ParseKeys, Renderer and Reader), plus
+// WctrCompleter, which completes through cobra's __complete
 // and so needs engine/cli. Everything the package exported before the core
 // was split out is re-exported here as an alias, so the playground and the
 // dashboard compile unchanged.
@@ -15,7 +16,7 @@ import (
 	"strings"
 
 	"github.com/go-wasmcontainers/engine/cli"
-	core "github.com/go-wasmcontainers/engine/lineedit"
+	core "github.com/go-widgets/lineedit"
 )
 
 type (

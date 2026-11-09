@@ -15,8 +15,8 @@ import (
 	"github.com/go-wasmcontainers/engine/daemon"
 	"github.com/go-wasmcontainers/engine/image"
 	"github.com/go-wasmcontainers/engine/internal/testutil"
-	core "github.com/go-wasmcontainers/engine/lineedit"
 	"github.com/go-wasmcontainers/engine/runtime/wazero"
+	core "github.com/go-widgets/lineedit"
 )
 
 func typ(e *Editor, s string) []Event {

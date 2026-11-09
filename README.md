@@ -208,9 +208,13 @@ Tab then completes subcommands and flags, image names for `run`, `pull`,
 the daemon, through cobra's hidden `__complete` command — the same code the
 playground's terminal calls in-process (`cli.Complete`).
 
-**Line editor for embedders.** `lineedit` is its own module
-(`github.com/go-wasmcontainers/engine/lineedit`, standard library only, so
-the guest shell links it without net/http; tags `lineedit/vX.Y.Z`): the
+**Line editor for embedders.** The line editor now lives in
+[go-widgets/lineedit](https://github.com/go-widgets/lineedit). It moved
+there in go-widgets/toolkit#548 so that this dashboard and wasmdesk share
+one terminal. It is still standard library only, so the guest shell links
+it without net/http. The old module path,
+`github.com/go-wasmcontainers/engine/lineedit` (tags `lineedit/vX.Y.Z`), is
+a deprecated alias shim over it. It is the
 interactive line editor as a pure model (no terminal, DOM or widget type),
 with a `Reader` that drives it from a raw-mode byte stream and wide-character
 aware columns. `cli/lineedit` re-exports it with wctr's completer. The model:
