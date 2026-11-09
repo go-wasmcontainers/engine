@@ -14,8 +14,8 @@ require (
 require (
 	connectrpc.com/connect/v2 v2.0.2
 	github.com/docker/go-units v0.5.0
-	github.com/go-wasmcontainers/engine/lineedit v0.1.0
 	github.com/go-wasmcontainers/relay v0.3.1
+	github.com/go-widgets/lineedit v0.1.1
 	github.com/klauspost/compress v1.20.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
