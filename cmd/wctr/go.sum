@@ -15,10 +15,10 @@ github.com/go-wasmcontainers/build v0.4.0 h1:g4aDR3CBe/vVPrBUfW1hRJHDqWAyA4EmaJv
 github.com/go-wasmcontainers/build v0.4.0/go.mod h1:XPYM+KFCU/HImvOB8y+5Gccg0CG0cBnW2tjWjjAkUXM=
 github.com/go-wasmcontainers/compose v0.6.0 h1:p23ShWPYKGQXKdod8jiC0n83uENOK2/fxQG+32dTe7w=
 github.com/go-wasmcontainers/compose v0.6.0/go.mod h1:HBwoF9Y5jCX9KUYbyhl8ZCUv0S61y5fULl2CbV4dVdE=
-github.com/go-wasmcontainers/engine v0.38.0 h1:hIz9rMcSQmZWVybRqItD/z3zkiAJqghTNMeeNve3bUQ=
-github.com/go-wasmcontainers/engine v0.38.0/go.mod h1:cdj/Opcls0h1bviuWtty4o+Vs06mmKQhfx7JQHiXndg=
-github.com/go-wasmcontainers/engine/lineedit v0.1.0 h1:GCVxUFzuyD5WRwOMNgRuMox+TvjpkNO/5LfVYZ82Ymg=
-github.com/go-wasmcontainers/engine/lineedit v0.1.0/go.mod h1:k3V5txHVOaeqBZaPcKJ88jCUSCB7jLO1Ezl7SuFEZmQ=
+github.com/go-wasmcontainers/engine v0.39.0 h1:PFY+Pk9JGbZbn+h8NR+O+if7nUIiSP7mfO9FJ+CsF5E=
+github.com/go-wasmcontainers/engine v0.39.0/go.mod h1:mrlxXw/GdNBGe0O/xNzMa/qg37VMpRXuHJJurovml+c=
+github.com/go-widgets/lineedit v0.1.1 h1:jvlwxIWyoz/oeYH5OHwFN03vQ9Q8uAFTRF8BFGOej7I=
+github.com/go-widgets/lineedit v0.1.1/go.mod h1:UCPzWaFDsa3J1ORoWfuf2fOGLMWigDc5ATUOHQxMHQI=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
 github.com/hashicorp/hcl/v2 v2.25.0 h1:HmmQVYRny4MaBo4b20TjmL46wyuUxpnMWkPZ4+NTbWk=
@@ -35,8 +35,8 @@ github.com/santhosh-tekuri/jsonschema/v6 v6.0.3/go.mod h1:JXeL+ps8p7/KNMjDQk3TCw
 github.com/spf13/cobra v1.10.2 h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU=
 github.com/spf13/cobra v1.10.2/go.mod h1:7C1pvHqHw5A4vrJfjNwvOdzYu0Gml16OCs2GRiTUUS4=
 github.com/spf13/pflag v1.0.9/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
-github.com/spf13/pflag v1.0.10 h1:4EBh2KAYBwaONj6b2Ye1GiHfwjqyROoF4RwYO+vPwFk=
-github.com/spf13/pflag v1.0.10/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
+github.com/spf13/pflag v1.1.0 h1:6W6MbVUrnMb8PEhjkqwsVLY7ryuzRfFHF4mQd7L94ag=
+github.com/spf13/pflag v1.1.0/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
 github.com/tetratelabs/wazero v1.12.0 h1:DuWcpNu/FzgEXgGBDp8J1Spc+CWOvvtvVyjKlaZopYU=
 github.com/tetratelabs/wazero v1.12.0/go.mod h1:LvKtzl2RqO4gyF27BiXU+nKAjcV8f38U+kP/q2vgxh0=
 github.com/zclconf/go-cty v1.19.0 h1:IV8WdqYZc2c5rLX9bEoLNXKojBAp0MZPBHMIrCoa/s4=
