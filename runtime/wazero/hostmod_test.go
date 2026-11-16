@@ -35,6 +35,8 @@ func TestHostModule(t *testing.T) {
 		{args: []string{"wait"}, out: "7\n"},
 		{args: []string{"cap"}, out: "0\n"},
 		{args: []string{"cap"}, caps: []string{"gpu"}, out: "1\n"},
+		{args: []string{"cap"}, caps: []string{"audio"}, out: "2\n"}, // run --audio reaches Proc.HasCap
+		{args: []string{"cap"}, caps: []string{"gpu", "audio"}, out: "3\n"},
 		{args: []string{"trap"}, code: runtime.ExitTrap, err: "boom: the test module traps here"},
 	} {
 		id := "c-" + strings.Join(c.args, "-")
@@ -49,8 +51,8 @@ func TestHostModule(t *testing.T) {
 			t.Errorf("%v: label %q, want %q", c.args, l, id)
 		}
 	}
-	if o, c := mod.Opened.Load(), mod.Closed.Load(); o != 6 || c != 6 {
-		t.Errorf("opened %d, closed %d instances; want 6 and 6", o, c)
+	if o, c := mod.Opened.Load(), mod.Closed.Load(); o != 8 || c != 8 {
+		t.Errorf("opened %d, closed %d instances; want 8 and 8", o, c)
 	}
 }
 

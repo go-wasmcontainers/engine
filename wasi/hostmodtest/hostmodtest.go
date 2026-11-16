@@ -40,12 +40,12 @@ func (*Module) Funcs() []wasi.HostFunc {
 func (m *Module) Open(p *wasi.Proc) wasi.Instance {
 	m.Opened.Add(1)
 	m.Label.Store(p.Label())
-	return &instance{m: m, gpu: p.HasCap("gpu")}
+	return &instance{m: m, gpu: p.HasCap("gpu"), audio: p.HasCap("audio")}
 }
 
 type instance struct {
-	m   *Module
-	gpu bool
+	m          *Module
+	gpu, audio bool
 }
 
 func (i *instance) Close() { i.m.Closed.Add(1) }
@@ -80,10 +80,15 @@ func (i *instance) Call(fn int, a []uint64, m wasi.Memory) wasi.Result {
 	case 6:
 		return wasi.Result{Trap: "boom: the test module traps here"}
 	case 7:
+		// A bit per granted capability: gpu 1, audio 2.
+		var caps uint64
 		if i.gpu {
-			return wasi.Result{Ret: 1}
+			caps |= 1
 		}
-		return wasi.Result{}
+		if i.audio {
+			caps |= 2
+		}
+		return wasi.Result{Ret: caps}
 	}
 	return wasi.Result{Trap: "unknown function"}
 }

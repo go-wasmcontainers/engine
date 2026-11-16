@@ -270,6 +270,13 @@ func TestRunErrors(t *testing.T) {
 	}
 	// 1.5 GiB exactly passes the check (the container then runs).
 	must(t, wctr(t, host, "run", "--rm", "--gpu", "--gpu-memory", "1536m", "probe", "args"), 0)
+	// --audio is a grant of its own, independent of --gpu, and takes no value.
+	must(t, wctr(t, host, "run", "--rm", "--audio", "probe", "args"), 0)
+	must(t, wctr(t, host, "run", "--rm", "--audio", "--gpu", "probe", "args"), 0)
+	must(t, wctr(t, host, "run", "--rm", "--audio", "--gpu", "--gpu-memory", "1g", "probe", "args"), 0)
+	if r = wctr(t, host, "run", "--audio=maybe", "probe"); r.code == 0 {
+		t.Fatalf("--audio took a value: %+v", r)
+	}
 	// --model exists, and an unknown name is refused before any container.
 	if r = wctr(t, host, "run", "--model", "no-such-model", "probe"); r.code == 0 || strings.Contains(r.stderr, "unknown flag") || !strings.Contains(r.stderr, "no-such-model") {
 		t.Fatalf("--model: %+v", r)

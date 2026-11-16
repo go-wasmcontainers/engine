@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -64,7 +65,11 @@ func TestPersistAndRestore(t *testing.T) {
 		t.Fatal(code, o, e)
 	}
 	failed, _ := runToExit(t, m1, CreateOptions{Name: "failed", Lower: img, Config: probe("exit", "7")})
-	created, err := m1.Create(CreateOptions{Name: "created", Lower: img, Config: probe("args", "x")})
+	// run --audio grants "audio" (and --gpu "gpu"); the grant is part of the
+	// container and comes back with it.
+	granted := probe("args", "x")
+	granted.Caps = []string{"gpu", "audio"}
+	created, err := m1.Create(CreateOptions{Name: "created", Lower: img, Config: granted})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,6 +125,9 @@ func TestPersistAndRestore(t *testing.T) {
 	}
 	if s := byName["created"]; s.State != Created || s.ID != created.ID() {
 		t.Fatalf("%+v", s)
+	}
+	if rc, err := m2.Get("created"); err != nil || !slices.Equal(rc.cfg.Caps, []string{"gpu", "audio"}) {
+		t.Fatalf("the device grant did not survive a restart: %v, %v", rc, err)
 	}
 	// The writable layer came back: the container's own /etc/motd, its
 	// /tmp/probe, and the same usage.

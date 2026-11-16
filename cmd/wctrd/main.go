@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-wasmcontainers/engine/api"
 	"github.com/go-wasmcontainers/engine/api/server"
+	"github.com/go-wasmcontainers/engine/audio"
 	"github.com/go-wasmcontainers/engine/container"
 	"github.com/go-wasmcontainers/engine/daemon"
 	"github.com/go-wasmcontainers/engine/image"
@@ -193,6 +194,10 @@ func serve(ctx context.Context, cfg Config, out io.Writer, ready chan<- string) 
 	var mods []wasi.HostModule
 	if cfg.WASI == "engine" {
 		mods = append(mods, wasi.WASIX)
+		// wctr_audio_out with no provider: native wctr has no audio output
+		// (docs/audio-design.md, "Native wctr"), so a container run with
+		// --audio gets Unsupported rather than a link error.
+		mods = append(mods, audio.New(nil))
 	}
 	exec := wazero.New(wazero.Options{DefaultMemoryLimitBytes: mem, EngineWASI: cfg.WASI == "engine", HostModules: mods})
 	defer exec.Close(context.Background())

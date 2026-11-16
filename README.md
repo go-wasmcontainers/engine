@@ -85,7 +85,7 @@ not have.
 |---|---|
 | `pull IMAGE` | `IMAGE` is a registry reference or `oci:<dir>[:<ref.name>]` |
 | `images` | `-q` |
-| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one), `-p/--publish [ip:][hostPort:]containerPort[/tcp\|udp]` (ip defaults to **127.0.0.1**; ranges as Docker's), `-P/--publish-all`, `--expose PORT[/proto]` — see [Published ports](#published-ports); `--restart no\|always\|unless-stopped\|on-failure[:N]` (see below; not with `--rm`); `--health-cmd`, `--health-interval`, `--health-timeout`, `--health-start-period`, `--health-start-interval`, `--health-retries`, `--no-healthcheck` (see Health checks below); `-i/--interactive`, `-t/--tty`, `--detach-keys` (see Terminals below) |
+| `run IMAGE [COMMAND] [ARG...]` | `--rm`, `-d/--detach`, `--name`, `-e/--env KEY=value` (or `KEY` from the shell), `--entrypoint`, `-w/--workdir`, `-m/--memory`, `-v/--volume`, `--network NAME` (default `bridge`; `none`: no network), `--network-alias NAME` (more names on a user-defined `--network`; replicas may share one), `-p/--publish [ip:][hostPort:]containerPort[/tcp\|udp]` (ip defaults to **127.0.0.1**; ranges as Docker's), `-P/--publish-all`, `--expose PORT[/proto]` — see [Published ports](#published-ports); `--restart no\|always\|unless-stopped\|on-failure[:N]` (see below; not with `--rm`); `--health-cmd`, `--health-interval`, `--health-timeout`, `--health-start-period`, `--health-start-interval`, `--health-retries`, `--no-healthcheck` (see Health checks below); `-i/--interactive`, `-t/--tty`, `--detach-keys` (see Terminals below); `--audio` (let the container play sound through the page: see [Sound](#sound)) |
 | `attach [--no-stdin] [--detach-keys K] CONTAINER` | this terminal to a running container: its output, and its input if it was created with `-i`; Ctrl-P Ctrl-Q detaches and leaves it running; exits with its status when it stops |
 | `port CONTAINER [PRIVATE_PORT[/PROTO]]` | where a running container's ports are published (`80/tcp -> 127.0.0.1:49153`) |
 | `ps` | `-a/--all`, `-q`; PORTS as Docker writes it (`127.0.0.1:8080->80/tcp, 9000/tcp`) |
@@ -434,10 +434,35 @@ This is what runs `sh` and its pipelines in the
 [go-wasmcontainers/shell](https://github.com/go-wasmcontainers/shell) base
 image.
 
+## Sound
+
+`wctr run --audio IMAGE` grants the `audio` device capability (independent of
+`--gpu`, no option; it persists with the container). A granted guest imports
+**`wctr_audio_out`** (not a `wasi_` name: no WASI proposal covers audio) and
+writes interleaved little-endian `float32` PCM:
+
+| Function | Effect |
+|---|---|
+| `stream_open(rate, channels, capacity, out)` | rate 8000..48000 Hz, 1 or 2 channels, capacity 256..16384 frames (a power of two); the handle is stored at `out`. Out of bounds is `InvalidArgument` (the rate is never renegotiated) |
+| `stream_write(stream, ptr, frames, out)` | copies and queues up to `frames` frames; never blocks; stores `{accepted, queued}`. Samples are clamped to [-1, 1] and a non-finite one becomes 0 |
+| `stream_stats(stream, out)` | stores `{played, underruns, refused, state}` (`state`: 0 waiting, 1 playing, 2 closed) |
+| `stream_close(stream)` | closes it (also done when the process ends) |
+
+Until the page plays (no user gesture yet, no page attached) a stream is
+`waiting`: writes are accepted and discarded, so sound made before the click is
+never played late. Bounds: 2 streams per container, 8 per page, 128 KiB per
+write. Errno: `Denied` (no `--audio`), `Unsupported` (no provider: **native
+`wctr` has no audio output**), `TooLarge`, `QuotaExceeded`, `Fault`. The module
+reports `audio open`, `audio close` and `audio refused` events. In the
+browser the provider is `audio.Browser`: one `SharedArrayBuffer` ring per
+stream, read by the `audioring` AudioWorklet ([wasmbox](https://github.com/wasmdesk/wasmbox));
+the playground wires it. Design and threat model: [docs/audio-design.md](docs/audio-design.md).
+
 ## Packages
 
 | Package | What it does |
 |---|---|
+| `audio`, `audio/audiotest` | the host module `wctr_audio_out` (grant, quotas, range checks in 64 bits, sanitising, the waiting state), the `Provider` seam (`audio.Browser` in the browser), and an in-memory provider for tests |
 | `image` | OCI content store (content-addressed, every blob sha256-verified) over a pluggable backend (directory, memory, or the playground's IndexedDB), manifests, indexes, configs; pull from an OCI image layout or a registry's `/v2` API with token auth, or from a mirror with a path prefix (`RegistryOptions.Mirrors`) |
 | `rootfs` | in-memory root filesystem: layers applied per the OCI layer spec (whiteouts, opaque whiteouts), frozen as a shared read-only lower, cloned copy-on-write per container |
 | `runtime` | the `Executor` interface (no WebAssembly runtime type in it) |
