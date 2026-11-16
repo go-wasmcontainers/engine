@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.3' }
+        with: { go-version: '1.27.4' }
       # Say which toolchain ran: a green check that does not record its
       # compiler makes every number measured under it unattributable.
       - run: go version
@@ -112,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.3' }
+        with: { go-version: '1.27.4' }
       - run: go version
       - run: go test -run '^$' -fuzz '^${{ matrix.target }}$' -fuzztime 45s ${{ matrix.pkg }}
 
@@ -122,7 +122,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.3' }
+        with: { go-version: '1.27.4' }
       - run: go version
       # No pipefail on purpose: govulncheck's exit status does not say
       # whether a finding is reachable; vulngate judges the JSON, and an
@@ -145,7 +145,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.3' }
+        with: { go-version: '1.27.4' }
       - run: go version
       - run: GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build ./image/... ./rootfs/... ./runtime ./container/... ./api
       - name: the wctr CLI (its own module, with build and compose) builds for wasip1/wasm
@@ -162,7 +162,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.3', cache-dependency-path: cmd/wctr/go.sum }
+        with: { go-version: '1.27.4', cache-dependency-path: cmd/wctr/go.sum }
       - run: go version
       - name: go.mod is tidy
         run: |
@@ -202,7 +202,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.3' }
+        with: { go-version: '1.27.4' }
       - run: go version
       - name: gofmt
         run: |
@@ -246,7 +246,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.3' }
+        with: { go-version: '1.27.4' }
       - run: go version
       - name: build ${{ matrix.mod }} in a workspace with this engine
         env: { MOD: '${{ matrix.mod }}', GOOS_T: '${{ matrix.goos }}', GOARCH_T: '${{ matrix.goarch }}' }
@@ -270,7 +270,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.3' }
+        with: { go-version: '1.27.4' }
       - run: go version
       - run: GOOS=js GOARCH=wasm CGO_ENABLED=0 go vet ./runtime/browser ./wasi ./wasmbin ./cli/... ./api/... ./daemon ./container ./image ./rootfs ./state ./events ./volume
 
@@ -289,6 +289,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: '1.27.3' }
+        with: { go-version: '1.27.4' }
       - run: go version
       - run: GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build ./...
