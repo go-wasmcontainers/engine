@@ -770,6 +770,12 @@ func (m *Manager) start(ctx context.Context, c *Container, auto bool) error {
 		defer m.exits.Done()
 		res := proc.Wait()
 		stopHealth()
+		// A trap says why on the container's own stderr, before the stream
+		// closes: State.Error alone is lost with a --rm container, and a
+		// client showed only "exit status 134".
+		if res.ExitCode == runtime.ExitTrap && res.Error != "" && spec.Stderr != nil {
+			fmt.Fprintf(spec.Stderr, "wctr: the module trapped: %s\n", res.Error)
+		}
 		detach()
 		c.finish(res)
 		m.exitedAfterRun(c)
