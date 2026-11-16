@@ -25,7 +25,7 @@ new package `audio`, beside `wasi.WASIX`:
   (BSD-3-Clause, the same licence as this repository): a tiny,
   platform-neutral, fuzzed SPSC ring. A new repository would hold about
   300 lines and one dependency; that is not worth a separate release train.
-  (Open question Q1 if the user prefers `go-wasmcontainers/audio`.)
+  (Decided: this engine, not a new `go-wasmcontainers/audio`.)
 
 The page side (AudioContext, worklet node, unlock) goes in
 go-wasmcontainers/playground (`web/app.js`, `cmd/engine/main_js.go`), like the
@@ -87,7 +87,8 @@ wasmbox, the playground and anything later serve the same file.
 
 ## 3. The guest-facing import
 
-Import module **`wasi_audio_out`** (name: Q2). Core-wasm functions, every
+Import module **`wctr_audio_out`**: not `wasi_`, because no WASI proposal
+backs it and the name must not squat that namespace. Core-wasm functions, every
 parameter an `i32`, every result an `Errno` (`i32`). Output only: there is no
 capture, and none is implied by this grant.
 
@@ -177,8 +178,8 @@ The module emits `audio open`, `audio close` and `audio refused` events
 
 - *Make noise.* Only once the user granted `--audio` and gave the page a
   gesture. Samples are clamped; the page puts a gain node per container
-  between the worklet and the destination (mute and volume from the
-  dashboard, Q4).
+  between the worklet and the destination: volume and mute per container in
+  its dashboard pane, plus a page-wide mute.
 - *Corrupt the ring.* It cannot reach it: the guest only passes a pointer
   into its own memory, which is copied. The worklet already resyncs on an
   impossible header (`avail > cap`).
@@ -230,7 +231,8 @@ guest worker ──stream_write──▶ engine worker (Go)          page (main 
 - **Worklet changes** (in `audioring`'s copy, used by wasmbox too): advance
   the heartbeat word every `process()` call. Nothing else changes.
 - **Native `wctr`**: no provider, `Unsupported` (as gpubatch). A native
-  output is out of scope (Q3).
+  output is out of scope: a deliberate limit of this design, not a gap
+  to fill silently.
 
 ## 6. Latency
 
@@ -319,18 +321,17 @@ because the pacing of §3 is its fix.
 3. `go-wasmcontainers/playground`: provider wiring, page AudioContext and
    unlock, the `tone` image and the e2e test.
 4. `go-quake1/engine`: the paced mixer and a `quake-wctr` audio backend over
-   `wasi_audio_out`; the playground's `quake` image runs with `--audio`.
+   `wctr_audio_out`. The `quake` image does not ask for audio by default:
+   the user adds `--audio`, and without it the game runs silent.
 
-## Open questions
+## Decisions (2026-11-16)
 
-- **Q1** Home: a package of this engine (proposed), or a new
-  `go-wasmcontainers/audio` repository.
-- **Q2** Name: `wasi_audio_out` follows `wasi_webgpu_batch`, but no WASI
-  proposal backs either; a non-`wasi_` name (`wctr_audio_out`) would not
-  squat the namespace.
-- **Q3** Native `wctr`: stay `Unsupported`, or add an output (which library,
-  which platforms).
-- **Q4** Who owns mute and volume: the dashboard pane of the container, a
-  page-wide control, or both.
-- **Q5** Should the `quake` image in the playground's catalogue run with
-  `--audio` by default (it already asks for `--gpu`).
+- **Home**: a package of this engine, not a new repository.
+- **Name**: `wctr_audio_out`. No WASI proposal backs it, so it does not
+  take a `wasi_` name.
+- **Native `wctr`**: answers `Unsupported`. This is a deliberate limit of
+  this design; a native output would need its own design.
+- **Mute and volume**: both levels. Each container has volume and mute in
+  its dashboard pane, and the page has a global mute.
+- **Quake**: the playground's `quake` image is not run with `--audio` by
+  default; the user adds it.
