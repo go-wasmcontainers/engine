@@ -1,7 +1,13 @@
 # Audio output for containers: design
 
-Status: design, not implemented. Tracked by go-quake1/engine#106 (item 2:
-Quake in a container plays sound).
+Status: the host module and `run --audio` are implemented (engine#71; package
+`audio`); the page side and the Quake backend follow (playground#54,
+go-quake1/engine#107). Tracked by go-quake1/engine#106 (item 2: Quake in a
+container plays sound). Where the implementation settled a point the text below
+leaves open: a non-finite sample, `+Inf` included, becomes 0 (section 3 is
+followed; the test list in section 7 says 1 for `+Inf`, which contradicts it);
+the ring memory bounds are enforced as the stream counts times the per-stream
+maximum (2 x (128 KiB + 64 B) per container, 8 x per page).
 
 A container granted audio writes PCM into a host module; the playground page
 plays it through an AudioWorklet. This document fixes the guest-facing import,

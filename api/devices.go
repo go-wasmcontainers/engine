@@ -10,7 +10,16 @@ import (
 // KnownCaps are the device capabilities this engine grants: "gpu" opens
 // the local GPU to a container's host modules (wasi:webgpu, wasi-nn on the
 // GPU, wasi_webgpu_batch).
-var KnownCaps = []string{"gpu"}
+//
+// "audio" lets the container's wctr_audio_out host module play sound through
+// the page (run --audio). It is independent of "gpu" and takes no option.
+var KnownCaps = []string{"gpu", "audio"}
+
+// AudioRequest is what run --audio sends: every device with the capability
+// "audio".
+func AudioRequest() DeviceRequest {
+	return DeviceRequest{Count: -1, Capabilities: [][]string{{"audio"}}}
+}
 
 // GPU memory grant of a container's webgpu-batch contexts (run
 // --gpu-memory). The request carries it as Options["memory"], the shape of
@@ -84,6 +93,9 @@ func DeviceCaps(reqs []DeviceRequest) ([]string, error) {
 			}
 		}
 		for k, v := range r.Options {
+			if slices.Contains(got, "audio") {
+				return nil, fmt.Errorf("device request: the capability audio takes no option (got %q)", k)
+			}
 			if k != GPUMemoryOption {
 				return nil, fmt.Errorf("device request: unknown option %q (supported: %s)", k, GPUMemoryOption)
 			}

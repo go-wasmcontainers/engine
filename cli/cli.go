@@ -283,6 +283,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 		network    string
 		gpu        bool
 		gpuMemory  string
+		audio      bool
 		aliases    []string
 		publish    []string
 		publishAll bool
@@ -328,6 +329,9 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 					return &exitError{code: 125, err: fmt.Errorf("invalid --gpu-memory %q: %w", gpuMemory, err)}
 				}
 				req.HostConfig.DeviceRequests = []api.DeviceRequest{api.GPURequestMemory(n)}
+			}
+			if audio {
+				req.HostConfig.DeviceRequests = append(req.HostConfig.DeviceRequests, api.AudioRequest())
 			}
 			if len(aliases) > 0 {
 				if network == "" || network == "default" || network == "bridge" {
@@ -395,6 +399,7 @@ func runCmd(client clientFunc, lookup func(string) (string, bool)) *cobra.Comman
 	f.StringArrayVarP(&volumes, "volume", "v", nil, "mount a named volume: NAME:/path[:ro] (created if missing)")
 	f.StringVar(&network, "network", "", "connect to a network (default bridge; none: no network)")
 	f.BoolVar(&gpu, "gpu", false, "give the container the local GPU (wasi:webgpu, wasi-nn on the GPU)")
+	f.BoolVar(&audio, "audio", false, "let the container play sound through the page (wctr_audio_out; the browser only, native wctr answers unsupported)")
 	f.StringVar(&gpuMemory, "gpu-memory", "", "GPU memory quota of the container's webgpu-batch contexts, with --gpu (e.g. 1g; default 256m, at most 1.5g)")
 	f.StringSliceVar(&modelNames, "model", nil, "mount a pinned model read-only at /models/NAME.gguf (downloaded once, size and sha256 checked before use); repeatable")
 	f.StringArrayVar(&aliases, "network-alias", nil, "add a name the container answers to on --network (replicas may share one)")
