@@ -115,6 +115,63 @@ function call(idx, params, result, args) {
   }
 }
 
+// localPoll answers a poll_oneoff made only of relative clock subscriptions
+// (what a guest's sleep is: Go's usleep, C's nanosleep) without asking the
+// engine. The engine's reply to such a poll is fixed -- it writes the events
+// of the earliest clocks, then leaves the sleep to this worker -- but it comes
+// only once the engine's thread is free, so a guest that sleeps 2 ms between
+// two checks waited out whatever the engine was drawing: a sleep of 2 ms took
+// 20 to 66 ms behind a 46 to 107 ms draw. It returns null (and the engine
+// serves the call) for anything else: a descriptor, an absolute deadline, an
+// unknown clock, a bad pointer, so that every error stays the engine's.
+let guestMemory;
+function localPoll(inp, out, n, resultPtr) {
+  inp >>>= 0;
+  out >>>= 0;
+  n >>>= 0;
+  resultPtr >>>= 0;
+  if (!guestMemory || n < 1 || n > 1024) {
+    return null;
+  }
+  const buf = guestMemory.buffer;
+  if (inp + 48 * n > buf.byteLength || out + 32 * n > buf.byteLength || resultPtr + 4 > buf.byteLength) {
+    return null;
+  }
+  const dv = new DataView(buf);
+  const timeouts = [];
+  let min = null;
+  for (let i = 0; i < n; i++) {
+    const s = inp + 48 * i;
+    if (dv.getUint8(s + 8) !== 0 || dv.getUint32(s + 16, true) > 3 || dv.getUint16(s + 40, true) !== 0) {
+      return null;
+    }
+    let t = dv.getBigUint64(s + 24, true);
+    if (t > 0x7fffffffffffffffn) {
+      t = 0x7fffffffffffffffn;
+    }
+    timeouts.push(t);
+    if (min === null || t < min) {
+      min = t;
+    }
+  }
+  let events = 0;
+  for (let i = 0; i < n; i++) {
+    if (timeouts[i] > min) {
+      continue;
+    }
+    const o = out + 32 * events++;
+    new Uint8Array(buf, o, 32).fill(0);
+    dv.setBigUint64(o, dv.getBigUint64(inp + 48 * i, true), true);
+  }
+  dv.setUint32(resultPtr, events, true);
+  // Microseconds, as the engine's reply rounds them, up to its 32-bit field.
+  const micros = Number(min / 1000n);
+  if (micros > 0) {
+    Atomics.wait(i32, CTL_TARGET, 0, Math.min(micros, 0x7fffffff) / 1000);
+  }
+  return 0;
+}
+
 let previewCount = 0;
 
 onmessage = async (e) => {
@@ -128,6 +185,12 @@ onmessage = async (e) => {
     }
     imports[mod] = imports[mod] || {};
     imports[mod][name] = (...args) => call(idx, params, result, args);
+    if (mod === "wasi_snapshot_preview1" && name === "poll_oneoff") {
+      imports[mod][name] = (...args) => {
+        const r = localPoll(args[0], args[1], args[2], args[3]);
+        return r === null ? call(idx, params, result, args) : r;
+      };
+    }
   });
   try {
     instance = await WebAssembly.instantiate(module, imports);
@@ -140,6 +203,7 @@ onmessage = async (e) => {
     postMessage({ t: "trap", message: "the module exports no memory" });
     return;
   }
+  guestMemory = memory;
   postMessage({ t: "memory", memory });
   const start = instance.exports._start;
   if (typeof start !== "function") {
