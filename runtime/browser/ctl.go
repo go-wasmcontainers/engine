@@ -19,7 +19,16 @@ const (
 
 	ctlArgs = 64                         // byte offset of the 64-bit arguments
 	ctlRet  = ctlArgs + 8*wasi.MaxParams // byte offset of the 64-bit result
-	ctlSize = 256
+	// Three 64-bit floats after the result, in milliseconds on the epoch clock
+	// (performance.timeOrigin + performance.now(), the same clock in every
+	// worker): when the guest worker posted the call, when the engine began to
+	// serve it, and when the engine stored its answer. With the time the guest
+	// woke they split a call into the wait for the engine's thread, the
+	// execution, and the return trip (worker.js reports the slow ones).
+	ctlSent   = ctlRet + 8  // byte offset: the guest worker posted the call
+	ctlServed = ctlSent + 8 // the engine began to serve it
+	ctlAnswer = ctlServed + 8
+	ctlSize   = 256
 
 	stateDone = 2
 
@@ -28,4 +37,13 @@ const (
 )
 
 // The layout must hold every argument and the result.
-var _ [ctlSize - ctlRet - 8]struct{}
+var _ [ctlSize - ctlAnswer - 8]struct{}
+
+// slowCall is the time from posting a call to waking (ms) from which worker.js
+// reports it to the engine (a "slow" message, kept in self.__hostSlow), and
+// slowCap the most it reports per worker.
+const (
+	slowCall = 10
+	slowCap  = 400
+	slowKeep = 2000 // the most the engine keeps, over every worker
+)

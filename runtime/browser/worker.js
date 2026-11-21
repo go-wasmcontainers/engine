@@ -33,6 +33,11 @@ const CTL_SIZE_ARG = 8;
 const CTL_PTR = 9;
 const CTL_ARGS = 64;
 const CTL_RET = 200;
+const CTL_SENT = 208;
+const CTL_SERVED = 216;
+const CTL_ANSWER = 224;
+const SLOW_CALL = 10;
+const SLOW_CAP = 400;
 const STATE_DONE = 2;
 const FLAG_EXIT = 1;
 const FLAG_REALLOC = 2;
@@ -44,6 +49,8 @@ class Exit {
 }
 
 let i32, view, instance;
+const callNames = [];
+let slowSent = 0;
 
 function block() {
   while (Atomics.load(i32, CTL_STATE) === 1) {
@@ -72,6 +79,8 @@ function call(idx, params, result, args) {
     }
   }
   i32[CTL_FUNC] = idx;
+  const sent = performance.timeOrigin + performance.now();
+  view.setFloat64(CTL_SENT, sent, true);
   Atomics.store(i32, CTL_STATE, 1);
   postMessage({ t: "call" });
   block();
@@ -93,6 +102,15 @@ function call(idx, params, result, args) {
   const sleepMicros = i32[CTL_SLEEP];
   const code = i32[CTL_CODE];
   Atomics.store(i32, CTL_STATE, 0);
+  // Where the time of the call went (no allocation unless it was slow): the wait
+  // for the engine's thread to begin it, its execution, the return trip.
+  const woke = performance.timeOrigin + performance.now();
+  if (woke - sent >= SLOW_CALL && slowSent < SLOW_CAP) {
+    slowSent++;
+    const served = view.getFloat64(CTL_SERVED, true);
+    const answered = view.getFloat64(CTL_ANSWER, true);
+    postMessage({ t: "slow", name: callNames[idx], at: sent, total: woke - sent, wait: served - sent, exec: answered - served, ret: woke - answered });
+  }
   if (flags & FLAG_EXIT) {
     throw new Exit(code);
   }
@@ -180,6 +198,7 @@ onmessage = async (e) => {
   view = new DataView(ctl);
   const imports = {};
   funcs.forEach(([mod, name, params, result], idx) => {
+    callNames[idx] = mod + " " + name;
     if (mod === "wasi_snapshot_preview1") {
       previewCount = idx + 1;
     }
