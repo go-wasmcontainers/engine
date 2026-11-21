@@ -335,6 +335,12 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 	i32 := js.Global().Get("Int32Array").New(ctl)
 	ctlU8 := js.Global().Get("Uint8Array").New(ctl, 0, ctlSize)
 	atomics := js.Global().Get("Atomics")
+	// The engine's side of the call timestamps (see ctlSent): the same epoch
+	// clock as worker.js reads, so the parts of a call add up across workers.
+	f64 := js.Global().Get("Float64Array").New(ctl)
+	perf := js.Global().Get("performance")
+	origin := perf.Get("timeOrigin").Float()
+	stamp := func(off int) { f64.SetIndex(off/8, origin+perf.Call("now").Float()) }
 	worker := js.Global().Get("Worker").New(e.opt.WorkerURL)
 	p := &process{worker: worker, done: make(chan struct{}), mem: js.Undefined(), limit: int64(pagesFor(limit)) * 65536, proc: proc, onEnd: onEnd}
 	mem := jsMemory{mem: js.Undefined()}
@@ -356,6 +362,7 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 			i32.SetIndex(ctlFlags, flagRealloc)
 			i32.SetIndex(ctlAlign, int(int32(res.Realloc.Align)))
 			i32.SetIndex(ctlSizeArg, int(int32(res.Realloc.Size)))
+			stamp(ctlAnswer)
 			atomics.Call("store", i32, ctlState, stateDone)
 			atomics.Call("notify", i32, ctlState)
 		case res.Wait == nil:
@@ -400,6 +407,7 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 			binary.LittleEndian.PutUint64(b[:], res.Ret)
 			js.CopyBytesToJS(js.Global().Get("Uint8Array").New(ctl, ctlRet, 8), b[:])
 		}
+		stamp(ctlAnswer)
 		atomics.Call("store", i32, ctlState, stateDone)
 		atomics.Call("notify", i32, ctlState)
 	}
@@ -413,6 +421,7 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 			p.mem = mem.mem
 			p.mu.Unlock()
 		case "call":
+			stamp(ctlServed)
 			js.CopyBytesToGo(ctlBuf, ctlU8)
 			fn := int(int32(binary.LittleEndian.Uint32(ctlBuf[4*ctlFunc:])))
 			if fn < 0 || fn >= len(imports) {
@@ -445,6 +454,18 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 				break
 			}
 			serve(current, r.Then(ptr, mem))
+		case "slow":
+			// A call that took the guest worker slowCall ms or more, split by
+			// worker.js: kept for whoever measures (self.__hostSlow, an array of
+			// {name, at, total, wait, exec, ret}, at most slowKeep).
+			slow := js.Global().Get("__hostSlow")
+			if slow.IsUndefined() {
+				slow = js.Global().Get("Array").New()
+				js.Global().Set("__hostSlow", slow)
+			}
+			if slow.Length() < slowKeep {
+				slow.Call("push", data)
+			}
 		case "exit":
 			p.finish(runtime.GuestExit(uint32(int32(data.Get("code").Int()))))
 		case "trap":
