@@ -15,6 +15,7 @@ var busy struct {
 	slot  js.Value // slot[0] = id marks the label of what runs now (busy.js)
 	label js.Value
 	ids   []any // label ids, boxed once: marking allocates nothing
+	cur   int   // the id Mark last set
 	gcn   js.Value
 	gcs   int32
 	// gcstat is busy.js's Float64Array [GC CPU ms, cycles]; gcSample reads them.
@@ -100,5 +101,10 @@ func Mark(id int) {
 	if !busy.on {
 		return
 	}
+	busy.cur = id
 	busy.slot.SetIndex(0, busy.ids[id])
 }
+
+// Marked is the label Mark last set, so a sub-phase can name itself and give the
+// slice back to what it interrupted: Mark(sub); ...; Mark(prev).
+func Marked() int { return busy.cur }

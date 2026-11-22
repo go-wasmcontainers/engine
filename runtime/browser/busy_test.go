@@ -270,6 +270,8 @@ func TestSlowCallSplitIsOnOneClock(t *testing.T) {
 	b := runNode(t, clockHarness, writeAsset(t, "worker.js", WorkerJS))
 	var got []struct {
 		At, Total, Wait, Exec, Ret, Off float64
+		Wake, Post                      float64
+		Wakes, Reallocs                 int
 	}
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("%v\n%s", err, b)
@@ -281,6 +283,12 @@ func TestSlowCallSplitIsOnOneClock(t *testing.T) {
 	near := func(a, b float64) bool { return math.Abs(a-b) < 0.02 }
 	if !near(s.Wait, 30) || !near(s.Exec, 5) || !near(s.Ret, 0.05) || !near(s.Off, 3.7) || !near(s.Total, 35.05) {
 		t.Errorf("split = %+v, want wait 30, exec 5, return 0.05, offset 3.7, total 35.05", s)
+	}
+	// The way back is split too: the answer was already there when the guest
+	// looked (a simulated engine answers inside postMessage), so all of the 0.05 is
+	// the wake-up and none the guest's own code, with no wait and no realloc.
+	if !near(s.Wake, 0.05) || !near(s.Post, 0) || s.Wakes != 0 || s.Reallocs != 0 {
+		t.Errorf("return trip = wake %v post %v wakes %d reallocs %d, want 0.05, 0, 0, 0", s.Wake, s.Post, s.Wakes, s.Reallocs)
 	}
 }
 

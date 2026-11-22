@@ -174,10 +174,30 @@ type jsMemory struct {
 	mem js.Value
 }
 
+// What the busy log calls the engine's time reading and writing the guest's
+// memory: the js.Value calls that build the view, and the copy itself. Each one
+// gives the slice back to the label it interrupted (a call:* label, usually).
+var memLabels struct {
+	once             sync.Once
+	view, read, wrte int
+}
+
+func memLabel() {
+	memLabels.once.Do(func() {
+		memLabels.view = Label("jsmem:view")
+		memLabels.read = Label("jsmem:read")
+		memLabels.wrte = Label("jsmem:write")
+	})
+}
+
 func (m jsMemory) view(off, n uint32) (js.Value, bool) {
 	if m.mem.IsUndefined() || m.mem.IsNull() {
 		return js.Value{}, false
 	}
+	memLabel()
+	prev := Marked()
+	Mark(memLabels.view)
+	defer Mark(prev)
 	buf := m.mem.Get("buffer")
 	size := uint64(buf.Get("byteLength").Float())
 	if uint64(off)+uint64(n) > size {
@@ -204,8 +224,11 @@ func (m jsMemory) Read(off, n uint32) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
+	prev := Marked()
+	Mark(memLabels.read)
 	b := make([]byte, n)
 	js.CopyBytesToGo(b, v)
+	Mark(prev)
 	return b, true
 }
 
@@ -219,7 +242,10 @@ func (m jsMemory) Write(off uint32, b []byte) bool {
 	if !ok {
 		return false
 	}
+	prev := Marked()
+	Mark(memLabels.wrte)
 	js.CopyBytesToJS(v, b)
+	Mark(prev)
 	return true
 }
 
