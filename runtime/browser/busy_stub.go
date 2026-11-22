@@ -8,3 +8,6 @@ func Label(string) int { return 0 }
 
 // Mark: see Label.
 func Mark(int) {}
+
+// updateGC: see Label.
+func updateGC() {}

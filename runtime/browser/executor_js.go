@@ -362,6 +362,14 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 		callLabel[i] = Label("call:" + f.Module + "." + f.Name)
 		resumeLabel[i] = Label("resume:" + f.Module + "." + f.Name)
 	}
+	// The phases of serving a call around the import itself, so that a slice
+	// under a msg:call shows where its time went: reading the call, answering
+	// it (the ctl block, Atomics.notify), and what Go ran after the handler
+	// (other goroutines, the collector).
+	decodeLabel := Label("serve:decode")
+	replyLabel := Label("serve:reply")
+	reallocLabel := Label("serve:realloc")
+	schedLabel := Label("go:scheduler")
 	var reply func(fn int, res wasi.Result)
 	// serve finishes a call: an answer, a realloc request, or a wait for a
 	// socket or a promise (never in this callback: those need the event
@@ -400,7 +408,10 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 					res = res.Resume(mem)
 					Mark(0)
 				}
+				Mark(replyLabel)
 				serve(fn, res)
+				Mark(schedLabel)
+				updateGC()
 			}(res, mem)
 		}
 	}
@@ -438,6 +449,7 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 			p.mu.Unlock()
 		case "call":
 			stamp(ctlServed)
+			Mark(decodeLabel)
 			js.CopyBytesToGo(ctlBuf, ctlU8)
 			fn := int(int32(binary.LittleEndian.Uint32(ctlBuf[4*ctlFunc:])))
 			if fn < 0 || fn >= len(imports) {
@@ -452,9 +464,13 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 			}
 			Mark(callLabel[fn])
 			res := proc.CallImport(fn, callArgs, mem)
-			Mark(0)
+			Mark(replyLabel)
 			serve(fn, res)
+			Mark(schedLabel)
+			updateGC()
 		case "realloc":
+			Mark(reallocLabel)
+			defer func() { Mark(schedLabel); updateGC() }()
 			// The worker ran the guest's cabi_realloc for the pending call.
 			r := pending
 			pending = nil
