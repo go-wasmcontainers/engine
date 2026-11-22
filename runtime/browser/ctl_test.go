@@ -33,7 +33,7 @@ func TestWorkerMirrorsControlBlock(t *testing.T) {
 	// A call is split where the guest woke: the wait for the engine's thread,
 	// its execution, the return trip, from the same three stamps and the wake.
 	for _, want := range []string{
-		"wait: served - sent", "exec: answered - served", "ret: woke - answered",
+		"wait: served - sent + d", "exec: answered - served", "ret: woke - answered - d",
 		`postMessage({ t: "slow"`, "performance.timeOrigin + performance.now()",
 	} {
 		if !strings.Contains(src, want) {

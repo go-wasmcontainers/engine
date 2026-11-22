@@ -51,6 +51,8 @@ class Exit {
 let i32, view, instance;
 const callNames = [];
 let slowSent = 0;
+let minThere = Infinity; // least served - sent over the calls so far
+let minBack = Infinity; // least woke - answered
 
 function block() {
   while (Atomics.load(i32, CTL_STATE) === 1) {
@@ -105,11 +107,27 @@ function call(idx, params, result, args) {
   // Where the time of the call went (no allocation unless it was slow): the wait
   // for the engine's thread to begin it, its execution, the return trip.
   const woke = performance.timeOrigin + performance.now();
+  const served = view.getFloat64(CTL_SERVED, true);
+  const answered = view.getFloat64(CTL_ANSWER, true);
+  // The two workers' epoch clocks differ by a constant (performance.timeOrigin
+  // is a wall-clock reading taken when each worker was created, performance.now()
+  // counts from it on the monotonic clock: the two readings are not taken at one
+  // instant, so each worker's epoch is off by its own few ms: 3.7 ms measured).
+  // The offset d (this worker's clock minus the engine's) is estimated as in
+  // NTP: the trip there (served - sent = wait - d) and the trip back
+  // (woke - answered = ret + d) are each smallest when the engine was idle, and
+  // those two least times are equal, so d is half their difference.
+  if (served - sent < minThere) {
+    minThere = served - sent;
+  }
+  if (woke - answered < minBack) {
+    minBack = woke - answered;
+  }
   if (woke - sent >= SLOW_CALL && slowSent < SLOW_CAP) {
     slowSent++;
-    const served = view.getFloat64(CTL_SERVED, true);
-    const answered = view.getFloat64(CTL_ANSWER, true);
-    postMessage({ t: "slow", name: callNames[idx], at: sent, total: woke - sent, wait: served - sent, exec: answered - served, ret: woke - answered });
+    const d = (minBack - minThere) / 2;
+    // Every figure is on the ENGINE's clock, the one its busy log (busy.js) uses.
+    postMessage({ t: "slow", name: callNames[idx], at: sent - d, total: woke - sent, wait: served - sent + d, exec: answered - served, ret: woke - answered - d, off: d });
   }
   if (flags & FLAG_EXIT) {
     throw new Exit(code);
