@@ -28,7 +28,7 @@
   const SLOW = 10;
   const RING = 4096;
   const TOP = 4;
-  const W = 3 + 2 * TOP + 1; // at, dur, trigger, (label, ms) x TOP, gc
+  const W = 3 + 2 * TOP + 2; // at, dur, trigger, (label, ms) x TOP, gc, gcms
   const NAMES = 1024;
   const perf = g.performance;
   const origin = perf.timeOrigin;
@@ -65,6 +65,11 @@
 
   // A garbage collection the Go side saw (busy_js.go's finalizer sentinel).
   const gcn = new Int32Array(1);
+  // The collector's totals as Go last wrote them (busy_js.go updateGC, after
+  // every host call, and when readGC is called): [0] CPU ms spent in GC,
+  // [1] cycles finished. A finalizer sentinel (gcn) runs late; these do not.
+  const gcstat = new Float64Array(2);
+  let readGC = null; // set by Go: refreshes gcstat
 
   let depth = 0;
   let cur = 0;
@@ -110,7 +115,7 @@
     return typeof a === "number" ? intern("callback(number)") : 3;
   }
 
-  function record(at, dur, ev, gc) {
+  function record(at, dur, ev, gc, gcms) {
     const row = (written % RING) * W;
     written++;
     ring[row] = at;
@@ -133,7 +138,8 @@
       ring[row + 4 + 2 * k] = acc[best];
       acc[best] = -acc[best]; // taken; restored below
     }
-    ring[row + W - 1] = gc;
+    ring[row + W - 2] = gc;
+    ring[row + W - 1] = gcms;
     for (let i = 0; i < nTouched; i++) {
       const id = touched[i];
       if (acc[id] < 0) {
@@ -156,6 +162,8 @@
     const ev = this._pendingEvent;
     const t0 = perf.now();
     const gc0 = gcn[0];
+    const gcms0 = gcstat[0];
+    const cyc0 = gcstat[1];
     depth = 1;
     cur = 0;
     curStart = t0;
@@ -166,7 +174,19 @@
       const t1 = perf.now();
       touch(cur, t1 - curStart);
       if (t1 - t0 >= MIN) {
-        record(origin + t0, t1 - t0, ev, gcn[0] - gc0);
+        let gcms = 0;
+        if (t1 - t0 >= SLOW && readGC) {
+          // Ask Go for the collector's totals now (depth is still above 0, so
+          // this call is part of the slice, not a new one): only for a slow
+          // slice, the fast path stays free of it.
+          try {
+            readGC();
+            gcms = gcstat[0] - gcms0;
+          } catch (e) {
+            gcms = 0;
+          }
+        }
+        record(origin + t0, t1 - t0, ev, Math.max(gcn[0] - gc0, gcstat[1] - cyc0), gcms);
       }
       for (let i = 0; i < nTouched; i++) {
         const id = touched[i];
@@ -192,11 +212,11 @@
           labels.push({ name: names[id], ms: ring[row + 4 + 2 * k] });
         }
       }
-      out.push({ at: ring[row], dur: ring[row + 1], trigger: names[ring[row + 2]], labels, gc: ring[row + W - 1] });
+      out.push({ at: ring[row], dur: ring[row + 1], trigger: names[ring[row + 2]], labels, gc: ring[row + W - 2], gcms: ring[row + W - 1] });
     }
     return out;
   }
 
-  g.__busy = { slices, label: intern, slot, gcn, MIN, SLOW, RING, written: () => written };
+  g.__busy = { slices, label: intern, slot, gcn, gcstat, setReadGC: (f) => { readGC = f; }, MIN, SLOW, RING, written: () => written };
   Object.defineProperty(g, "__busySlow", { get: () => slices(SLOW), configurable: true });
 })(globalThis);

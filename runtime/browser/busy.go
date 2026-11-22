@@ -34,6 +34,10 @@ type BusySlice struct {
 	Trigger string
 	Labels  []BusyLabel
 	GC      int
+	// GCMs is the garbage collector's CPU time (ms) that accrued during a slice
+	// of 10 ms or more (runtime/metrics /cpu/classes/gc/total, read by busy.js
+	// at the slice's end); 0 for a shorter one.
+	GCMs float64
 }
 
 // Share is the part of a wait one cause accounts for.
@@ -117,6 +121,7 @@ type SliceClass struct {
 	Ms         float64 // their durations
 	Unlabelled float64 // the part under no label
 	Max        float64 // the longest
+	GCMs       float64 // the collector's CPU time in them (BusySlice.GCMs)
 }
 
 // GCStats splits the slices of minDur ms or more by whether a garbage
@@ -141,10 +146,13 @@ func GCSplit(slices []BusySlice, minDur float64) GCStats {
 		}
 		named := 0.0
 		for _, l := range s.Labels {
-			named += l.Ms
+			if l.Name != "unlabelled" { // busy.js's name for the rest of a slice
+				named += l.Ms
+			}
 		}
 		c.N++
 		c.Ms += s.Dur
+		c.GCMs += s.GCMs
 		c.Unlabelled += max(0, s.Dur-named)
 		c.Max = max(c.Max, s.Dur)
 	}

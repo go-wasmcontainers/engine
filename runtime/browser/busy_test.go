@@ -283,3 +283,58 @@ func TestSlowCallSplitIsOnOneClock(t *testing.T) {
 		t.Errorf("split = %+v, want wait 30, exec 5, return 0.05, offset 3.7, total 35.05", s)
 	}
 }
+
+// busyGCHarness: a 30 ms slice in which Go's collector spent 24 ms, a 5 ms slice
+// with none, and a 30 ms slice where Go cannot answer. readGC is Go's
+// refresh of gcstat (busy_js.go updateGC): the slow slice asks it at its end.
+const busyGCHarness = `
+const vm = require("vm");
+const fs = require("fs");
+let now = 100;
+class Go {
+  constructor() { this._pendingEvent = null; this.work = () => {}; }
+  _resume() { this.work(); }
+}
+const ctx = vm.createContext({ Go, performance: { timeOrigin: 1e12, now: () => now } });
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
+const go = new ctx.Go();
+const busy = ctx.__busy;
+let gcMs = 0, cycles = 0, calls = 0, fail = false;
+busy.setReadGC(() => { calls++; if (fail) throw new Error("go is gone"); busy.gcstat[0] = gcMs; busy.gcstat[1] = cycles; });
+go._pendingEvent = { id: 1, this: null, args: [{ data: { t: "call" } }] };
+go.work = () => { now += 30; gcMs += 24; cycles += 1; };
+go._resume();
+go.work = () => { now += 5; };
+go._resume();
+fail = true;
+go.work = () => { now += 30; };
+go._resume();
+console.log(JSON.stringify({ kept: busy.slices(0), calls }));
+`
+
+// TestBusyLogReadsTheCollectorOfASlowSlice: a slice of 10 ms or more records the
+// collector's CPU time that accrued in it, read from Go at its end (the
+// finalizer sentinel runs late and said "gc 0" for slices that were collections);
+// a faster slice does not ask Go; a Go that cannot answer loses the figure, not the slice.
+func TestBusyLogReadsTheCollectorOfASlowSlice(t *testing.T) {
+	b := runNode(t, busyGCHarness, writeAsset(t, "busy.js", []byte(BusyJS)))
+	var got struct {
+		Kept  []struct{ Dur, GC, GCMs float64 }
+		Calls int
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%v\n%s", err, b)
+	}
+	if len(got.Kept) != 3 || got.Calls != 2 {
+		t.Fatalf("kept %d slices, readGC asked %d times, want 3 and 2: %+v", len(got.Kept), got.Calls, got)
+	}
+	if k := got.Kept[0]; k.GCMs != 24 || k.GC != 1 {
+		t.Errorf("slow slice: %+v, want 24 ms of GC and 1 cycle", k)
+	}
+	if k := got.Kept[1]; k.GCMs != 0 || k.GC != 0 {
+		t.Errorf("fast slice: %+v, want none", k)
+	}
+	if k := got.Kept[2]; k.GCMs != 0 || k.Dur != 30 {
+		t.Errorf("slice where Go cannot answer: %+v", k)
+	}
+}
