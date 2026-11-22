@@ -18,15 +18,14 @@ var busy struct {
 	gcs   int32
 }
 
-// installBusy runs busy.js in this worker (once): from then on every slice of
+// installBusy picks up the busy log the worker loaded (busy.js, importScripts
+// before Go started; never evaluated here, the CSP forbids it): every slice of
 // the engine's work is timed and the slow ones published as self.__busySlow.
 func installBusy() {
 	busy.once.Do(func() {
-		g := js.Global()
-		js.Global().Get("Function").New("globalThis", BusyJS).Invoke(g)
-		b := g.Get("__busy")
+		b := js.Global().Get("__busy")
 		if !b.Truthy() {
-			return // no Go glue to wrap (a test page): nothing is recorded
+			return // busy.js not loaded by the host page: nothing is recorded
 		}
 		busy.slot, busy.label, busy.gcn = b.Get("slot"), b.Get("label"), b.Get("gcn")
 		busy.ids = []any{0}
