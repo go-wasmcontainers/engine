@@ -6,10 +6,15 @@ import (
 	"strings"
 )
 
-// BusyJS is the engine worker's busy log (busy.js), installed by New on
-// GOOS=js: it wraps Go's event resume, times every slice of the engine's work
-// and publishes the slow ones, labelled, as self.__busySlow beside
-// self.__hostSlow.
+// BusyJS is the engine worker's busy log (busy.js): it wraps Go's event resume,
+// times every slice of the engine's work and publishes the slow ones,
+// labelled, as self.__busySlow beside self.__hostSlow.
+//
+// The host serves it as a file and the engine worker loads it with
+// importScripts after wasm_exec.js and before Go runs (New only picks up
+// self.__busy). It is never evaluated from a string: the page's
+// Content-Security-Policy has no 'unsafe-eval', so Function(...) would panic
+// the engine at start.
 //
 //go:embed busy.js
 var BusyJS string
