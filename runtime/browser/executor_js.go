@@ -209,6 +209,11 @@ func (m jsMemory) Read(off, n uint32) ([]byte, bool) {
 	return b, true
 }
 
+// ReadOwned is Read, and says that the array it returns is the copy out of the
+// guest's memory, held by nobody else: a host module lifting a list<u8> keeps it
+// as is instead of copying it again (go-wasmcontainers/gpu wit.OwnedReader).
+func (m jsMemory) ReadOwned(off, n uint32) ([]byte, bool) { return m.Read(off, n) }
+
 func (m jsMemory) Write(off uint32, b []byte) bool {
 	v, ok := m.view(off, uint32(len(b)))
 	if !ok {
@@ -507,6 +512,9 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 	msg.Set("module", mod)
 	msg.Set("ctl", ctl)
 	msg.Set("funcs", js.ValueOf(funcs))
+	// The process's origin on the epoch clock: the worker answers the monotonic
+	// clock_time_get ids itself, counting from it.
+	msg.Set("origin", origin+perf.Call("now").Float()-float64(proc.Elapsed())/1e6)
 	worker.Call("postMessage", msg)
 	return p
 }

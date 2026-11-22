@@ -246,6 +246,11 @@ func (p *Proc) Emit(module, action string, attrs map[string]string) {
 // Label is the process's container label (Config.Label).
 func (p *Proc) Label() string { return p.cfg.Label }
 
+// Elapsed is the time since the process began: what clock_time_get reads for
+// the monotonic and CPU clocks (ids 1, 2, 3). A browser worker answers those
+// itself from the same origin.
+func (p *Proc) Elapsed() time.Duration { return time.Since(p.start) }
+
 type fdKind int
 
 const (
