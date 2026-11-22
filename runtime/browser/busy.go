@@ -45,9 +45,6 @@ type Share struct {
 // a clock that disagrees). The shares are sorted, the largest first, and add
 // up to the wait.
 func Explain(from, to float64, slices []BusySlice) []Share {
-	if to <= from {
-		return nil
-	}
 	by := map[string]float64{}
 	covered := 0.0
 	for _, s := range slices {

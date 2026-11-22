@@ -186,6 +186,21 @@ func TestLongWaitWithoutLabelIsFlagged(t *testing.T) {
 	if s := Explain(2000, 2030, slices); len(s) != 1 || s[0].Cause != "no slice" {
 		t.Errorf("a wait with no slice: %+v", s)
 	}
+	// An empty or reversed window explains nothing.
+	if s := Explain(1050, 1050, slices); len(s) != 0 {
+		t.Errorf("empty window: %+v", s)
+	}
+	if s := Explain(1050, 1010, slices); len(s) != 0 {
+		t.Errorf("reversed window: %+v", s)
+	}
+	// Equal shares are listed by cause, so a report is the same every run.
+	tie := []BusySlice{
+		{At: 0, Dur: 10, Trigger: "b", Labels: []BusyLabel{{"x", 10}}},
+		{At: 10, Dur: 10, Trigger: "a", Labels: []BusyLabel{{"x", 10}}},
+	}
+	if s := Explain(0, 20, tie); len(s) != 2 || s[0].Cause != "a / x" || s[1].Cause != "b / x" {
+		t.Errorf("tied shares: %+v", s)
+	}
 	// Fully labelled: nothing unattributed.
 	full := []BusySlice{{At: 0, Dur: 30, Trigger: "msg:call", Labels: []BusyLabel{{"call:x", 30}}}}
 	if u := Unattributed(0, 30, full); u != 0 {
