@@ -109,3 +109,44 @@ func Unattributed(from, to float64, slices []BusySlice) float64 {
 	}
 	return u
 }
+
+// SliceClass is what the slices of one class (with or without a garbage
+// collection in them) add up to.
+type SliceClass struct {
+	N          int
+	Ms         float64 // their durations
+	Unlabelled float64 // the part under no label
+	Max        float64 // the longest
+}
+
+// GCStats splits the slices of minDur ms or more by whether a garbage
+// collection ran in them. The engine runs Go's collector on its one thread: if
+// the long slices are the ones with a collection, and what they spend is under
+// no label (the collector's work is not a Mark site), the unlabelled time is
+// the collector's. Slices without one that are as long are something else.
+type GCStats struct {
+	With, Without SliceClass
+}
+
+// GCSplit computes GCStats.
+func GCSplit(slices []BusySlice, minDur float64) GCStats {
+	var g GCStats
+	for _, s := range slices {
+		if s.Dur < minDur {
+			continue
+		}
+		c := &g.Without
+		if s.GC > 0 {
+			c = &g.With
+		}
+		named := 0.0
+		for _, l := range s.Labels {
+			named += l.Ms
+		}
+		c.N++
+		c.Ms += s.Dur
+		c.Unlabelled += max(0, s.Dur-named)
+		c.Max = max(c.Max, s.Dur)
+	}
+	return g
+}

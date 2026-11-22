@@ -208,10 +208,75 @@ function localPoll(inp, out, n, resultPtr) {
   return 0;
 }
 
+// localTrivial answers the calls that need no engine state, as the engine's
+// wasi.Proc.Call does, without the round trip: a call that waited 30-60 ms for
+// the engine's busy thread (a clock read, behind a draw or a GC pause) made a
+// guest's audio feed late. It returns undefined when the engine must serve it.
+//
+//   clock_time_get(id, precision, out): id 0 is the wall clock, in ns, from
+//   Date.now() (the engine's Go runtime reads the same, to the millisecond);
+//   ids 1, 2, 3 are time since the process began (procStart, the engine's own
+//   start stamp, on this worker's epoch clock), never going backwards; any
+//   other id is EINVAL (28); an out pointer past the memory is EFAULT (21).
+//   clock_res_get(id, out): 1000 ns for every id, as the engine says.
+//   sched_yield(): nothing to do, 0.
+//
+// procStart is set by the "origin" field of the first message; without it the
+// monotonic clocks are left to the engine (so that every clock of a process
+// reads one origin).
+let procStart = null;
+let lastMono = 0;
+function localTrivial(name, args) {
+  if (!guestMemory) {
+    return undefined;
+  }
+  switch (name) {
+    case "sched_yield":
+      return 0;
+    case "clock_res_get": {
+      const out = args[1] >>> 0;
+      if (out + 8 > guestMemory.buffer.byteLength) {
+        return 21;
+      }
+      new DataView(guestMemory.buffer).setBigUint64(out, 1000n, true);
+      return 0;
+    }
+    case "clock_time_get": {
+      const id = args[0] >>> 0;
+      const out = args[2] >>> 0;
+      let ns;
+      if (id === 0) {
+        ns = BigInt(Date.now()) * 1000000n;
+      } else if (id >= 1 && id <= 3) {
+        if (procStart === null) {
+          return undefined;
+        }
+        let v = Math.max(0, Math.floor((performance.timeOrigin + performance.now() - procStart) * 1e6));
+        if (v < lastMono) {
+          v = lastMono;
+        }
+        lastMono = v;
+        ns = BigInt(v);
+      } else {
+        return 28;
+      }
+      if (out + 8 > guestMemory.buffer.byteLength) {
+        return 21;
+      }
+      new DataView(guestMemory.buffer).setBigUint64(out, ns, true);
+      return 0;
+    }
+  }
+  return undefined;
+}
+
 let previewCount = 0;
 
 onmessage = async (e) => {
-  const { module, ctl, funcs } = e.data;
+  const { module, ctl, funcs, origin } = e.data;
+  if (typeof origin === "number") {
+    procStart = origin;
+  }
   i32 = new Int32Array(ctl);
   view = new DataView(ctl);
   const imports = {};
@@ -226,6 +291,12 @@ onmessage = async (e) => {
       imports[mod][name] = (...args) => {
         const r = localPoll(args[0], args[1], args[2], args[3]);
         return r === null ? call(idx, params, result, args) : r;
+      };
+    }
+    if (mod === "wasi_snapshot_preview1" && (name === "clock_time_get" || name === "clock_res_get" || name === "sched_yield")) {
+      imports[mod][name] = (...args) => {
+        const r = localTrivial(name, args);
+        return r === undefined ? call(idx, params, result, args) : r;
       };
     }
   });
