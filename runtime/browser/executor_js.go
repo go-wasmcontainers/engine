@@ -70,6 +70,7 @@ func New(opt Options) *Executor {
 	if opt.MaxCompiled <= 0 {
 		opt.MaxCompiled = 32
 	}
+	installBusy()
 	return &Executor{opt: opt, compiled: map[cacheKey]*cacheEntry{}}
 }
 
@@ -348,6 +349,14 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 	// pending is the continuation of a host call waiting for the guest's
 	// cabi_realloc (the worker answers with a "realloc" message).
 	var pending *wasi.Realloc
+	// What the busy log (busy.js) calls the engine's time in each import: the
+	// call itself, and its continuation when it waited for a socket or a promise.
+	callLabel := make([]int, len(imports))
+	resumeLabel := make([]int, len(imports))
+	for i, f := range imports {
+		callLabel[i] = Label("call:" + f.Module + "." + f.Name)
+		resumeLabel[i] = Label("resume:" + f.Module + "." + f.Name)
+	}
 	var reply func(fn int, res wasi.Result)
 	// serve finishes a call: an answer, a realloc request, or a wait for a
 	// socket or a promise (never in this callback: those need the event
@@ -382,7 +391,9 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 					case <-p.done:
 						return // killed: the worker is gone
 					}
+					Mark(resumeLabel[fn])
 					res = res.Resume(mem)
+					Mark(0)
 				}
 				serve(fn, res)
 			}(res, mem)
@@ -434,7 +445,10 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 			for i := 0; i < n; i++ {
 				callArgs[i] = binary.LittleEndian.Uint64(ctlBuf[ctlArgs+8*i:])
 			}
-			serve(fn, proc.CallImport(fn, callArgs, mem))
+			Mark(callLabel[fn])
+			res := proc.CallImport(fn, callArgs, mem)
+			Mark(0)
+			serve(fn, res)
 		case "realloc":
 			// The worker ran the guest's cabi_realloc for the pending call.
 			r := pending
