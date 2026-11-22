@@ -197,9 +197,20 @@ func TestLongWaitWithoutLabelIsFlagged(t *testing.T) {
 	tie := []BusySlice{
 		{At: 0, Dur: 10, Trigger: "b", Labels: []BusyLabel{{"x", 10}}},
 		{At: 10, Dur: 10, Trigger: "a", Labels: []BusyLabel{{"x", 10}}},
+		{At: 20, Dur: 10, Trigger: "c", Labels: []BusyLabel{{"x", 10}}},
+		{At: 30, Dur: 10, Trigger: "0", Labels: []BusyLabel{{"x", 10}}},
+		{At: 40, Dur: 5, Trigger: "a", Labels: []BusyLabel{{"y", 5}}},
+		{At: 45, Dur: 20, Trigger: "z", Labels: []BusyLabel{{"y", 20}}},
 	}
-	if s := Explain(0, 20, tie); len(s) != 2 || s[0].Cause != "a / x" || s[1].Cause != "b / x" {
-		t.Errorf("tied shares: %+v", s)
+	want := []string{"z / y", "0 / x", "a / x", "b / x", "c / x", "a / y"}
+	s := Explain(0, 65, tie)
+	if len(s) != len(want) {
+		t.Fatalf("tied shares: %+v", s)
+	}
+	for i, w := range want {
+		if s[i].Cause != w {
+			t.Errorf("share %d is %q, want %q (largest first, ties by cause): %+v", i, s[i].Cause, w, s)
+		}
 	}
 	// Fully labelled: nothing unattributed.
 	full := []BusySlice{{At: 0, Dur: 30, Trigger: "msg:call", Labels: []BusyLabel{{"call:x", 30}}}}
