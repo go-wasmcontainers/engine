@@ -175,9 +175,14 @@ func TestLongWaitWithoutLabelIsFlagged(t *testing.T) {
 	if got[0].Cause != "msg:call / call:gpu.queue-submit" || math.Abs(got[0].Ms-22.5) > 1e-9 {
 		t.Errorf("largest share: %+v", got[0])
 	}
-	// 7.5 ms of the labelled slice plus the timer's 10 ms: 17.5 unnamed.
-	if u := Unattributed(1010, 1050, slices); math.Abs(u-17.5) > 1e-9 {
-		t.Errorf("unattributed = %.3f, want 17.5", u)
+	// The message slice is named by its message even where no site marked it;
+	// the timer's 10 ms, which nothing started and nothing marked, are not.
+	if u := Unattributed(1010, 1050, slices); math.Abs(u-10) > 1e-9 {
+		t.Errorf("unattributed = %.3f, want 10", u)
+	}
+	bare := []BusySlice{{At: 0, Dur: 30, Trigger: "msg:http.req GET /containers/q/logs"}, {At: 30, Dur: 10, Trigger: "callback"}, {At: 40, Dur: 10, Trigger: "other"}}
+	if u := Unattributed(0, 60, bare); math.Abs(u-30) > 1e-9 {
+		t.Errorf("a route, a bare callback, other, then 10 ms of nothing: unattributed %.3f, want 30", u)
 	}
 	// A wait no slice covers is all "no slice": flagged, not dropped.
 	if u := Unattributed(2000, 2030, slices); u != 30 {

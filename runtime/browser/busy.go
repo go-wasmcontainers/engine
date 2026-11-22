@@ -81,13 +81,24 @@ func Explain(from, to float64, slices []BusySlice) []Share {
 	return out
 }
 
-// Unattributed is the part of a wait [from, to] that no recorded slice
-// covers, or that a slice covers without a name: the time the labels do not
-// explain. A long wait with a high Unattributed has no label.
+// Unattributed is the part of a wait [from, to] that nothing names: time no
+// recorded slice covers, and time in a slice that neither a message, a route
+// nor an event started (a "timer" or a bare callback: some goroutine of the
+// engine) and no Go site labelled. A slice a message started is named by its
+// message, even where no site marked it. A long wait with a high Unattributed
+// has no label.
 func Unattributed(from, to float64, slices []BusySlice) float64 {
 	u := 0.0
 	for _, s := range Explain(from, to, slices) {
-		if s.Cause == "no slice" || strings.HasSuffix(s.Cause, " / unlabelled") {
+		if s.Cause == "no slice" {
+			u += s.Ms
+			continue
+		}
+		if !strings.HasSuffix(s.Cause, " / unlabelled") {
+			continue
+		}
+		switch strings.TrimSuffix(s.Cause, " / unlabelled") {
+		case "timer", "callback", "other":
 			u += s.Ms
 		}
 	}
