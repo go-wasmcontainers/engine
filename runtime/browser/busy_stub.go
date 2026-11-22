@@ -9,5 +9,8 @@ func Label(string) int { return 0 }
 // Mark: see Label.
 func Mark(int) {}
 
+// Marked: see Label.
+func Marked() int { return 0 }
+
 // updateGC: see Label.
 func updateGC() {}

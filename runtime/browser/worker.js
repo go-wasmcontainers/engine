@@ -54,10 +54,22 @@ let slowSent = 0;
 let minThere = Infinity; // least served - sent over the calls so far
 let minBack = Infinity; // least woke - answered
 
+// What the guest worker did between the engine's answer and its own return
+// (worker.js's "ret" in a slow call): it sat in Atomics.wait until the engine's
+// notify woke it (wokeAt is the instant Atomics.wait came back with the answer,
+// so answered -> wokeAt is the browser's wake-up and wokeAt -> woke is this
+// worker's own code: the realloc loop and reading the ctl block), after wakes
+// Atomics.wait returned from without an answer.
+let wokeAt = 0;
+let wakes = 0;
+let reallocs = 0;
+
 function block() {
   while (Atomics.load(i32, CTL_STATE) === 1) {
     Atomics.wait(i32, CTL_STATE, 1);
+    wakes++;
   }
+  wokeAt = performance.timeOrigin + performance.now();
 }
 
 function call(idx, params, result, args) {
@@ -81,12 +93,15 @@ function call(idx, params, result, args) {
     }
   }
   i32[CTL_FUNC] = idx;
+  wakes = 0;
+  reallocs = 0;
   const sent = performance.timeOrigin + performance.now();
   view.setFloat64(CTL_SENT, sent, true);
   Atomics.store(i32, CTL_STATE, 1);
   postMessage({ t: "call" });
   block();
   while (i32[CTL_FLAGS] & FLAG_REALLOC) {
+    reallocs++;
     const realloc = instance.exports.cabi_realloc;
     let msg = { t: "realloc" };
     if (typeof realloc !== "function") {
@@ -127,7 +142,7 @@ function call(idx, params, result, args) {
     slowSent++;
     const d = (minBack - minThere) / 2;
     // Every figure is on the ENGINE's clock, the one its busy log (busy.js) uses.
-    postMessage({ t: "slow", name: callNames[idx], at: sent - d, total: woke - sent, wait: served - sent + d, exec: answered - served, ret: woke - answered - d, off: d });
+    postMessage({ t: "slow", name: callNames[idx], at: sent - d, total: woke - sent, wait: served - sent + d, exec: answered - served, ret: woke - answered - d, off: d, wake: wokeAt - answered - d, post: woke - wokeAt, wakes: wakes, reallocs: reallocs });
   }
   if (flags & FLAG_EXIT) {
     throw new Exit(code);
