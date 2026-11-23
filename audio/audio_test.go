@@ -642,6 +642,12 @@ func (p plainProvider) Open(c string, rate, ch, capacity int) (audio.Sink, error
 // TestSinkWithoutOutOfBandStillWorks: a provider whose rings the guest's worker
 // does not write (the native tests, any other host) needs no OutOfBand.
 func TestSinkWithoutOutOfBandStillWorks(t *testing.T) {
+	// The guard's job is not to crash: assert it, so a panic reads as a failure.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("a sink without OutOfBand crashed the module: %v", r)
+		}
+	}()
 	inner := &audiotest.Provider{}
 	h := newHarness(t, harnessOpts{caps: audioCap, mod: audio.New(plainProvider{inner})})
 	s := h.open(11025, 2, 256)
