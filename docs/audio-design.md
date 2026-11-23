@@ -221,6 +221,24 @@ guest worker ──stream_write──▶ engine worker (Go)          page (main 
   ring's closed state and posts `{t:"audio", op:"close", stream}`. The page
   is cross-origin isolated already (`web/app.js` refuses to run without
   `crossOriginIsolated`), so SharedArrayBuffer is available.
+- **The feed does not go through the engine worker.** The engine worker is
+  one thread shared by Go's garbage collector (slices of 60-143 ms measured
+  on a loaded CI runner) and every host call of every container, so a
+  `stream_write` served there waits behind them and the game's feed arrives
+  late (the page's worklet starves). `worker.js` therefore serves
+  `stream_write` and `stream_stats` itself, on the guest's own thread, for a
+  stream whose ring it allocated: `stream_open` allocates the
+  SharedArrayBuffer in the guest worker (a worker blocked in `Atomics.wait`
+  runs no event loop, so a buffer cannot be handed to it later), posts it to
+  the engine just ahead of the call (`{t:"audioring", sab}`, parked in
+  `self.__wctrAudioRings[container]`), and `audio.Browser.Open` adopts it and
+  marks header word 8. The semantics are section 3's, call for call (errnos in
+  the same order, waiting / playing / closed, sanitising). The worker counts
+  the frames it refuses in header word 7; `audio.OutOfBand` lets `stream_stats`
+  and the `refused` event report them. `stream_open` and `stream_close` stay
+  the engine's (grant, quotas, events); a ring the engine did not adopt is
+  served by the engine as before. Test: `TestAudioFeedDoesNotWaitForTheEngine`
+  (an engine that stalls 150 ms per call).
 - **Page** (`web/app.js`): on the first `open`, create one
   `AudioContext({latencyHint: "interactive"})` and `addModule` the worklet
   (served from the embedded `audioring` asset). Per stream: an

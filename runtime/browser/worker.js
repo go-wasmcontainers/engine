@@ -285,6 +285,195 @@ function localTrivial(name, args) {
   return undefined;
 }
 
+// The audio path. wctr_audio_out's stream_write and stream_stats are served
+// here, on the guest's own thread, for a stream whose ring this worker
+// allocated, so that a game's audio feed never queues behind the engine's thread:
+// that thread also runs Go's garbage collector and serves every other host call
+// of every container (slices of 60-143 ms, loop stalls up to 649 ms, measured on
+// a loaded CI runner: the feed ran late and the page's worklet starved).
+//
+// The ring cannot be handed to this worker after stream_open (a worker blocked in
+// Atomics.wait runs no event loop, so no message reaches it), so stream_open
+// allocates the SharedArrayBuffer here, posts it to the engine just ahead of the
+// call ("audioring": messages keep their order, so it is parked before the call
+// is served), and the engine's provider adopts it, marking header word 8. A
+// stream the engine did not adopt (the call failed, or the provider allocated its
+// own) stays the engine's: its calls go through call().
+//
+// The semantics are audio/audio.go's, call for call: the same errnos in the same
+// order, the same waiting / playing / closed states (a heartbeat that stood still
+// for 200 ms is waiting), the same sanitising, refusals counted in header word 7
+// (the engine reads them back: audio.OutOfBand). Header words: audioring's.
+const A_WRITE = 0;
+const A_READ = 1;
+const A_UNDERRUN = 2;
+const A_PLAYED = 3;
+const A_OVERRUN = 4;
+const A_STATE = 5;
+const A_BEAT = 6;
+const A_REFUSED = 7;
+const A_ADOPTED = 8;
+const A_HEADER = 64;
+const HEARTBEAT_STALE = 200;
+const audioRings = new Map();
+
+function audioOpen(callOpen, args) {
+  const rate = args[0] >>> 0;
+  const ch = args[1] >>> 0;
+  const cap = args[2] >>> 0;
+  const out = args[3] >>> 0;
+  if (!guestMemory || rate < 8000 || rate > 48000 || ch < 1 || ch > 2 || cap < 256 || cap > 16384 || (cap & (cap - 1)) !== 0 || out + 4 > guestMemory.buffer.byteLength) {
+    return callOpen();
+  }
+  const sab = new SharedArrayBuffer(A_HEADER + cap * ch * 4);
+  postMessage({ t: "audioring", sab });
+  const r = callOpen();
+  if (r !== 0) {
+    return r;
+  }
+  const h = new DataView(guestMemory.buffer).getUint32(out, true);
+  const hdr = new Int32Array(sab, 0, A_HEADER / 4);
+  if (Atomics.load(hdr, A_ADOPTED) === 1) {
+    audioRings.set(h, { hdr, data: new Float32Array(sab, A_HEADER), ch, cap, write: 0, lastHB: 0, lastHBAt: null, scratch: new Float32Array(cap * ch) });
+  }
+  return r;
+}
+
+// audioState is audio.go's stream.state: 2 closed, 1 playing while the
+// heartbeat moves, 0 waiting.
+function audioState(s, now) {
+  if (Atomics.load(s.hdr, A_STATE) !== 0) {
+    return 2;
+  }
+  const hb = Atomics.load(s.hdr, A_BEAT);
+  if (hb !== s.lastHB) {
+    s.lastHB = hb;
+    s.lastHBAt = now;
+  }
+  return s.lastHBAt === null || now - s.lastHBAt > HEARTBEAT_STALE ? 0 : 1;
+}
+
+function audioWrite(s, ptr, frames, out) {
+  if (frames > s.cap) {
+    return 4;
+  }
+  const mem = guestMemory.buffer;
+  if (out + 8 > mem.byteLength) {
+    return 9;
+  }
+  const now = performance.now();
+  const state = audioState(s, now);
+  let accepted = 0;
+  let queued = 0;
+  if (frames > 0) {
+    const n = frames * s.ch * 4;
+    if (ptr + n > mem.byteLength) {
+      return 9;
+    }
+    if (state === 1) {
+      const pcm = s.scratch.subarray(0, frames * s.ch);
+      new Uint8Array(pcm.buffer, 0, n).set(new Uint8Array(mem, ptr, n));
+      for (let k = 0; k < pcm.length; k++) {
+        const v = pcm[k];
+        if (v !== v || v === Infinity || v === -Infinity) {
+          pcm[k] = 0;
+        } else if (v > 1) {
+          pcm[k] = 1;
+        } else if (v < -1) {
+          pcm[k] = -1;
+        }
+      }
+      accepted = audioRingWrite(s, pcm, frames);
+      if (accepted < frames) {
+        Atomics.add(s.hdr, A_REFUSED, frames - accepted);
+      }
+    } else if (state === 0) {
+      accepted = frames; // never played late: accepted and dropped
+    } else {
+      Atomics.add(s.hdr, A_REFUSED, frames);
+    }
+  }
+  if (state === 1) {
+    queued = (s.write - Atomics.load(s.hdr, A_READ)) >>> 0;
+  }
+  const dv = new DataView(mem);
+  dv.setUint32(out, accepted, true);
+  dv.setUint32(out + 4, queued, true);
+  return 0;
+}
+
+// audioRingWrite is audioring.Writer.Write: it never blocks, drops what does not
+// fit (counted as an overrun), stores the samples first and the write index last.
+function audioRingWrite(s, pcm, frames) {
+  if (Atomics.load(s.hdr, A_STATE) !== 0) {
+    return 0;
+  }
+  const buffered = (s.write - Atomics.load(s.hdr, A_READ)) >>> 0;
+  const free = buffered >= s.cap ? 0 : s.cap - buffered;
+  let n = frames;
+  if (n > free) {
+    Atomics.add(s.hdr, A_OVERRUN, n - free);
+    n = free;
+  }
+  if (n === 0) {
+    return 0;
+  }
+  const start = (s.write & (s.cap - 1)) * s.ch;
+  const first = s.cap * s.ch - start;
+  const take = n * s.ch;
+  if (take <= first) {
+    s.data.set(pcm.subarray(0, take), start);
+  } else {
+    s.data.set(pcm.subarray(0, first), start);
+    s.data.set(pcm.subarray(first, take), 0);
+  }
+  s.write = (s.write + n) >>> 0;
+  Atomics.store(s.hdr, A_WRITE, s.write | 0);
+  return n;
+}
+
+function audioStats(s, out) {
+  const mem = guestMemory.buffer;
+  if (out + 16 > mem.byteLength) {
+    return 9;
+  }
+  const state = audioState(s, performance.now());
+  const dv = new DataView(mem);
+  dv.setUint32(out, Atomics.load(s.hdr, A_PLAYED) >>> 0, true);
+  dv.setUint32(out + 4, Atomics.load(s.hdr, A_UNDERRUN) >>> 0, true);
+  dv.setUint32(out + 8, Atomics.load(s.hdr, A_REFUSED) >>> 0, true);
+  dv.setUint32(out + 12, state, true);
+  return 0;
+}
+
+// audioImport wraps one wctr_audio_out import; anything it does not own goes to
+// the engine through callThrough.
+function audioImport(name, callThrough) {
+  switch (name) {
+    case "stream_open":
+      return (...args) => audioOpen(() => callThrough(...args), args);
+    case "stream_write":
+      return (...args) => {
+        const s = guestMemory && audioRings.get(args[0] >>> 0);
+        return s ? audioWrite(s, args[1] >>> 0, args[2] >>> 0, args[3] >>> 0) : callThrough(...args);
+      };
+    case "stream_stats":
+      return (...args) => {
+        const s = guestMemory && audioRings.get(args[0] >>> 0);
+        return s ? audioStats(s, args[1] >>> 0) : callThrough(...args);
+      };
+    case "stream_close":
+      return (...args) => {
+        try {
+          return callThrough(...args);
+        } finally {
+          audioRings.delete(args[0] >>> 0);
+        }
+      };
+  }
+  return callThrough;
+}
+
 let previewCount = 0;
 
 onmessage = async (e) => {
@@ -313,6 +502,9 @@ onmessage = async (e) => {
         const r = localTrivial(name, args);
         return r === undefined ? call(idx, params, result, args) : r;
       };
+    }
+    if (mod === "wctr_audio_out") {
+      imports[mod][name] = audioImport(name, (...args) => call(idx, params, result, args));
     }
   });
   try {

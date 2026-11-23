@@ -84,6 +84,17 @@ type Sink interface {
 	Close()
 }
 
+// OutOfBand is implemented by a Sink whose ring is also written by the guest's
+// own worker (the browser: worker.js serves stream_write and stream_stats
+// itself, so a host call never queues behind the engine's thread, a garbage
+// collection or another call). The worker counts the frames it refused in the
+// ring's header; the module adds them to what stream_stats reports and to the
+// "refused" event.
+type OutOfBand interface {
+	// Refused is the free-running count of frames refused out of band.
+	Refused() uint32
+}
+
 // Provider opens rings. The module has validated the arguments (section 4)
 // before it calls.
 type Provider interface {
@@ -176,6 +187,18 @@ type stream struct {
 	lastHBAt          time.Time
 	lastRefusedEvent  time.Time
 	refusedUnreported uint32
+	oobReported       uint32 // out-of-band refusals already added to refused
+}
+
+// outOfBand folds the refusals the guest's worker counted into refused and
+// reports them like the module's own.
+func (i *instance) outOfBand(s *stream, now time.Time) {
+	if oob, ok := s.sink.(OutOfBand); ok {
+		if n := oob.Refused() - s.oobReported; n != 0 {
+			s.oobReported += n
+			i.refuse(s, n, now)
+		}
+	}
 }
 
 // state is the stream's state at now (section 3): closed if the ring is, playing
@@ -354,6 +377,7 @@ func (i *instance) stats(h, out uint32, m wasi.Memory) uint32 {
 	if _, ok := readRange(m, out, 16); !ok {
 		return Fault
 	}
+	i.outOfBand(s, i.m.now())
 	st := s.w.Stats()
 	var rec [16]byte
 	binary.LittleEndian.PutUint32(rec[0:], st.Played)
@@ -384,6 +408,7 @@ func (i *instance) refuse(s *stream, frames uint32, now time.Time) {
 // drop closes one stream and gives its slot back. i.mu is held.
 func (i *instance) drop(h uint32, s *stream) {
 	delete(i.streams, h)
+	i.outOfBand(s, i.m.now())
 	s.sink.Close()
 	i.m.release(i.label)
 	i.p.Emit(ModuleName, "close", map[string]string{"container": i.label, "stream": strconv.FormatUint(uint64(h), 10)})
