@@ -644,8 +644,8 @@ func (p plainProvider) Open(c string, rate, ch, capacity int) (audio.Sink, error
 func TestSinkWithoutOutOfBandStillWorks(t *testing.T) {
 	// The guard's job is not to crash: assert it, so a panic reads as a failure.
 	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("a sink without OutOfBand crashed the module: %v", r)
+		if recover() != nil {
+			t.Errorf("a sink without OutOfBand made the module fail")
 		}
 	}()
 	inner := &audiotest.Provider{}
