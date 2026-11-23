@@ -74,6 +74,16 @@ func (r *Ring) Consume(n int) []float32 {
 	return out
 }
 
+// HRefused is the header word where the guest's worker counts the frames it
+// refused itself (worker.js, audio.OutOfBand).
+const HRefused = 7
+
+// Refused implements audio.OutOfBand.
+func (r *Ring) Refused() uint32 { return uint32(r.Load(HRefused)) }
+
+// WorkerRefused plays the guest's worker refusing n frames out of band.
+func (r *Ring) WorkerRefused(n int) { r.Add(HRefused, int32(n)) }
+
 // CloseFromPage plays a page that drops the ring: the state word flips.
 func (r *Ring) CloseFromPage() { r.Store(audioring.HState, audioring.StateClosed) }
 

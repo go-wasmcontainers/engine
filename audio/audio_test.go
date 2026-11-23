@@ -595,6 +595,37 @@ func TestCloseDuringCalls(t *testing.T) {
 	}
 }
 
+// TestWorkerRefusalsAreReported: the guest's worker serves stream_write itself
+// and counts what it refused in the ring header; stream_stats and the "refused"
+// event still carry them.
+func TestWorkerRefusalsAreReported(t *testing.T) {
+	h := newHarness(t, harnessOpts{caps: audioCap})
+	s := h.open(11025, 2, 256)
+	r := h.prov.Last()
+	start(h, r, s)
+	r.WorkerRefused(40)
+	if _, _, refused, _ := h.stats(s); refused != 40 {
+		t.Fatalf("stats refused = %d, want 40", refused)
+	}
+	if _, _, refused, _ := h.stats(s); refused != 40 {
+		t.Errorf("a second stats counted again: %d", refused)
+	}
+	*h.clock = h.clock.Add(2 * time.Second)
+	r.WorkerRefused(8)
+	if e := h.call(fnClose, s); e != audio.Success {
+		t.Fatalf("close = %d", e)
+	}
+	n := 0
+	for _, e := range *h.events {
+		if e == "wctr_audio_out refused " {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("%d refused events, want 2 (the first stats, the close): %v", n, *h.events)
+	}
+}
+
 func TestRefusedEventIsRateLimited(t *testing.T) {
 	h := newHarness(t, harnessOpts{caps: audioCap})
 	s := h.open(11025, 2, 256)

@@ -42,7 +42,9 @@ func TestWorkerMirrorsControlBlock(t *testing.T) {
 	}
 	// The block is allocated on the Go side only; the worker must not
 	// assume a size of its own.
-	if strings.Contains(src, "new SharedArrayBuffer") {
+	// The audio ring (audio.go, worker.js's audioOpen) is the one other buffer the
+	// worker allocates, sized by the stream, never the control block.
+	if strings.Contains(strings.ReplaceAll(src, "new SharedArrayBuffer(A_HEADER", ""), "new SharedArrayBuffer") {
 		t.Error("worker.js allocates a control block")
 	}
 }

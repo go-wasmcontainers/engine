@@ -12,6 +12,7 @@ import (
 	"syscall/js"
 	"time"
 
+	"github.com/go-wasmcontainers/engine/audio"
 	"github.com/go-wasmcontainers/engine/image"
 	"github.com/go-wasmcontainers/engine/runtime"
 	"github.com/go-wasmcontainers/engine/wasi"
@@ -473,6 +474,16 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 			p.mu.Lock()
 			p.mem = mem.mem
 			p.mu.Unlock()
+		case "audioring":
+			// The ring the guest's worker allocated for its next stream_open
+			// (worker.js posts it just before the call, so it is parked here when
+			// the call is served): wctr_audio_out's browser provider takes it.
+			rings := js.Global().Get(audio.RingsGlobal)
+			if !rings.Truthy() {
+				rings = js.Global().Get("Object").New()
+				js.Global().Set(audio.RingsGlobal, rings)
+			}
+			rings.Set(proc.Label(), data.Get("sab"))
 		case "call":
 			stamp(ctlServed)
 			Mark(decodeLabel)
