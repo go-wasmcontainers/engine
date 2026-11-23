@@ -626,6 +626,35 @@ func TestWorkerRefusalsAreReported(t *testing.T) {
 	}
 }
 
+// plainProvider hands out sinks that are only an audio.Sink: no OutOfBand.
+type plainProvider struct{ inner *audiotest.Provider }
+
+type plainSink struct{ audio.Sink }
+
+func (p plainProvider) Open(c string, rate, ch, capacity int) (audio.Sink, error) {
+	s, err := p.inner.Open(c, rate, ch, capacity)
+	if err != nil {
+		return nil, err
+	}
+	return plainSink{s}, nil
+}
+
+// TestSinkWithoutOutOfBandStillWorks: a provider whose rings the guest's worker
+// does not write (the native tests, any other host) needs no OutOfBand.
+func TestSinkWithoutOutOfBandStillWorks(t *testing.T) {
+	inner := &audiotest.Provider{}
+	h := newHarness(t, harnessOpts{caps: audioCap, mod: audio.New(plainProvider{inner})})
+	s := h.open(11025, 2, 256)
+	start(h, inner.Last(), s)
+	h.write(s, 16, 2, 0.1)
+	if _, _, refused, _ := h.stats(s); refused != 0 {
+		t.Errorf("refused = %d", refused)
+	}
+	if e := h.call(fnClose, s); e != audio.Success {
+		t.Errorf("close = %d", e)
+	}
+}
+
 func TestRefusedEventIsRateLimited(t *testing.T) {
 	h := newHarness(t, harnessOpts{caps: audioCap})
 	s := h.open(11025, 2, 256)
