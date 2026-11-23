@@ -193,13 +193,11 @@ type stream struct {
 // outOfBand folds the refusals the guest's worker counted into refused and
 // reports them like the module's own.
 func (i *instance) outOfBand(s *stream, now time.Time) {
-	oob, ok := s.sink.(OutOfBand)
-	if !ok {
-		return
-	}
-	if n := oob.Refused() - s.oobReported; n != 0 {
-		s.oobReported += n
-		i.refuse(s, n, now)
+	if oob, ok := s.sink.(OutOfBand); ok {
+		if n := oob.Refused() - s.oobReported; n != 0 {
+			s.oobReported += n
+			i.refuse(s, n, now)
+		}
 	}
 }
 
