@@ -226,6 +226,11 @@ func (h *hostState) closeAll() {
 // "gpu", from run --gpu).
 func (p *Proc) HasCap(c string) bool { return slices.Contains(p.cfg.Caps, c) }
 
+// Caps returns a copy of the capabilities the process was started with, for an
+// executor that serves some of its host modules in another thread and must give
+// that thread the same grant.
+func (p *Proc) Caps() []string { return slices.Clone(p.cfg.Caps) }
+
 // CapValue returns the value of a capability granted as "name=value" (run
 // --gpu --gpu-memory=SIZE grants "gpu-memory=BYTES"), and whether it was
 // granted.

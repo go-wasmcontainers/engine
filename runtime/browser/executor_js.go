@@ -37,11 +37,24 @@ type Options struct {
 	// WASI host in this worker; worker.js gives the guest one import
 	// object per module.
 	HostModules []wasi.HostModule
+	// RemoteModules names host modules (Module() of an entry of HostModules)
+	// that the GPU host worker serves instead of this worker, once SetHostPort
+	// gave the executor its port (see HostWorker). Before that, or when it never
+	// does, every module is served here.
+	RemoteModules []string
 }
 
 // Executor runs each container process in a Web Worker.
 type Executor struct {
 	opt Options
+
+	// host is the control port to the GPU host worker (SetHostPort), nextID the
+	// last id given to a process the host worker serves.
+	hostMu sync.Mutex
+	host   js.Value
+	nextID int
+	remote map[int]*process // by id, the processes the host worker serves
+	hostFn js.Func
 
 	mu       sync.Mutex
 	compiled map[cacheKey]*cacheEntry
@@ -73,6 +86,25 @@ func New(opt Options) *Executor {
 	}
 	installBusy()
 	return &Executor{opt: opt, compiled: map[cacheKey]*cacheEntry{}}
+}
+
+// SetHostPort gives the executor the control port to the GPU host worker (the
+// page made a MessageChannel, sent one end to the host worker as {t:"engine"}
+// and the other here). A container started after it has the modules named in
+// Options.RemoteModules served there; one started before keeps them here.
+func (e *Executor) SetHostPort(port js.Value) {
+	e.hostMu.Lock()
+	e.host = port
+	if !e.hostFn.Value.IsUndefined() {
+		e.hostFn.Release()
+	}
+	e.hostFn = js.FuncOf(func(_ js.Value, a []js.Value) any {
+		e.hostEvents(a[0].Get("data"))
+		return nil
+	})
+	fn := e.hostFn
+	e.hostMu.Unlock()
+	port.Set("onmessage", fn)
 }
 
 // Close implements runtime.Executor.
@@ -266,6 +298,9 @@ type process struct {
 	onEnd func(runtime.Result)
 	// exec starts further processes in this container (exec_js.go).
 	exec *spawner
+	// detach tells the GPU host worker the process is over (nil: it serves none
+	// of its imports).
+	detach func()
 }
 
 func (p *process) Wait() runtime.Result { <-p.done; return p.res }
@@ -289,6 +324,9 @@ func (p *process) finish(r runtime.Result) {
 			p.timer.Stop()
 		}
 		p.worker.Call("terminate")
+		if p.detach != nil {
+			p.detach()
+		}
 		p.res = r
 		close(p.done)
 		go func() {
@@ -568,6 +606,13 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 	// The process's origin on the epoch clock: the worker answers the monotonic
 	// clock_time_get ids itself, counting from it.
 	msg.Set("origin", origin+perf.Call("now").Float()-float64(proc.Elapsed())/1e6)
+	// The modules the GPU host worker serves: the guest's imports of them go to
+	// that thread, not to this one (engine#84).
+	if remote, transfer := e.attachRemote(p, proc, len(imports)); remote.Truthy() {
+		msg.Set("remote", remote)
+		worker.Call("postMessage", msg, transfer)
+		return p
+	}
 	worker.Call("postMessage", msg)
 	return p
 }
