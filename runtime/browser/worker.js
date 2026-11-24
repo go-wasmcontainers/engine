@@ -51,8 +51,6 @@ class Exit {
 let i32, view, instance;
 const callNames = [];
 let slowSent = 0;
-let minThere = Infinity; // least served - sent over the calls so far
-let minBack = Infinity; // least woke - answered
 
 // What the guest worker did between the engine's answer and its own return
 // (worker.js's "ret" in a slow call): it sat in Atomics.wait until the engine's
@@ -64,7 +62,7 @@ let wokeAt = 0;
 let wakes = 0;
 let reallocs = 0;
 
-function block() {
+function block(i32) {
   while (Atomics.load(i32, CTL_STATE) === 1) {
     Atomics.wait(i32, CTL_STATE, 1);
     wakes++;
@@ -72,7 +70,36 @@ function block() {
   wokeAt = performance.timeOrigin + performance.now();
 }
 
+// A channel is a control block and where its calls are posted: the engine's
+// (main, the worker's own postMessage), or the GPU host worker's (remote: the
+// start message's "remote", a second control block and a MessagePort to that
+// worker). The GPU host worker is a thread that serves only the GPU modules, so a
+// guest's GPU calls never wait for the engine's thread (its garbage collector,
+// every other container's calls): a single-threaded game that waits in a present
+// or a submit stops feeding its audio meanwhile (go-wasmcontainers/engine#84).
+// minThere is the least served - sent over the channel's calls so far, minBack
+// the least woke - answered.
+// (i32 and view are the worker's globals, which a test sets directly.)
+const main = {
+  get i32() {
+    return i32;
+  },
+  get view() {
+    return view;
+  },
+  post: (m) => postMessage(m),
+  minThere: Infinity,
+  minBack: Infinity,
+};
+
 function call(idx, params, result, args) {
+  return callOn(main, idx, params, result, args);
+}
+
+function callOn(ch, idx, params, result, args) {
+  const i32 = ch.i32;
+  const view = ch.view;
+  const post = ch.post;
   for (let i = 0; i < args.length; i++) {
     const off = CTL_ARGS + 8 * i;
     const a = args[i];
@@ -98,8 +125,8 @@ function call(idx, params, result, args) {
   const sent = performance.timeOrigin + performance.now();
   view.setFloat64(CTL_SENT, sent, true);
   Atomics.store(i32, CTL_STATE, 1);
-  postMessage({ t: "call" });
-  block();
+  post({ t: "call" });
+  block(i32);
   while (i32[CTL_FLAGS] & FLAG_REALLOC) {
     reallocs++;
     const realloc = instance.exports.cabi_realloc;
@@ -111,8 +138,8 @@ function call(idx, params, result, args) {
     }
     i32[CTL_FLAGS] = 0;
     Atomics.store(i32, CTL_STATE, 1);
-    postMessage(msg);
-    block();
+    post(msg);
+    block(i32);
   }
   const errno = i32[CTL_ERRNO];
   const flags = i32[CTL_FLAGS];
@@ -132,17 +159,17 @@ function call(idx, params, result, args) {
   // NTP: the trip there (served - sent = wait - d) and the trip back
   // (woke - answered = ret + d) are each smallest when the engine was idle, and
   // those two least times are equal, so d is half their difference.
-  if (served - sent < minThere) {
-    minThere = served - sent;
+  if (served - sent < ch.minThere) {
+    ch.minThere = served - sent;
   }
-  if (woke - answered < minBack) {
-    minBack = woke - answered;
+  if (woke - answered < ch.minBack) {
+    ch.minBack = woke - answered;
   }
   if (woke - sent >= SLOW_CALL && slowSent < SLOW_CAP) {
     slowSent++;
-    const d = (minBack - minThere) / 2;
+    const d = (ch.minBack - ch.minThere) / 2;
     // Every figure is on the ENGINE's clock, the one its busy log (busy.js) uses.
-    postMessage({ t: "slow", name: callNames[idx], at: sent - d, total: woke - sent, wait: served - sent + d, exec: answered - served, ret: woke - answered - d, off: d, wake: wokeAt - answered - d, post: woke - wokeAt, wakes: wakes, reallocs: reallocs });
+    postMessage({ t: "slow", name: callNames[idx] + (ch === main ? "" : " (gpu host)"), at: sent - d, total: woke - sent, wait: served - sent + d, exec: answered - served, ret: woke - answered - d, off: d, wake: wokeAt - answered - d, post: woke - wokeAt, wakes: wakes, reallocs: reallocs });
   }
   if (flags & FLAG_EXIT) {
     throw new Exit(code);
@@ -475,14 +502,35 @@ function audioImport(name, callThrough) {
 }
 
 let previewCount = 0;
+let remotePort = null;
+
+// endRemote tells the host worker this guest is over, so it releases what it
+// holds for it (the GPU device, the canvases). A killed worker never reaches
+// it: the engine sends the same message when it ends the process.
+function endRemote() {
+  if (remotePort) {
+    remotePort.postMessage({ t: "detach" });
+  }
+}
 
 onmessage = async (e) => {
-  const { module, ctl, funcs, origin } = e.data;
+  const { module, ctl, funcs, origin, remote } = e.data;
   if (typeof origin === "number") {
     procStart = origin;
   }
   i32 = new Int32Array(ctl);
   view = new DataView(ctl);
+  // remote: {ctl, port, mods, label, caps}: the modules this guest's imports of
+  // which the GPU host worker serves, through a second control block and a port
+  // to it. Posts on the port keep their order, so the attach (which gives the
+  // host worker the guest's memory and control block) arrives before any call.
+  const remoteMods = new Set();
+  let rch = null;
+  if (remote && remote.port && remote.ctl) {
+    rch = { i32: new Int32Array(remote.ctl), view: new DataView(remote.ctl), post: (m) => remote.port.postMessage(m), minThere: Infinity, minBack: Infinity };
+    (remote.mods || []).forEach((m) => remoteMods.add(m));
+    remotePort = remote.port;
+  }
   const imports = {};
   funcs.forEach(([mod, name, params, result], idx) => {
     callNames[idx] = mod + " " + name;
@@ -491,6 +539,9 @@ onmessage = async (e) => {
     }
     imports[mod] = imports[mod] || {};
     imports[mod][name] = (...args) => call(idx, params, result, args);
+    if (rch && remoteMods.has(mod)) {
+      imports[mod][name] = (...args) => callOn(rch, idx, params, result, args);
+    }
     if (mod === "wasi_snapshot_preview1" && name === "poll_oneoff") {
       imports[mod][name] = (...args) => {
         const r = localPoll(args[0], args[1], args[2], args[3]);
@@ -519,6 +570,12 @@ onmessage = async (e) => {
     return;
   }
   guestMemory = memory;
+  if (rch) {
+    // The host worker serves this guest's calls from here on: it needs the
+    // guest's memory (a SharedArrayBuffer, so the same bytes) and the block its
+    // answers go in.
+    remotePort.postMessage({ t: "attach", memory, ctl: remote.ctl, label: remote.label, n: funcs.length });
+  }
   postMessage({ t: "memory", memory });
   const start = instance.exports._start;
   if (typeof start !== "function") {
@@ -527,8 +584,10 @@ onmessage = async (e) => {
   }
   try {
     start();
+    endRemote();
     postMessage({ t: "exit", code: 0 });
   } catch (err) {
+    endRemote();
     if (err instanceof Exit) {
       postMessage({ t: "exit", code: err.code });
     } else {
