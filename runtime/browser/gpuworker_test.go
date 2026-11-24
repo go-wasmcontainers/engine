@@ -36,9 +36,19 @@ function answer(c, ret) {
   Atomics.store(i32, 0, 2);
 }
 let reallocPending = false;
+// The host worker's "ready" reaches the guest on the port, after 0 ms, or after
+// 200 ms in the "late" mode: Firefox drops a message carrying a
+// SharedArrayBuffer sent before the receiver owns the port (engine#84), so the
+// guest must not post its attach before it has heard "ready".
+let readyHeard = false, attachEarly = false;
 const port = {
+  set onmessage(f) {
+    if (typeof f !== "function") return;
+    setTimeout(() => { readyHeard = true; f({ data: { t: "ready" } }); }, process.argv[3] === "late" ? 200 : 0);
+  },
   postMessage: (m) => {
     portPosted.push(m.t);
+    if (m.t === "attach" && !readyHeard) attachEarly = true;
     const i32 = new Int32Array(ctl2);
     if (m.t === "call") {
       const fn = i32[1];
@@ -69,6 +79,8 @@ const sandbox = {
   },
   onmessage: null,
   performance,
+  setTimeout,
+  clearTimeout,
   WebAssembly: {
     Memory: WebAssembly.Memory,
     instantiate: async (m, i) => { imports = i; return { exports: { memory, cabi_realloc: () => 1024, _start() {} } }; },
@@ -100,6 +112,7 @@ async function run() {
   out.afterGPUFd = w.fd_write(1, 2, 3, 4);
   out.engineCallsAfter = engineCalls.slice();
   out.portPosted = portPosted.filter((t, i) => portPosted.indexOf(t) === i);
+  out.attachEarly = attachEarly;
   console.log(JSON.stringify(out));
 }
 run().catch((e) => { console.error(e); process.exit(1); });
@@ -138,6 +151,26 @@ type gpuWorkerResult struct {
 	AfterGPUFd       int
 	EngineCallsAfter []int
 	PortPosted       []string
+	AttachEarly      bool
+}
+
+// TestAttachWaitsForTheHostWorkersReady: the host worker says "ready" 200 ms
+// late; the guest's attach (its memory and control block, both
+// SharedArrayBuffers) must not be posted before that. Red on a worker that
+// posts it at once: Firefox then drops the message and the guest hangs on its
+// first GPU call (go-wasmcontainers/engine#84).
+func TestAttachWaitsForTheHostWorkersReady(t *testing.T) {
+	var got gpuWorkerResult
+	b := runGPUWorker(t, "late")
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%v\n%s", err, b)
+	}
+	if got.AttachEarly {
+		t.Errorf("attach posted before the host worker's ready\n%s", b)
+	}
+	if got.HostCalls[1] != 10 {
+		t.Errorf("host calls %v, want the guest to run after the late ready\n%s", got.HostCalls, b)
+	}
 }
 
 // TestGPUCallsDoNotWaitForTheEngine: with an engine that stalls 150 ms on every

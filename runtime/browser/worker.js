@@ -573,7 +573,23 @@ onmessage = async (e) => {
   if (rch) {
     // The host worker serves this guest's calls from here on: it needs the
     // guest's memory (a SharedArrayBuffer, so the same bytes) and the block its
-    // answers go in.
+    // answers go in. Firefox drops a message carrying a SharedArrayBuffer when
+    // it is sent on a port the receiver does not own yet (go-wasmcontainers/
+    // engine#84), so it waits for the host worker's plain "ready" first.
+    const ready = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), 30000);
+      remotePort.onmessage = (m) => {
+        if (m.data && m.data.t === "ready") {
+          clearTimeout(timer);
+          remotePort.onmessage = null;
+          resolve(true);
+        }
+      };
+    });
+    if (!ready) {
+      postMessage({ t: "trap", message: "the gpu host worker did not answer" });
+      return;
+    }
     remotePort.postMessage({ t: "attach", memory, ctl: remote.ctl, label: remote.label, n: funcs.length });
   }
   postMessage({ t: "memory", memory });
