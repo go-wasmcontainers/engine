@@ -255,7 +255,12 @@ func (h *HostWorker) serve(g *hostGuest) {
 			f64 = js.Global().Get("Float64Array").New(ctl)
 		case "call":
 			if !ctl.Truthy() {
-				break // a call before its attach cannot happen: one port keeps order
+				// The attach never arrived (the browser refused it, see
+				// onmessageerror): the guest is blocked in Atomics.wait on a block
+				// this worker has not got, so the engine is told and ends it
+				// instead of leaving the call unanswered for ever.
+				h.event(g.id, "host-worker", "call-without-attach", nil)
+				break
 			}
 			stamp(ctlServed)
 			js.CopyBytesToGo(ctlBuf, ctlU8)
@@ -298,6 +303,21 @@ func (h *HostWorker) serve(g *hostGuest) {
 		}
 		return nil
 	})
-	g.funcs = append(g.funcs, onMessage)
+	// A message carrying a SharedArrayBuffer is not copied through the port like
+	// the others: Firefox keeps its body in a table keyed by the sending port and
+	// drops it when that port is closed or collected before this worker reads
+	// it (RefMessageBodyService::ForgetPort), and the read then fails with a
+	// messageerror. The guest sends its attach only after the "ready" below, but
+	// a refusal must still end the guest, never leave it waiting.
+	onError := js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		h.event(g.id, "host-worker", "attach-refused", map[string]string{"error": "messageerror"})
+		return nil
+	})
+	g.funcs = append(g.funcs, onMessage, onError)
 	g.port.Set("onmessage", onMessage)
+	g.port.Set("onmessageerror", onError)
+	// The guest waits for this plain message before it posts the attach (its
+	// memory and control block are SharedArrayBuffers): from here the port is
+	// live in this worker, which is what the browser needs to keep those bodies.
+	g.port.Call("postMessage", js.ValueOf(map[string]any{"t": "ready"}))
 }

@@ -34,7 +34,7 @@ func (e *Executor) hostEvents(d js.Value) {
 		// The host worker could not serve the guest (a trap in a module, a bad
 		// import, an engine and a host worker with different module lists): the
 		// guest ends as it would on a trap in the engine's own worker.
-		if action == "trap" || action == "bad-import" || action == "bad-realloc" || action == "mismatch" {
+		if action == "trap" || action == "bad-import" || action == "bad-realloc" || action == "mismatch" || action == "attach-refused" || action == "call-without-attach" {
 			p.finish(runtime.Result{ExitCode: runtime.ExitTrap, Error: "gpu host worker: " + action + " " + attrs["error"] + attrs["fn"]})
 		}
 		return
