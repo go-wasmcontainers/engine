@@ -20,7 +20,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
 	github.com/tetratelabs/wazero v1.12.0
-	github.com/wasmdesk/wasmbox/audioring v0.2.0
+	github.com/wasmdesk/wasmbox/audioring v0.3.0
 	golang.org/x/net v0.62.0
 	golang.org/x/term v0.48.0
 )

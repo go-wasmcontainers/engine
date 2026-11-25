@@ -473,10 +473,181 @@ function audioStats(s, out) {
   return 0;
 }
 
+// The voice mixer (docs/audio-design.md section 5, wasmbox audioring/voices.go for
+// the layout). The mixer itself runs in the page's AudioWorklet; this worker owns
+// the two SharedArrayBuffers it plays from and is their only writer:
+//
+//   ctl  : header, the snapshot (worklet owns) and the command ring (this worker)
+//   bank : a table of 1024 entries, then the PCM of every loaded sample
+//
+// voice_open allocates both, posts them to the engine just ahead of the call (as
+// stream_open does for a ring) and checks the engine adopted them (ctl word 10).
+// sample_load, voice_commit and voice_stats are served here, never by the engine:
+// they are what a game calls many times a frame, and the engine's thread is the
+// one a garbage collection stops. Every value a guest hands in is checked before
+// it reaches a shared buffer; a refusal is an errno, never a trap, and a refused
+// commit writes nothing (the batch is all or nothing).
+const V_CMDW = 0;
+const V_CMDR = 1;
+const V_UNDERRUN = 2;
+const V_PLAYED = 3;
+const V_STATE = 5;
+const V_STARVED = 7;
+const V_PAINTED = 8;
+const V_BADCMD = 9;
+const V_ADOPTED = 10;
+const V_SNAP = 16;
+const V_CMD = 272;
+const VOICE_SLOTS = 128;
+const VOICE_SAMPLES = 1024;
+const VOICE_CMDS = 1024;
+const VOICE_ENTRY_WORDS = 8;
+const VOICE_BANK_TABLE = 32768;
+const VOICE_BANK_BYTES = 16 << 20;
+const VOICE_MAX_VOL = 255;
+const voiceMixers = new Map();
+
+function voiceOpen(callOpen, args) {
+  const rate = args[0] >>> 0;
+  const out = args[1] >>> 0;
+  if (!guestMemory || rate < 8000 || rate > 48000 || out + 4 > guestMemory.buffer.byteLength) {
+    return callOpen();
+  }
+  const ctl = new SharedArrayBuffer((V_CMD + VOICE_CMDS * 4) * 4);
+  const bank = new SharedArrayBuffer(VOICE_BANK_BYTES);
+  postMessage({ t: "audiovoices", ctl, bank });
+  const r = callOpen();
+  if (r !== 0) {
+    return r;
+  }
+  const h = new DataView(guestMemory.buffer).getUint32(out, true);
+  const c = new Int32Array(ctl);
+  if (Atomics.load(c, V_ADOPTED) === 1) {
+    voiceMixers.set(h, { c, bank, b32: new Int32Array(bank), rate, next: VOICE_BANK_TABLE, write: 0 });
+  }
+  return r;
+}
+
+// voiceLoad is sample_load(handle, id, ptr, len, bits, rate, loopstart, nsamples):
+// the PCM is copied into the bank, the entry's ready word is stored last. An id is
+// loaded once (the worklet may be playing it); the rate must be the mixer's.
+function voiceLoad(v, a) {
+  const id = a[1] >>> 0, ptr = a[2] >>> 0, len = a[3] >>> 0, bits = a[4] >>> 0;
+  const rate = a[5] >>> 0, loop = a[6] >>> 0, n = a[7] >>> 0;
+  if (id >= VOICE_SAMPLES || (bits !== 8 && bits !== 16) || rate !== v.rate || n < 1 ||
+      len !== n * (bits >> 3) || loop >= n) {
+    return 1;
+  }
+  const mem = guestMemory.buffer;
+  if (ptr + len > mem.byteLength) {
+    return 9;
+  }
+  const e = id * VOICE_ENTRY_WORDS;
+  if (Atomics.load(v.b32, e) !== 0) {
+    return 1;
+  }
+  const off = (v.next + 3) & ~3;
+  if (off + len > VOICE_BANK_BYTES) {
+    return 4;
+  }
+  new Uint8Array(v.bank, off, len).set(new Uint8Array(mem, ptr, len));
+  v.next = off + len;
+  v.b32[e + 1] = bits;
+  v.b32[e + 2] = rate;
+  v.b32[e + 3] = n;
+  v.b32[e + 4] = loop;
+  v.b32[e + 5] = off;
+  v.b32[e + 6] = len;
+  v.b32[e + 7] = 0;
+  Atomics.store(v.b32, e, 1);
+  return 0;
+}
+
+// voiceCommit is voice_commit(handle, cmds, ncmd, snap): ncmd 16-byte commands
+// (audioring.Command.Encode) are appended to the ring, then the slots' snapshot
+// is copied to snap. A command is checked as audioring.DecodeCommand checks it.
+function voiceCommit(v, a) {
+  const ptr = a[1] >>> 0, n = a[2] >>> 0, snap = a[3] >>> 0;
+  if (n > VOICE_CMDS) {
+    return 4;
+  }
+  const mem = guestMemory.buffer;
+  if (ptr + n * 16 > mem.byteLength || snap + VOICE_SLOTS * 8 > mem.byteLength) {
+    return 9;
+  }
+  const dv = new DataView(mem);
+  const closed = Atomics.load(v.c, V_STATE) !== 0;
+  if (n > 0 && !closed) {
+    for (let k = 0; k < n; k++) {
+      const w0 = dv.getUint32(ptr + k * 16, true), w1 = dv.getUint32(ptr + k * 16 + 4, true);
+      const w2 = dv.getUint32(ptr + k * 16 + 8, true), w3 = dv.getUint32(ptr + k * 16 + 12, true);
+      const op = w0 & 0xff, slot = (w0 >>> 8) & 0xff;
+      if (op < 1 || op > 4 || slot >= VOICE_SLOTS || (w1 & 0xffff) >= VOICE_SAMPLES || (w1 >>> 16) > 1 ||
+          (w2 & 0xffff) > VOICE_MAX_VOL || (w2 >>> 16) > VOICE_MAX_VOL || w3 !== 0) {
+        return 1;
+      }
+    }
+    if (n > VOICE_CMDS - ((v.write - Atomics.load(v.c, V_CMDR)) >>> 0)) {
+      return 5;
+    }
+    for (let k = 0; k < n; k++) {
+      const at = V_CMD + ((v.write + k) & (VOICE_CMDS - 1)) * 4;
+      for (let j = 0; j < 4; j++) {
+        Atomics.store(v.c, at + j, dv.getInt32(ptr + k * 16 + j * 4, true));
+      }
+    }
+    v.write = (v.write + n) >>> 0;
+    Atomics.store(v.c, V_CMDW, v.write | 0);
+  }
+  for (let k = 0; k < VOICE_SLOTS * 2; k++) {
+    dv.setInt32(snap + k * 4, Atomics.load(v.c, V_SNAP + k), true);
+  }
+  return 0;
+}
+
+// voiceStats is voice_stats(handle, out): played, underruns, starved, painted,
+// badcmd, state (0 playing, 1 closed by the page), six u32.
+function voiceStats(v, out) {
+  const mem = guestMemory.buffer;
+  if (out + 24 > mem.byteLength) {
+    return 9;
+  }
+  const dv = new DataView(mem);
+  [V_PLAYED, V_UNDERRUN, V_STARVED, V_PAINTED, V_BADCMD, V_STATE].forEach((w, k) => {
+    dv.setUint32(out + k * 4, Atomics.load(v.c, w) >>> 0, true);
+  });
+  return 0;
+}
+
 // audioImport wraps one wctr_audio_out import; anything it does not own goes to
 // the engine through callThrough.
 function audioImport(name, callThrough) {
   switch (name) {
+    case "voice_open":
+      return (...args) => voiceOpen(() => callThrough(...args), args);
+    case "sample_load":
+      return (...args) => {
+        const v = guestMemory && voiceMixers.get(args[0] >>> 0);
+        return v ? voiceLoad(v, args) : callThrough(...args);
+      };
+    case "voice_commit":
+      return (...args) => {
+        const v = guestMemory && voiceMixers.get(args[0] >>> 0);
+        return v ? voiceCommit(v, args) : callThrough(...args);
+      };
+    case "voice_stats":
+      return (...args) => {
+        const v = guestMemory && voiceMixers.get(args[0] >>> 0);
+        return v ? voiceStats(v, args[1] >>> 0) : callThrough(...args);
+      };
+    case "voice_close":
+      return (...args) => {
+        try {
+          return callThrough(...args);
+        } finally {
+          voiceMixers.delete(args[0] >>> 0);
+        }
+      };
     case "stream_open":
       return (...args) => audioOpen(() => callThrough(...args), args);
     case "stream_write":

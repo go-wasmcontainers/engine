@@ -448,12 +448,27 @@ writes interleaved little-endian `float32` PCM:
 | `stream_stats(stream, out)` | stores `{played, underruns, refused, state}` (`state`: 0 waiting, 1 playing, 2 closed) |
 | `stream_close(stream)` | closes it (also done when the process ends) |
 
+A game that cannot be trusted to run on time (its worker thread descheduled for
+100+ ms) can put its **channel mixer on the audio thread** instead of feeding
+PCM: it loads each sound once and sends start/stop/volume commands, and the page's
+`wasmbox-voices` AudioWorklet paints up to 128 voices 0.1 s ahead, so sounds
+already playing run on through a stall of the guest.
+
+| Function | Effect |
+|---|---|
+| `voice_open(rate, out)` | opens a mixer at `rate` (8000..48000 Hz, the rate every sample must have); handle at `out`. A mixer takes one stream slot; one per container, 4 per page |
+| `sample_load(mixer, id, ptr, len, bits, rate, loopstart, nsamples)` | copies a sound (8-bit signed or 16-bit little-endian) into the shared bank under `id` (0..1023, loaded once); the bank holds 16 MiB per mixer, `TooLarge` when full |
+| `voice_commit(mixer, cmds, n, snap)` | appends `n` (at most 1024) 16-byte commands (`audioring.Command.Encode`: start, stop, stop all, set volume; a batch is all or nothing, `QuotaExceeded` when the ring is full), then stores the 128 slots' snapshot (generation, frames left) at `snap` |
+| `voice_stats(mixer, out)` | stores `{played, underruns, starved, painted, badcmd, state}` |
+| `voice_close(mixer)` | closes it (also done when the process ends) |
+
 Until the page plays (no user gesture yet, no page attached) a stream is
 `waiting`: writes are accepted and discarded, so sound made before the click is
 never played late. Bounds: 2 streams per container, 8 per page, 128 KiB per
 write. Errno: `Denied` (no `--audio`), `Unsupported` (no provider: **native
 `wctr` has no audio output**), `TooLarge`, `QuotaExceeded`, `Fault`. The module
-reports `audio open`, `audio close` and `audio refused` events. In the
+reports `audio open`, `audio close`, `audio refused`, `audio voice_open` and
+`audio voice_close` events. In the
 browser the provider is `audio.Browser`: one `SharedArrayBuffer` ring per
 stream, read by the `audioring` AudioWorklet ([wasmbox](https://github.com/wasmdesk/wasmbox));
 the playground wires it. Design and threat model: [docs/audio-design.md](docs/audio-design.md).
