@@ -169,7 +169,9 @@ func TestFuncs(t *testing.T) {
 		got = append(got, i.Name+"/"+i.Params+"/"+i.Result)
 	}
 	want := []string{"stream_open/iiii/i", "stream_write/iiii/i", "stream_stats/ii/i", "stream_close/i/i"}
-	if len(got) != len(want) {
+	// The voice calls follow, listed by TestVoiceFuncs: the stream calls keep
+	// their indexes.
+	if len(got) < len(want) {
 		t.Fatalf("imports %v", got)
 	}
 	for k := range want {
