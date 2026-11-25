@@ -173,7 +173,10 @@ container like `"gpu"`. `--audio` is independent of `--gpu`.
 | rate | 8000..48000 Hz | 48 kHz is every browser's common output rate; above it a guest only buys resampler work |
 | channels | 1..2 | the worklet's outputs |
 | capacity | 256..16384 frames, a power of two | audioring's index arithmetic; 16384 frames is 1.5 s at 11025 Hz, 341 ms at 48 kHz |
-| streams | 2 per container, 8 per page | a worklet node per stream costs audio-thread time; Quake needs 1 (music is mixed in the guest) |
+| streams | 2 per container, 8 per page | a worklet node per stream costs audio-thread time; a game that mixes on the audio thread (section 10) needs 1 mixer |
+| mixers | 1 per container, 4 per page; each takes a stream slot | a mixer paints 128 voices on the audio thread |
+| bank | 16 MiB per mixer, 64 MiB per page; 1024 samples | host memory, not counted in `--memory`; a SharedArrayBuffer is committed lazily |
+| commands | 1024 in the ring, 1024 per commit | a refusal writes nothing |
 | ring memory | at most 128 KiB + 64 B per stream, 256 KiB per container, 1 MiB per page | follows from the above; host memory, not counted in `--memory` |
 | copy per call | at most 128 KiB | `frames` above capacity is `TooLarge` |
 
@@ -359,3 +362,54 @@ because the pacing of §3 is its fix.
   its dashboard pane, and the page has a global mute.
 - **Quake**: the playground's `quake` image is not run with `--audio` by
   default; the user adds it.
+
+## 10. The voice mixer (audio on the audio thread)
+
+A guest that mixes by itself (the stream of sections 3-8) underruns whenever
+its worker stalls: a garbage collection, a busy frame. The voice mixer moves
+the mixing to the AudioWorklet, which nothing on the guest side can stall.
+Design: `audio-producer-design.md`, design A.
+
+**Model.** The guest loads each sample once into a shared bank, then sends
+commands (start, stop, set volume, set position) over a command ring. The
+worklet `wasmbox-voices` (`wasmdesk/wasmbox/audioring`, v0.3.0) owns the
+voices, mixes them into an int32 paint buffer at the mixer rate, clamps to 16
+bits at the transfer and stays 0.1 s ahead. Music is a sample like any other,
+uploaded to the bank; the guest no longer mixes anything.
+
+**Imports (section 3).** `voice_open(rate, flags)`, `sample_load(...)`,
+`voice_commit(...)`, `voice_stats(...)`, `voice_close(h)`. The guest's worker
+allocates and writes both SharedArrayBuffers (control, 16 MiB bank) and posts
+them ahead of `voice_open`; the engine adopts them by setting control word 10.
+`sample_load`, `voice_commit` and `voice_stats` are then served in the worker,
+never on the engine thread, so a stalled engine cannot starve the mixer. On a
+mixer the worker did not adopt the engine answers `Unsupported`; an unknown
+handle is `InvalidArgument`.
+
+**Bounds and threats (section 4).** One mixer per container, four per page,
+16 MiB of bank per mixer (64 MiB per page); a mixer also takes one stream
+slot. Every command is validated before it is queued, and a commit is
+all-or-nothing: a batch with one invalid command queues none. A sample is
+loaded once (a reload is refused), its id is below 1024, its rate equals the
+mixer rate, its length matches its header, and the bank refuses what does not
+fit (`TooLarge`). The ring holds 1024 commands (`QuotaExceeded` when full).
+The worklet re-checks the generation of every slot, so a stale or forged
+command counts in `badcmd` and does nothing. A closed mixer accepts and drops
+commands.
+
+**Browser (section 5).** `voice_open` posts
+`{t:"audio", op:"open", kind:"voices", ctl, bank, mixRate, aheadFrames}`; the
+page creates the `wasmbox-voices` node with the buffers as processor options.
+
+**Latency (section 6).** A command lands at most one render quantum (128
+frames) after the commit; the paint buffer stays 0.1 s ahead, as in the guest
+mixer, so the sound a command starts is heard one lead later, and `voice_stats`
+reports played, underruns, starved, painted, badcmd and state.
+
+**Tests (section 7).** `audio/voices_test.go` covers the imports, quotas,
+refusals and a fuzz target (`FuzzVoiceCalls`, corpus committed).
+`runtime/browser/voiceworker_test.go` runs the real worker.js and the real
+worklet in node with an engine stalled for 150 ms: the voices keep playing
+through a 250 ms hold (no silent quantum, no underrun), a seeded hostile run of
+3000 calls cannot corrupt the rings, and a mixer the engine did not adopt stays
+the engine's.

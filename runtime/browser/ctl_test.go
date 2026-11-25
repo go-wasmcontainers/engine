@@ -44,7 +44,11 @@ func TestWorkerMirrorsControlBlock(t *testing.T) {
 	// assume a size of its own.
 	// The audio ring (audio.go, worker.js's audioOpen) is the one other buffer the
 	// worker allocates, sized by the stream, never the control block.
-	if strings.Contains(strings.ReplaceAll(src, "new SharedArrayBuffer(A_HEADER", ""), "new SharedArrayBuffer") {
+	// The voice mixer's control ring and sample bank (voiceOpen) are the other two.
+	rest := strings.ReplaceAll(src, "new SharedArrayBuffer(A_HEADER", "")
+	rest = strings.ReplaceAll(rest, "new SharedArrayBuffer((V_CMD + VOICE_CMDS * 4) * 4)", "")
+	rest = strings.ReplaceAll(rest, "new SharedArrayBuffer(VOICE_BANK_BYTES)", "")
+	if strings.Contains(rest, "new SharedArrayBuffer") {
 		t.Error("worker.js allocates a control block")
 	}
 }

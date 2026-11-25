@@ -522,6 +522,18 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 				js.Global().Set(audio.RingsGlobal, rings)
 			}
 			rings.Set(proc.Label(), data.Get("sab"))
+		case "audiovoices":
+			// The mixer's control and bank buffers, parked the same way for
+			// voice_open: the browser provider's OpenVoices takes the pair.
+			voices := js.Global().Get(audio.VoicesGlobal)
+			if !voices.Truthy() {
+				voices = js.Global().Get("Object").New()
+				js.Global().Set(audio.VoicesGlobal, voices)
+			}
+			pair := js.Global().Get("Object").New()
+			pair.Set("ctl", data.Get("ctl"))
+			pair.Set("bank", data.Get("bank"))
+			voices.Set(proc.Label(), pair)
 		case "call":
 			stamp(ctlServed)
 			Mark(decodeLabel)

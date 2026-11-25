@@ -3,6 +3,7 @@
 package audio
 
 import (
+	"errors"
 	"sync"
 	"syscall/js"
 	"unsafe"
@@ -100,6 +101,82 @@ func takeRing(container string, size int) js.Value {
 		return js.Undefined()
 	}
 	return buf
+}
+
+// VoicesGlobal is the engine worker's global where runtime/browser parks the
+// {ctl, bank} pair a guest's worker allocated for its next voice_open, keyed by
+// container label.
+const VoicesGlobal = "__wctrAudioVoices"
+
+// vAdopted is the control buffer's word the provider sets to 1 when it took the
+// buffers: the worker then serves sample_load, voice_commit and voice_stats.
+const vAdopted = 10
+
+var _ VoiceProvider = (*Browser)(nil)
+
+// OpenVoices implements VoiceProvider (section 5). It takes the buffers the
+// guest's worker parked, marks them adopted and tells the page to create the
+// mixer's AudioWorkletNode:
+//
+//	open:  {t:"audio", op:"open", kind:"voices", stream, container, mixRate, aheadFrames, ctl, bank}
+//	close: {t:"audio", op:"close", stream}
+//
+// There is nothing to allocate here: the worker is the only writer of both
+// buffers and is blocked in Atomics.wait while the engine serves a call.
+func (b *Browser) OpenVoices(container string, mixRate int) (VoiceSink, error) {
+	g := js.Global()
+	pair := takeVoices(container)
+	if !pair.Truthy() {
+		return nil, errors.New("audio: the guest's worker parked no mixer buffers")
+	}
+	ctl, bank := pair.Get("ctl"), pair.Get("bank")
+	sabType := g.Get("SharedArrayBuffer")
+	if !ctl.InstanceOf(sabType) || !bank.InstanceOf(sabType) ||
+		ctl.Get("byteLength").Int() != audioring.VoicesSABBytes() || bank.Get("byteLength").Int() != audioring.MaxBankBytes {
+		return nil, errors.New("audio: the parked mixer buffers are not the size the mixer needs")
+	}
+	b.mu.Lock()
+	b.next++
+	id := b.next
+	b.mu.Unlock()
+	atomics := g.Get("Atomics")
+	hdr := g.Get("Int32Array").New(ctl, 0, 16)
+	atomics.Call("store", hdr, vAdopted, 1)
+	msg := js.ValueOf(map[string]any{
+		"t": "audio", "op": "open", "kind": "voices", "stream": id, "container": container,
+		"mixRate": mixRate, "aheadFrames": (mixRate + 9) / 10, // MixAhead 0.1 s
+	})
+	msg.Set("ctl", ctl)
+	msg.Set("bank", bank)
+	b.Post(msg)
+	return &voiceSink{b: b, id: id, atomics: atomics, hdr: hdr}, nil
+}
+
+// takeVoices returns the pair the container's worker parked, and forgets it.
+func takeVoices(container string) js.Value {
+	voices := js.Global().Get(VoicesGlobal)
+	if !voices.Truthy() {
+		return js.Undefined()
+	}
+	pair := voices.Get(container)
+	if pair.Truthy() {
+		voices.Delete(container)
+	}
+	return pair
+}
+
+type voiceSink struct {
+	b       *Browser
+	id      int
+	atomics js.Value
+	hdr     js.Value
+}
+
+// Close stores the mixer's closed state, which stops the worklet, and tells the
+// page to drop the node.
+func (s *voiceSink) Close() {
+	s.atomics.Call("store", s.hdr, audioring.VState, audioring.StateClosed)
+	s.b.Post(js.ValueOf(map[string]any{"t": "audio", "op": "close", "stream": s.id}))
 }
 
 // sab is the audioring.Backing over a SharedArrayBuffer.

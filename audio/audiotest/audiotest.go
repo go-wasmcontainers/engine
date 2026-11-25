@@ -87,15 +87,55 @@ func (r *Ring) WorkerRefused(n int) { r.Add(HRefused, int32(n)) }
 // CloseFromPage plays a page that drops the ring: the state word flips.
 func (r *Ring) CloseFromPage() { r.Store(audioring.HState, audioring.StateClosed) }
 
-// Provider is the audio.Provider. Rings lists every ring opened, in order.
+// VoiceSink is one mixer opened by OpenVoices, and its audio.VoiceSink.
+type VoiceSink struct {
+	Container string
+	MixRate   int
+	mu        sync.Mutex
+	closes    int
+}
+
+// Close implements audio.VoiceSink.
+func (v *VoiceSink) Close() { v.mu.Lock(); v.closes++; v.mu.Unlock() }
+
+// CloseCalls is how many times the module closed the sink (it must be one).
+func (v *VoiceSink) CloseCalls() int { v.mu.Lock(); defer v.mu.Unlock(); return v.closes }
+
+// Provider is the audio.Provider and audio.VoiceProvider. Rings lists every
+// ring opened, in order.
 type Provider struct {
 	mu    sync.Mutex
 	Rings []*Ring
+	voice []*VoiceSink
 	// Err, when set, is what Open returns.
 	Err error
+	// VoiceErr, when set, is what OpenVoices returns.
+	VoiceErr error
 }
 
-var _ audio.Provider = (*Provider)(nil)
+var (
+	_ audio.Provider      = (*Provider)(nil)
+	_ audio.VoiceProvider = (*Provider)(nil)
+)
+
+// OpenVoices implements audio.VoiceProvider.
+func (p *Provider) OpenVoices(container string, mixRate int) (audio.VoiceSink, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.VoiceErr != nil {
+		return nil, p.VoiceErr
+	}
+	v := &VoiceSink{Container: container, MixRate: mixRate}
+	p.voice = append(p.voice, v)
+	return v, nil
+}
+
+// VoiceSinks lists every mixer opened, in order.
+func (p *Provider) VoiceSinks() []*VoiceSink {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]*VoiceSink(nil), p.voice...)
+}
 
 // Open implements audio.Provider.
 func (p *Provider) Open(container string, rate, channels, capacity int) (audio.Sink, error) {

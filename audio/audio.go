@@ -72,9 +72,31 @@ const (
 	refusedEventEvery = time.Second
 )
 
+// Voice mixer bounds (section 4). A mixer is a stream of the page and takes one
+// of its slots; a container has one mixer, and the page has VoicesPerPage, each
+// with a bank of at most MaxBankBytes: the page holds at most 64 MiB of samples.
+const (
+	VoicesPerContainer = 1
+	VoicesPerPage      = 4
+	MaxBankBytes       = audioring.MaxBankBytes
+)
+
 // ErrQuota is what a Provider returns when the page cannot take one more
 // stream; the module answers QuotaExceeded.
 var ErrQuota = errors.New("audio: too many streams")
+
+// VoiceSink is one open mixer, as the provider made it. The buffers it plays
+// from belong to the guest's worker (section 5): the sink only ends the mixer.
+type VoiceSink interface {
+	// Close stops the mixer and tells the page. Called once.
+	Close()
+}
+
+// VoiceProvider is implemented by a Provider that can host a voice mixer (the
+// browser). Without it voice_open answers Unsupported.
+type VoiceProvider interface {
+	OpenVoices(container string, mixRate int) (VoiceSink, error)
+}
 
 // Sink is one open stream's ring, as the provider made it.
 type Sink interface {
@@ -111,6 +133,7 @@ type Module struct {
 
 	mu           sync.Mutex
 	page         int
+	voicePage    int
 	perContainer map[string]int
 }
 
@@ -128,6 +151,11 @@ const (
 	fnWrite
 	fnStats
 	fnClose
+	fnVoiceOpen
+	fnSampleLoad
+	fnVoiceCommit
+	fnVoiceStats
+	fnVoiceClose
 )
 
 // Funcs implements wasi.HostModule.
@@ -137,12 +165,18 @@ func (*Module) Funcs() []wasi.HostFunc {
 		fnWrite: {Name: "stream_write", Params: "iiii", Result: "i"},
 		fnStats: {Name: "stream_stats", Params: "ii", Result: "i"},
 		fnClose: {Name: "stream_close", Params: "i", Result: "i"},
+
+		fnVoiceOpen:   {Name: "voice_open", Params: "ii", Result: "i"},
+		fnSampleLoad:  {Name: "sample_load", Params: "iiiiiiii", Result: "i"},
+		fnVoiceCommit: {Name: "voice_commit", Params: "iiii", Result: "i"},
+		fnVoiceStats:  {Name: "voice_stats", Params: "ii", Result: "i"},
+		fnVoiceClose:  {Name: "voice_close", Params: "i", Result: "i"},
 	}
 }
 
 // Open implements wasi.HostModule.
 func (m *Module) Open(p *wasi.Proc) wasi.Instance {
-	return &instance{m: m, p: p, label: p.Label(), granted: p.HasCap(Capability), streams: map[uint32]*stream{}, next: 1}
+	return &instance{m: m, p: p, label: p.Label(), granted: p.HasCap(Capability), streams: map[uint32]*stream{}, voices: map[uint32]VoiceSink{}, next: 1}
 }
 
 func (m *Module) now() time.Time {
@@ -226,6 +260,7 @@ type instance struct {
 	closed  bool
 	next    uint32
 	streams map[uint32]*stream
+	voices  map[uint32]VoiceSink
 }
 
 func errno(e uint32) wasi.Result { return wasi.Result{Ret: uint64(e)} }
@@ -274,6 +309,23 @@ func (i *instance) Call(fn int, a []uint64, m wasi.Memory) wasi.Result {
 		}
 		i.drop(arg(0), s)
 		return errno(Success)
+	case fnVoiceOpen:
+		return errno(i.voiceOpen(arg(0), arg(1), m))
+	case fnSampleLoad, fnVoiceCommit, fnVoiceStats:
+		// The buffers belong to the guest's worker, which serves these three
+		// itself (section 5). One that reaches the engine is for a handle the
+		// worker did not adopt: say so rather than pretend.
+		if _, ok := i.voices[arg(0)]; !ok {
+			return errno(InvalidArgument)
+		}
+		return errno(Unsupported)
+	case fnVoiceClose:
+		v, ok := i.voices[arg(0)]
+		if !ok {
+			return errno(InvalidArgument)
+		}
+		i.dropVoice(arg(0), v)
+		return errno(Success)
 	}
 	return wasi.Result{Trap: "wctr_audio_out: unknown function"}
 }
@@ -314,6 +366,80 @@ func (i *instance) open(rate, channels, capacity, out uint32, m wasi.Memory) uin
 		"rate": strconv.Itoa(int(rate)), "channels": strconv.Itoa(int(channels)), "capacity": strconv.Itoa(int(capacity)),
 	})
 	return Success
+}
+
+// voiceOpen is voice_open(rate, out): the mixer's handle goes to out. The
+// buffers it plays from were allocated by the guest's worker and parked ahead of
+// the call; the provider takes them.
+func (i *instance) voiceOpen(rate, out uint32, m wasi.Memory) uint32 {
+	if rate < MinRate || rate > MaxRate {
+		return InvalidArgument
+	}
+	if _, ok := readRange(m, out, 4); !ok {
+		return Fault
+	}
+	vp, ok := i.m.Provider.(VoiceProvider)
+	if !ok {
+		return Unsupported
+	}
+	if len(i.voices) >= VoicesPerContainer || !i.m.acquireVoice(i.label) {
+		return QuotaExceeded
+	}
+	sink, err := vp.OpenVoices(i.label, int(rate))
+	if err != nil {
+		i.m.releaseVoice(i.label)
+		if errors.Is(err, ErrQuota) {
+			return QuotaExceeded
+		}
+		return Unsupported
+	}
+	h := i.next
+	var b [4]byte
+	binary.LittleEndian.PutUint32(b[:], h)
+	if !writeRange(m, out, b[:]) {
+		sink.Close()
+		i.m.releaseVoice(i.label)
+		return Fault
+	}
+	i.next++
+	i.voices[h] = sink
+	i.p.Emit(ModuleName, "voice_open", map[string]string{
+		"container": i.label, "stream": strconv.FormatUint(uint64(h), 10), "rate": strconv.Itoa(int(rate)),
+	})
+	return Success
+}
+
+// dropVoice closes one mixer and gives its slots back. i.mu is held.
+func (i *instance) dropVoice(h uint32, v VoiceSink) {
+	delete(i.voices, h)
+	v.Close()
+	i.m.releaseVoice(i.label)
+	i.p.Emit(ModuleName, "voice_close", map[string]string{"container": i.label, "stream": strconv.FormatUint(uint64(h), 10)})
+}
+
+// acquireVoice reserves a stream slot and a mixer slot of the page.
+func (m *Module) acquireVoice(label string) bool {
+	m.mu.Lock()
+	if m.voicePage >= VoicesPerPage {
+		m.mu.Unlock()
+		return false
+	}
+	m.voicePage++
+	m.mu.Unlock()
+	if !m.acquire(label) {
+		m.mu.Lock()
+		m.voicePage--
+		m.mu.Unlock()
+		return false
+	}
+	return true
+}
+
+func (m *Module) releaseVoice(label string) {
+	m.release(label)
+	m.mu.Lock()
+	m.voicePage--
+	m.mu.Unlock()
 }
 
 func (i *instance) write(h, ptr, frames, out uint32, m wasi.Memory) uint32 {
@@ -425,6 +551,9 @@ func (i *instance) Close() {
 	i.closed = true
 	for h, s := range i.streams {
 		i.drop(h, s)
+	}
+	for h, v := range i.voices {
+		i.dropVoice(h, v)
 	}
 }
 
