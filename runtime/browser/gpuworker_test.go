@@ -36,19 +36,26 @@ function answer(c, ret) {
   Atomics.store(i32, 0, 2);
 }
 let reallocPending = false;
-// The host worker's "ready" reaches the guest on the port, after 0 ms, or after
-// 200 ms in the "late" mode: Firefox drops a message carrying a
-// SharedArrayBuffer sent before the receiver owns the port (engine#84), so the
-// guest must not post its attach before it has heard "ready".
-let readyHeard = false, attachEarly = false;
+// The host worker's "attached" reaches the guest on the port after 0 ms, or
+// after 200 ms in the "late" mode, once the engine has relayed the memory and
+// block. Firefox drops a message carrying a SharedArrayBuffer sent on a port in
+// transit (engine#84), so nothing carrying one may be posted on this port, and
+// the guest must not start before "attached". The fake host also says "ready",
+// as the former handshake did, so a worker still using it runs and is caught on
+// what it posts rather than hanging.
+let attachedHeard = false, startedEarly = false, sabOnPort = false;
 const port = {
   set onmessage(f) {
     if (typeof f !== "function") return;
-    setTimeout(() => { readyHeard = true; f({ data: { t: "ready" } }); }, process.argv[3] === "late" ? 200 : 0);
+    setTimeout(() => {
+      f({ data: { t: "ready" } });
+      attachedHeard = true;
+      f({ data: { t: "attached" } });
+    }, process.argv[3] === "late" ? 200 : 0);
   },
   postMessage: (m) => {
     portPosted.push(m.t);
-    if (m.t === "attach" && !readyHeard) attachEarly = true;
+    if (m.memory !== undefined || m.ctl !== undefined) sabOnPort = true;
     const i32 = new Int32Array(ctl2);
     if (m.t === "call") {
       const fn = i32[1];
@@ -83,7 +90,7 @@ const sandbox = {
   clearTimeout,
   WebAssembly: {
     Memory: WebAssembly.Memory,
-    instantiate: async (m, i) => { imports = i; return { exports: { memory, cabi_realloc: () => 1024, _start() {} } }; },
+    instantiate: async (m, i) => { imports = i; return { exports: { memory, cabi_realloc: () => 1024, _start() { if (process.argv[3] !== "local" && !attachedHeard) startedEarly = true; } } }; },
   },
 };
 let imports;
@@ -112,7 +119,8 @@ async function run() {
   out.afterGPUFd = w.fd_write(1, 2, 3, 4);
   out.engineCallsAfter = engineCalls.slice();
   out.portPosted = portPosted.filter((t, i) => portPosted.indexOf(t) === i);
-  out.attachEarly = attachEarly;
+  out.sabOnPort = sabOnPort;
+  out.startedEarly = startedEarly;
   console.log(JSON.stringify(out));
 }
 run().catch((e) => { console.error(e); process.exit(1); });
@@ -151,25 +159,43 @@ type gpuWorkerResult struct {
 	AfterGPUFd       int
 	EngineCallsAfter []int
 	PortPosted       []string
-	AttachEarly      bool
+	SabOnPort        bool
+	StartedEarly     bool
 }
 
-// TestAttachWaitsForTheHostWorkersReady: the host worker says "ready" 200 ms
-// late; the guest's attach (its memory and control block, both
-// SharedArrayBuffers) must not be posted before that. Red on a worker that
-// posts it at once: Firefox then drops the message and the guest hangs on its
-// first GPU call (go-wasmcontainers/engine#84).
-func TestAttachWaitsForTheHostWorkersReady(t *testing.T) {
+// TestNoSharedBufferTravelsOnTheGuestsPort: the guest's memory and control
+// block are SharedArrayBuffers; none may be posted on the transferred port,
+// where Firefox keys the body by the sending port and forgets it when that port
+// is closed or collected (messageerror, "attach-refused", engine#84). They go
+// to the host worker through the engine's control channel.
+func TestNoSharedBufferTravelsOnTheGuestsPort(t *testing.T) {
+	var got gpuWorkerResult
+	b := runGPUWorker(t, "remote")
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%v\n%s", err, b)
+	}
+	if got.SabOnPort {
+		t.Errorf("a message carrying the memory or the block was posted on the guest's port\n%s", b)
+	}
+	if got.HostCalls[1] != 10 {
+		t.Errorf("host calls %v, want 10 submits\n%s", got.HostCalls, b)
+	}
+}
+
+// TestGuestWaitsForTheHostWorkersAttached: the host worker answers "attached"
+// 200 ms late; the guest must not start, nor call, before it. Red on a worker
+// that starts at once.
+func TestGuestWaitsForTheHostWorkersAttached(t *testing.T) {
 	var got gpuWorkerResult
 	b := runGPUWorker(t, "late")
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("%v\n%s", err, b)
 	}
-	if got.AttachEarly {
-		t.Errorf("attach posted before the host worker's ready\n%s", b)
+	if got.StartedEarly {
+		t.Errorf("the guest started before the host worker's attached\n%s", b)
 	}
 	if got.HostCalls[1] != 10 {
-		t.Errorf("host calls %v, want the guest to run after the late ready\n%s", got.HostCalls, b)
+		t.Errorf("host calls %v, want the guest to run after the late attached\n%s", got.HostCalls, b)
 	}
 }
 
