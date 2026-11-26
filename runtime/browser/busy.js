@@ -11,6 +11,8 @@
 //   - the Go sites that marked themselves while it ran (busy_js.go Mark: the
 //     import being served, ...), with the time spent under each; the rest is
 //     "unlabelled", and a GC that ran during the slice is counted.
+// Slices shorter than MIN that follow each other closely are folded into one
+// "short slices" record (see flushRun).
 // The fast path (a slice shorter than MIN) allocates nothing: two clock reads,
 // a few typed-array writes. Allocation happens only when a slice is recorded.
 //
@@ -26,7 +28,7 @@
   }
   const MIN = 1;
   const SLOW = 10;
-  const RING = 4096;
+  const RING = 16384;
   const TOP = 4;
   const W = 3 + 2 * TOP + 2; // at, dur, trigger, (label, ms) x TOP, gc, gcms
   const NAMES = 1024;
@@ -148,6 +150,40 @@
     }
   }
 
+  // Slices shorter than MIN are not kept one by one, but a worker that runs
+  // hundreds of them back to back is busy all the same: a wait that falls in
+  // such a stretch would show "no slice" and look like a hole. Short slices that
+  // follow each other within GAP ms are therefore folded into one "short
+  // slices" record (at most RUNCAP ms of wall time each), kept when it spans MIN
+  // ms or more, with the time actually spent in them as its one label. The
+  // state is four numbers: the fast path still allocates nothing.
+  const GAP = 0.5;
+  const RUNCAP = 5;
+  const SHORT = intern("short slices");
+  let runStart = 0;
+  let runEnd = 0;
+  let runN = 0;
+  let runSum = 0;
+  function flushRun() {
+    if (runN > 0 && runEnd - runStart >= MIN) {
+      const row = (written % RING) * W;
+      written++;
+      ring[row] = origin + runStart;
+      ring[row + 1] = runEnd - runStart;
+      ring[row + 2] = SHORT;
+      ring[row + 3] = SHORT;
+      ring[row + 4] = runSum;
+      for (let k = 1; k < TOP; k++) {
+        ring[row + 3 + 2 * k] = -1;
+        ring[row + 4 + 2 * k] = 0;
+      }
+      ring[row + W - 2] = 0;
+      ring[row + W - 1] = 0;
+    }
+    runN = 0;
+    runSum = 0;
+  }
+
   const resume = proto._resume;
   proto._resume = function () {
     if (depth > 0) {
@@ -173,7 +209,18 @@
       depth = 0;
       const t1 = perf.now();
       touch(cur, t1 - curStart);
-      if (t1 - t0 >= MIN) {
+      if (t1 - t0 < MIN) {
+        if (runN > 0 && t0 - runEnd <= GAP && t1 - runStart < RUNCAP) {
+          runEnd = t1;
+        } else {
+          flushRun();
+          runStart = t0;
+          runEnd = t1;
+        }
+        runN++;
+        runSum += t1 - t0;
+      } else {
+        flushRun();
         let gcms = 0;
         if (t1 - t0 >= SLOW && readGC) {
           // Ask Go for the collector's totals now (depth is still above 0, so
@@ -198,6 +245,7 @@
   };
 
   function slices(min) {
+    flushRun();
     const out = [];
     const n = Math.min(written, RING);
     for (let j = written - n; j < written; j++) {

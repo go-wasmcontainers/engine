@@ -54,7 +54,7 @@ go._pendingEvent = evOf({ t: "call" });
 go.work = () => { now += 0.2; busy.slot[0] = call; busy.slot[0] = 0; };
 if (global.gc) global.gc();
 const h0 = process.memoryUsage().heapUsed;
-for (let i = 0; i < 300000; i++) go._resume();
+for (let i = 0; i < 300000; i++) { go._resume(); now += 1; } // isolated: 1 ms apart
 if (global.gc) global.gc();
 out.heap = process.memoryUsage().heapUsed - h0;
 out.gcExposed = !!global.gc;
@@ -150,6 +150,88 @@ func TestBusyLogLabelsEverySlowSlice(t *testing.T) {
 	}
 	if got.GcExposed && got.Heap > 1<<20 {
 		t.Errorf("300000 fast slices grew the heap by %.0f bytes: the fast path allocates", got.Heap)
+	}
+}
+
+// busyShortHarness: 40 slices of 0.2 ms, 0.1 ms apart (12 ms of wall time, a
+// worker busy with many small tasks), then a 30 ms gap, then one isolated 0.2 ms
+// slice, then a 20 ms slice.
+const busyShortHarness = `
+const vm = require("vm");
+const fs = require("fs");
+let now = 100;
+class Go {
+  constructor() { this._pendingEvent = null; this.work = () => {}; }
+  _resume() { this.work(); }
+}
+const ctx = vm.createContext({ Go, performance: { timeOrigin: 1e12, now: () => now } });
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
+const go = new ctx.Go();
+go.work = () => { now += 0.2; };
+for (let i = 0; i < 40; i++) { go._resume(); now += 0.1; }
+now += 30;
+go._resume();
+now += 30;
+go.work = () => { now += 20; };
+go._resume();
+console.log(JSON.stringify({ kept: ctx.__busy.slices(0) }));
+`
+
+// TestBusyLogFoldsRunsOfShortSlices: slices shorter than 1 ms that follow each
+// other closely are one "short slices" record (not a hole in the log: a wait
+// that falls in such a stretch is named, not "no slice"), and one isolated short
+// slice is still not kept. Red on a log that drops every slice under 1 ms.
+func TestBusyLogFoldsRunsOfShortSlices(t *testing.T) {
+	b := runNode(t, busyShortHarness, writeAsset(t, "busy.js", []byte(BusyJS)))
+	var got struct {
+		Kept []struct {
+			At, Dur float64
+			Trigger string
+			Labels  []struct {
+				Name string
+				Ms   float64
+			}
+		}
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%v\n%s", err, b)
+	}
+	var runs, long int
+	var span, busy float64
+	for _, k := range got.Kept {
+		switch {
+		case k.Trigger == "short slices":
+			runs++
+			span += k.Dur
+			for _, l := range k.Labels {
+				if l.Name == "short slices" {
+					busy += l.Ms
+				}
+			}
+		case math.Abs(k.Dur-20) < 1e-6:
+			long++
+		}
+	}
+	if runs < 1 || long != 1 {
+		t.Fatalf("kept %+v: want the run(s) of short slices and the 20 ms slice", got.Kept)
+	}
+	// 40 x 0.2 ms of work spread over about 12 ms: nothing of it lost, and the
+	// isolated slice after the 30 ms gap is not a record of its own.
+	if math.Abs(busy-8) > 1e-6 || span < 8 || span > 13 {
+		t.Errorf("short slices: %d record(s), %.2f ms of work in %.2f ms of wall time, want 8 ms of work in 8..13 ms", runs, busy, span)
+	}
+	// A wait inside the stretch is explained by it.
+	var sl []BusySlice
+	for _, k := range got.Kept {
+		s := BusySlice{At: k.At, Dur: k.Dur, Trigger: k.Trigger}
+		for _, l := range k.Labels {
+			s.Labels = append(s.Labels, BusyLabel{l.Name, l.Ms})
+		}
+		sl = append(sl, s)
+	}
+	at := got.Kept[0].At
+	if u := Unattributed(at+1, at+4, sl); u != 0 {
+		t.Errorf("a wait inside a run of short slices: unattributed %.3f ms, want 0 (%+v)", u, Explain(at+1, at+4, sl))
 	}
 }
 
