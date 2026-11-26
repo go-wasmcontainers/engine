@@ -26,7 +26,9 @@ import (
 //	page   -> host worker   {t:"engine", port}       the control port to the engine
 //	engine -> host worker   {t:"port", id, port, label, caps, mods, n}  (on that port)
 //	                        one guest's port, its container label and capabilities
-//	guest  -> host worker   {t:"attach", memory, ctl, label, n}   (on the guest's port)
+//	engine -> host worker   {t:"attach", id, memory, ctl}   the guest's memory and block,
+//	                        relayed by the engine (never posted on the guest's port: see worker.js)
+//	host   -> guest         {t:"attached"}           (on the guest's port)
 //	guest  -> host worker   {t:"call"} | {t:"realloc", error} | {t:"detach"}
 //	engine -> host worker   {t:"detach", id}         a process the engine ended
 //	host   -> engine        {t:"event", id, module, action, attrs}  (Proc.Emit)
@@ -53,7 +55,8 @@ type hostGuest struct {
 	once sync.Once
 	done chan struct{} // closed when the guest is detached
 
-	funcs []js.Func
+	funcs  []js.Func
+	attach func(d js.Value) // set by serve: takes the guest's memory and block
 }
 
 // NewHostWorker returns a host worker for the same host modules, in the same
@@ -92,6 +95,13 @@ func (h *HostWorker) onEngine(d js.Value) {
 	switch d.Get("t").String() {
 	case "port":
 		h.attachPort(d)
+	case "attach":
+		h.mu.Lock()
+		g := h.guests[d.Get("id").Int()]
+		h.mu.Unlock()
+		if g != nil && g.attach != nil {
+			g.attach(d)
+		}
 	case "detach":
 		h.mu.Lock()
 		g := h.guests[d.Get("id").Int()]
@@ -244,15 +254,20 @@ func (h *HostWorker) serve(g *hostGuest) {
 			}(res, mem)
 		}
 	}
+	// attach is the engine's {t:"attach", id, memory, ctl} (onEngine): the guest's
+	// memory and the block its answers go in. The guest starts only when it
+	// hears "attached" on its port.
+	g.attach = func(d js.Value) {
+		mem = jsMemory{mem: d.Get("memory")}
+		ctl = d.Get("ctl")
+		i32 = js.Global().Get("Int32Array").New(ctl)
+		ctlU8 = js.Global().Get("Uint8Array").New(ctl, 0, ctlSize)
+		f64 = js.Global().Get("Float64Array").New(ctl)
+		g.port.Call("postMessage", js.ValueOf(map[string]any{"t": "attached"}))
+	}
 	onMessage := js.FuncOf(func(_ js.Value, a []js.Value) any {
 		d := a[0].Get("data")
 		switch d.Get("t").String() {
-		case "attach":
-			mem = jsMemory{mem: d.Get("memory")}
-			ctl = d.Get("ctl")
-			i32 = js.Global().Get("Int32Array").New(ctl)
-			ctlU8 = js.Global().Get("Uint8Array").New(ctl, 0, ctlSize)
-			f64 = js.Global().Get("Float64Array").New(ctl)
 		case "call":
 			if !ctl.Truthy() {
 				// The attach never arrived (the browser refused it, see
@@ -303,12 +318,12 @@ func (h *HostWorker) serve(g *hostGuest) {
 		}
 		return nil
 	})
-	// A message carrying a SharedArrayBuffer is not copied through the port like
-	// the others: Firefox keeps its body in a table keyed by the sending port and
-	// drops it when that port is closed or collected before this worker reads
-	// it (RefMessageBodyService::ForgetPort), and the read then fails with a
-	// messageerror. The guest sends its attach only after the "ready" below, but
-	// a refusal must still end the guest, never leave it waiting.
+	// The guest's memory and block no longer travel on this port: Firefox keeps a
+	// SharedArrayBuffer body in a table keyed by the sending port and drops it
+	// when that port is closed or collected (RefMessageBodyService::ForgetPort),
+	// and the read then fails with a messageerror. The engine relays them on its
+	// long-lived control channel ("attach"). A messageerror here must still end
+	// the guest, never leave it waiting.
 	onError := js.FuncOf(func(_ js.Value, _ []js.Value) any {
 		h.event(g.id, "host-worker", "attach-refused", map[string]string{"error": "messageerror"})
 		return nil
@@ -316,8 +331,4 @@ func (h *HostWorker) serve(g *hostGuest) {
 	g.funcs = append(g.funcs, onMessage, onError)
 	g.port.Set("onmessage", onMessage)
 	g.port.Set("onmessageerror", onError)
-	// The guest waits for this plain message before it posts the attach (its
-	// memory and control block are SharedArrayBuffers): from here the port is
-	// live in this worker, which is what the browser needs to keep those bodies.
-	g.port.Call("postMessage", js.ValueOf(map[string]any{"t": "ready"}))
 }

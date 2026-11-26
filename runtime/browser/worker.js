@@ -741,29 +741,34 @@ onmessage = async (e) => {
     return;
   }
   guestMemory = memory;
+  // The guest's memory (a SharedArrayBuffer) goes to the engine, which hands it
+  // to the GPU host worker with the control block it made (see attachRemote):
+  // no message carrying a SharedArrayBuffer is ever posted on the guest's
+  // transferred port. Firefox does not copy such a message through the port: the
+  // body waits in a table keyed by the SENDING port and is forgotten when that
+  // port is closed, disentangled or collected (RefMessageBodyService::ForgetPort),
+  // and the receiver's read then fails with a messageerror (go-wasmcontainers/
+  // engine#84: "gpu host worker: attach-refused"). The engine's own channel to
+  // the host worker lives as long as the page.
+  postMessage({ t: "memory", memory });
   if (rch) {
-    // The host worker serves this guest's calls from here on: it needs the
-    // guest's memory (a SharedArrayBuffer, so the same bytes) and the block its
-    // answers go in. Firefox drops a message carrying a SharedArrayBuffer when
-    // it is sent on a port the receiver does not own yet (go-wasmcontainers/
-    // engine#84), so it waits for the host worker's plain "ready" first.
-    const ready = await new Promise((resolve) => {
+    // The host worker serves this guest's calls from here on: the guest starts
+    // only once it has the memory and the block (its plain "attached" on the port).
+    const attached = await new Promise((resolve) => {
       const timer = setTimeout(() => resolve(false), 30000);
       remotePort.onmessage = (m) => {
-        if (m.data && m.data.t === "ready") {
+        if (m.data && m.data.t === "attached") {
           clearTimeout(timer);
           remotePort.onmessage = null;
           resolve(true);
         }
       };
     });
-    if (!ready) {
+    if (!attached) {
       postMessage({ t: "trap", message: "the gpu host worker did not answer" });
       return;
     }
-    remotePort.postMessage({ t: "attach", memory, ctl: remote.ctl, label: remote.label, n: funcs.length });
   }
-  postMessage({ t: "memory", memory });
   const start = instance.exports._start;
   if (typeof start !== "function") {
     postMessage({ t: "trap", message: "the module exports no _start" });

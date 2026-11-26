@@ -301,6 +301,9 @@ type process struct {
 	// detach tells the GPU host worker the process is over (nil: it serves none
 	// of its imports).
 	detach func()
+	// attachHost relays the guest's memory (and the remote control block) to the
+	// GPU host worker over the engine's control channel; nil without a host.
+	attachHost func(memory js.Value)
 }
 
 func (p *process) Wait() runtime.Result { <-p.done; return p.res }
@@ -512,6 +515,9 @@ func (e *Executor) run(mod js.Value, proc *wasi.Proc, imports []wasi.Import, lim
 			p.mu.Lock()
 			p.mem = mem.mem
 			p.mu.Unlock()
+			if p.attachHost != nil {
+				p.attachHost(mem.mem)
+			}
 		case "audioring":
 			// The ring the guest's worker allocated for its next stream_open
 			// (worker.js posts it just before the call, so it is parked here when

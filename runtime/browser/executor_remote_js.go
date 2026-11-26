@@ -87,7 +87,19 @@ func (e *Executor) attachRemote(p *process, proc *wasi.Proc, nImports int) (remo
 	m.Set("caps", js.ValueOf(caps))
 	m.Set("n", nImports)
 	host.Call("postMessage", m, js.ValueOf([]any{theirs}))
+	// The host worker gets the guest's memory and block from here, not from the
+	// guest's port (see hostserve_js.go); the ports stay referenced until the
+	// guest ends so the browser cannot collect them first.
+	p.attachHost = func(memory js.Value) {
+		a := g.Get("Object").New()
+		a.Set("t", "attach")
+		a.Set("id", id)
+		a.Set("memory", memory)
+		a.Set("ctl", ctl)
+		host.Call("postMessage", a)
+	}
 	p.detach = func() {
+		_, _ = mine, theirs
 		e.hostMu.Lock()
 		delete(e.remote, id)
 		e.hostMu.Unlock()
