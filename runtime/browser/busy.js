@@ -13,6 +13,10 @@
 //     "unlabelled", and a GC that ran during the slice is counted.
 // Slices shorter than MIN that follow each other closely are folded into one
 // "short slices" record (see flushRun).
+// Two more measurements explain a wait that no slice covers (see the block
+// above __busy's export): the intervals this worker's event loop ran no timer
+// ("worker not scheduled", self.__busy.lateTicks()) and the intervals a call
+// message was in flight ("message in flight", self.__busy.transits()).
 // The fast path (a slice shorter than MIN) allocates nothing: two clock reads,
 // a few typed-array writes. Allocation happens only when a slice is recorded.
 //
@@ -184,6 +188,54 @@
     runSum = 0;
   }
 
+  // Two causes of a wait that no slice of this log can show, both MEASURED here
+  // (a wait is only ever credited with the part of it a measurement overlaps):
+  //
+  // 1. "worker not scheduled": a probe ticks every TICK ms on this worker's own
+  //    event loop; a tick that comes LATE ms or more after the previous one
+  //    records the interval its loop did not run, [previous + TICK, this tick].
+  //    While a Go slice ran, the loop did not run either, so these intervals
+  //    overlap the slices; the attribution counts a late tick only where no
+  //    slice covers (busy.go ExplainWith).
+  // 2. "message in flight": a guest's call and realloc messages carry the epoch
+  //    time the guest posted them ("sent", worker.js); _resume reads it when the
+  //    message reaches Go and records [sent, begin of the slice] when that took
+  //    MIN ms or more. The two clocks are comparable. W3C High Resolution Time,
+  //    section 2.1 "Monotonic Clock": one monotonic clock serves all the contexts
+  //    that can reach each other, and section 4 gives a worker the time origin
+  //    of when it runs, performance.timeOrigin being that origin on the wall
+  //    clock (section 7.2): timeOrigin + now() names the same instant in every
+  //    worker, up to the resolution (100 us, section 4 "coarsen time") and the
+  //    error of each worker's timeOrigin estimate (a few ms: worker.js removes
+  //    the offset it measures before stamping "sent").
+  const TICK = 2;
+  const LATE = 15;
+  const LATERING = 4096;
+  const TRANSIT = 8192;
+  const late = new Float64Array(LATERING * 2);
+  let nLate = 0;
+  let lastTick = perf.now();
+  function tick() {
+    const t = perf.now();
+    if (t - lastTick >= LATE) {
+      const row = (nLate % LATERING) * 2;
+      nLate++;
+      late[row] = origin + lastTick + TICK;
+      late[row + 1] = origin + t;
+    }
+    lastTick = t;
+  }
+  const transit = new Float64Array(TRANSIT * 2);
+  let nTransit = 0;
+  function intervals(a, n, cap) {
+    const out = [];
+    for (let j = Math.max(0, n - cap); j < n; j++) {
+      const row = (j % cap) * 2;
+      out.push({ from: a[row], to: a[row + 1] });
+    }
+    return out;
+  }
+
   const resume = proto._resume;
   proto._resume = function () {
     if (depth > 0) {
@@ -197,6 +249,14 @@
     }
     const ev = this._pendingEvent;
     const t0 = perf.now();
+    const a0 = ev && ev.args && ev.args[0];
+    const d0 = a0 && a0.data;
+    if (d0 && typeof d0.sent === "number" && origin + t0 - d0.sent >= MIN) {
+      const row = (nTransit % TRANSIT) * 2;
+      nTransit++;
+      transit[row] = d0.sent;
+      transit[row + 1] = origin + t0;
+    }
     const gc0 = gcn[0];
     const gcms0 = gcstat[0];
     const cyc0 = gcstat[1];
@@ -265,6 +325,29 @@
     return out;
   }
 
-  g.__busy = { slices, label: intern, slot, gcn, gcstat, setReadGC: (f) => { readGC = f; }, MIN, SLOW, RING, written: () => written };
+  g.__busy = {
+    slices,
+    // lateTicks: the intervals this worker's event loop ran no timer ("worker not
+    // scheduled"); transits: [posted, received] of the messages that took MIN ms
+    // or more to reach Go. Epoch ms, like the slices.
+    lateTicks: () => intervals(late, nLate, LATERING),
+    transits: () => intervals(transit, nTransit, TRANSIT),
+    tick,
+    label: intern,
+    slot,
+    gcn,
+    gcstat,
+    setReadGC: (f) => { readGC = f; },
+    MIN,
+    SLOW,
+    RING,
+    written: () => written,
+  };
+  if (typeof g.setTimeout === "function") {
+    (function loop() {
+      tick();
+      g.setTimeout(loop, TICK);
+    })();
+  }
   Object.defineProperty(g, "__busySlow", { get: () => slices(SLOW), configurable: true });
 })(globalThis);

@@ -54,6 +54,33 @@ type Share struct {
 // a clock that disagrees). The shares are sorted, the largest first, and add
 // up to the wait.
 func Explain(from, to float64, slices []BusySlice) []Share {
+	return ExplainWith(from, to, Evidence{Slices: slices})
+}
+
+// Interval is a stretch of time (epoch ms) a worker measured.
+type Interval struct{ From, To float64 }
+
+// Evidence is what the serving worker measured around a wait: its slices, the
+// intervals its event loop ran late (busy.js lateTicks) and the transit
+// intervals of the messages it received (busy.js transits).
+type Evidence struct {
+	Slices    []BusySlice
+	LateTicks []Interval
+	Transits  []Interval
+}
+
+// The causes the measured intervals name.
+const (
+	CauseNotScheduled = "worker not scheduled"
+	CauseInFlight     = "message in flight"
+)
+
+// ExplainWith is Explain with the measured intervals: of the time no slice
+// covers, the part the worker's event loop ran no timer is CauseNotScheduled,
+// of the rest the part a message to it was in flight is CauseInFlight, and
+// what no measurement covers stays "no slice".
+func ExplainWith(from, to float64, ev Evidence) []Share {
+	slices := ev.Slices
 	by := map[string]float64{}
 	covered := 0.0
 	for _, s := range slices {
@@ -75,7 +102,28 @@ func Explain(from, to float64, slices []BusySlice) []Share {
 		}
 	}
 	if rest := to - from - covered; rest > 1e-9 {
-		by["no slice"] += rest
+		// What no slice covers: first the part a late tick of the worker's loop
+		// covers, then of what is left the part a message was in flight for; a
+		// measurement is credited only for its overlap with that time, and each
+		// instant once. What neither measures is "no slice".
+		gaps := []Interval{{from, to}}
+		for _, s := range slices {
+			gaps = subtract(gaps, Interval{s.At, s.At + s.Dur})
+		}
+		late := min(rest, overlap(gaps, ev.LateTicks))
+		if late > 1e-9 {
+			by[CauseNotScheduled] += late
+			rest -= late
+		}
+		gaps = subtractAll(gaps, ev.LateTicks)
+		flight := min(rest, overlap(gaps, ev.Transits))
+		if flight > 1e-9 {
+			by[CauseInFlight] += flight
+			rest -= flight
+		}
+		if rest > 1e-9 {
+			by["no slice"] += rest
+		}
 	}
 	out := make([]Share, 0, len(by))
 	for c, ms := range by {
@@ -90,6 +138,45 @@ func Explain(from, to float64, slices []BusySlice) []Share {
 	return out
 }
 
+// subtract removes b from every interval of a.
+func subtract(a []Interval, b Interval) []Interval {
+	var out []Interval
+	for _, x := range a {
+		if b.To <= x.From || b.From >= x.To || b.To <= b.From {
+			out = append(out, x)
+			continue
+		}
+		if b.From > x.From {
+			out = append(out, Interval{x.From, b.From})
+		}
+		if b.To < x.To {
+			out = append(out, Interval{b.To, x.To})
+		}
+	}
+	return out
+}
+
+func subtractAll(a, bs []Interval) []Interval {
+	for _, b := range bs {
+		a = subtract(a, b)
+	}
+	return a
+}
+
+// overlap is how much of the (disjoint) intervals a the intervals bs cover,
+// each instant once.
+func overlap(a, bs []Interval) float64 {
+	return total(a) - total(subtractAll(append([]Interval(nil), a...), bs))
+}
+
+func total(a []Interval) float64 {
+	t := 0.0
+	for _, x := range a {
+		t += x.To - x.From
+	}
+	return t
+}
+
 // Unattributed is the part of a wait [from, to] that nothing names: time no
 // recorded slice covers, and time in a slice that neither a message, a route
 // nor an event started (a "timer" or a bare callback: some goroutine of the
@@ -97,8 +184,15 @@ func Explain(from, to float64, slices []BusySlice) []Share {
 // message, even where no site marked it. A long wait with a high Unattributed
 // has no label.
 func Unattributed(from, to float64, slices []BusySlice) float64 {
+	return UnattributedWith(from, to, Evidence{Slices: slices})
+}
+
+// UnattributedWith is Unattributed with the measured intervals: the time a late
+// tick or a transit interval covers is named (CauseNotScheduled,
+// CauseInFlight), the rest is as unexplained as before.
+func UnattributedWith(from, to float64, ev Evidence) float64 {
 	u := 0.0
-	for _, s := range Explain(from, to, slices) {
+	for _, s := range ExplainWith(from, to, ev) {
 		if s.Cause == "no slice" {
 			u += s.Ms
 			continue

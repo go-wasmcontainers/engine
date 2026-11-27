@@ -125,7 +125,12 @@ function callOn(ch, idx, params, result, args) {
   const sent = performance.timeOrigin + performance.now();
   view.setFloat64(CTL_SENT, sent, true);
   Atomics.store(i32, CTL_STATE, 1);
-  post({ t: "call" });
+  // The message carries the time it was posted, on the receiving worker's clock
+  // (this worker's minus the offset estimated below, none before the first
+  // call has measured it): the receiver's busy log (busy.js) turns it into the
+  // "message in flight" interval, [posted, received].
+  const off = ch.minBack === Infinity || ch.minThere === Infinity ? 0 : (ch.minBack - ch.minThere) / 2;
+  post({ t: "call", sent: sent - off });
   block(i32);
   while (i32[CTL_FLAGS] & FLAG_REALLOC) {
     reallocs++;
@@ -138,6 +143,7 @@ function callOn(ch, idx, params, result, args) {
     }
     i32[CTL_FLAGS] = 0;
     Atomics.store(i32, CTL_STATE, 1);
+    msg.sent = performance.timeOrigin + performance.now() - off;
     post(msg);
     block(i32);
   }
