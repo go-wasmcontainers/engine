@@ -17,6 +17,7 @@ func networkCmd(client clientFunc) *cobra.Command {
 
 	var labels []string
 	var driver string
+	var internal bool
 	create := &cobra.Command{
 		Use:   "create [OPTIONS] NETWORK",
 		Short: "Create an in-engine network",
@@ -26,7 +27,7 @@ func networkCmd(client clientFunc) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			o := api.NetworkCreateRequest{Name: args[0], Driver: driver, Labels: map[string]string{}}
+			o := api.NetworkCreateRequest{Name: args[0], Driver: driver, Internal: internal, Labels: map[string]string{}}
 			for _, l := range labels {
 				k, v, _ := strings.Cut(l, "=")
 				o.Labels[k] = v
@@ -40,6 +41,7 @@ func networkCmd(client clientFunc) *cobra.Command {
 		},
 	}
 	create.Flags().StringArrayVar(&labels, "label", nil, "set metadata (KEY=value)")
+	create.Flags().BoolVar(&internal, "internal", false, "restrict external access to the network (no route out of the engine)")
 	create.Flags().StringVarP(&driver, "driver", "d", "bridge", "driver (bridge: an in-engine network)")
 
 	var quiet bool

@@ -104,7 +104,7 @@ not have.
 | `events` | `--since`, `--until` (Unix seconds, RFC 3339, or a duration such as `10m`), `-f/--filter` `type=`, `event=`, `container=`, `image=`, `volume=`, `network=`, `label=`; streams container `create start die kill stop restart destroy prune`, the events a host module reports about its container (`gpu-sanction`: a GPU submit over its time budget, whose grant is revoked; `inspect` shows it as `State.Sanction`), image `pull untag delete prune` and network `create connect disconnect destroy prune` (`GET /events`; the last 1024 events are kept for `--since`) |
 | `stats [CONTAINER...]` | `--no-stream`, `-a/--all`; linear memory against its limit, bytes written, pids (`GET /containers/{id}/stats`, one reading or one per second). CPU is shown as `--`: a WebAssembly guest gives the engine no CPU accounting, so none is invented |
 | `volume create\|ls\|inspect\|rm\|prune` | named volumes: `create [--label K=V] [NAME]`, `ls [-q]`, `rm [-f]` (refused while any container mounts it), `prune [-a] [-f]` (anonymous ones; `-a` every unused one) |
-| `network create\|ls\|inspect\|rm\|connect\|disconnect\|prune` | `create [--label K=V] NAME` (an in-engine network, the next free `10.89+n.0.0/16`), `ls [-q]`, `inspect` (with the running containers' addresses), `rm` (refused while a container uses it; `bridge`, `none` and a class network cannot be removed), `connect [--alias NAME] NETWORK CONTAINER` (a running container at once), `disconnect [-f] NETWORK CONTAINER`, `prune [-f] [--filter label=K[=V]\|label!=K=V]` |
+| `network create\|ls\|inspect\|rm\|connect\|disconnect\|prune` | `create [--internal] [--label K=V] NAME` (an in-engine network, the next free `10.89+n.0.0/16`), `ls [-q]`, `inspect` (with the running containers' addresses), `rm` (refused while a container uses it; `bridge`, `none` and a class network cannot be removed), `connect [--alias NAME] NETWORK CONTAINER` (a running container at once), `disconnect [-f] NETWORK CONTAINER`, `prune [-f] [--filter label=K[=V]\|label!=K=V]` |
 | `version` | |
 
 **For builders** (API only for now): `POST /images/load` takes an OCI image
@@ -305,6 +305,16 @@ wait on, so the browser's engine worker keeps its event loop.
   8 KiB and a full queue (256) drops; `127.0.0.1` is the container itself.
   A container is reachable by its name when that is a DNS label, else by
   its short ID.
+- **Internal networks.** `network create --internal` (Docker's
+  `internal`, what compose sends for `internal: true` under a network:
+  compose-spec, "Networks top-level element", `internal`: "an externally
+  isolated network") makes a network with no route out of
+  the engine; inspect reports `"Internal": true`. In-engine networks never
+  have one, so the flag is a promise the engine keeps: a host driver that can
+  carry traffic out (`netdriver.EgressDriver` with `EgressEnabled()` true)
+  is refused on an internal network by `network.Manager.AddDriverWith`. A
+  container on an internal network AND another network keeps the other's
+  routes, as in Docker.
 - **Aliases and several networks.** `--network-alias` (or
   `NetworkingConfig.EndpointsConfig[net].Aliases` at create, or
   `network connect --alias`) adds names on a user-defined network; an alias
