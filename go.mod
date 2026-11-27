@@ -16,11 +16,11 @@ require (
 	github.com/docker/go-units v0.5.0
 	github.com/go-wasmcontainers/relay v0.3.1
 	github.com/go-widgets/lineedit v0.1.1
-	github.com/klauspost/compress v1.20.4
+	github.com/klauspost/compress v1.20.5
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
 	github.com/tetratelabs/wazero v1.12.0
 	github.com/wasmdesk/wasmbox/audioring v0.3.0
-	golang.org/x/net v0.62.0
+	golang.org/x/net v0.63.0
 	golang.org/x/term v0.48.0
 )
