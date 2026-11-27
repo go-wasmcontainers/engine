@@ -115,6 +115,23 @@ func New(opt Options) (*Manager, []string, error) {
 			return nil, nil, fmt.Errorf("%w: Internal names %q, which is not a driver", ErrInvalid, name)
 		}
 	}
+	if opt.Store != nil {
+		keys, err := opt.Store.Keys("sealed/")
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, k := range keys {
+			b, err := opt.Store.Get(k)
+			if err != nil {
+				return nil, nil, fmt.Errorf("network: reading %s: %w", k, err)
+			}
+			// A record that does not match its key is not trusted, and not
+			// dropped either: this set only ever grows.
+			if n := string(b); nameRE.MatchString(n) && sealedKey(n) == k {
+				m.sealed[n] = true
+			}
+		}
+	}
 	br, err := netdriver.NewLocal(netdriver.DefaultPrefix)
 	if err != nil {
 		return nil, nil, err
@@ -130,9 +147,12 @@ func New(opt Options) (*Manager, []string, error) {
 		if !nameRE.MatchString(name) || m.by[name] != nil || name == Host {
 			return nil, nil, fmt.Errorf("%w: driver name %q", ErrInvalid, name)
 		}
-		internal := opt.Internal[name]
+		internal := opt.Internal[name] || m.sealed[name]
 		if internal {
 			if err := admit(name, d); err != nil {
+				return nil, nil, err
+			}
+			if err := m.seal(name); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -171,6 +191,25 @@ func New(opt Options) (*Manager, []string, error) {
 		}
 	}
 	return m, repaired, nil
+}
+
+// sealedKey is where the name of a network that was ever internal is kept.
+func sealedKey(name string) string { return "sealed/" + keyName(name) }
+
+// seal records that name is internal for good, in memory and in the Store
+// (the engine's restart must not forget it). A Store that cannot record it
+// refuses: an internal network whose flag would be lost is not one.
+func (m *Manager) seal(name string) error {
+	if m.sealed[name] {
+		return nil
+	}
+	if m.opt.Store != nil {
+		if err := m.opt.Store.Put(sealedKey(name), []byte(name)); err != nil {
+			return fmt.Errorf("network %s: recording that it is internal: %w", name, err)
+		}
+	}
+	m.sealed[name] = true
+	return nil
 }
 
 // keyName makes a state key's name part from a network name: keys are
@@ -409,7 +448,9 @@ func (m *Manager) AddDriverWith(name, driverName string, d netdriver.NetworkDriv
 		if err := admit(name, d); err != nil {
 			return Network{}, err
 		}
-		m.sealed[name] = true
+		if err := m.seal(name); err != nil {
+			return Network{}, err
+		}
 	}
 	n := Network{Name: name, ID: idFor(name), Driver: driverName, Created: time.Now().UTC(), Builtin: true, Internal: internal}
 	m.by[name] = &entry{n, d}

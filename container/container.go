@@ -706,7 +706,7 @@ func (m *Manager) start(ctx context.Context, c *Container, auto bool) error {
 	if err != nil {
 		return m.failStart(c, err)
 	}
-	ports, err := m.publish(ctx, c, ep)
+	ports, err := m.publish(ctx, c, ep, c.cfg.attachments())
 	if err != nil {
 		if ep != nil {
 			ep.Detach()

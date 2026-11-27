@@ -319,11 +319,22 @@ wait on, so the browser's engine worker keeps its event loop.
   `network.Options.Internal` alike. The declaration is asked again at every
   attach and at every dial, resolve and listen of the endpoint, and an
   endpoint that reports `Remote()` is refused, so a relay that learns its
-  egress later is cut off at once. A name that was internal stays internal
-  when re-added. A container whose networks are all internal publishes no
-  port (`-p` is silently inert, as in Docker: moby `libnetwork/endpoint.go`
-  programs external connectivity only for a network that is not internal). A
-  container on an internal network AND another network keeps the other's
+  egress later is cut off at once: its open sockets are closed and every
+  write, accept and new socket is refused (`ENETUNREACH`; a write already
+  past its check when the flip lands is not recalled). The set of names that
+  were internal is kept in the state store, so a name stays internal across
+  a restart and when re-added; a store that cannot record it refuses the
+  network. A relay (remote endpoint) network cannot be internal: it is
+  refused, fail closed, because class egress is opt-in per threat model D6
+  (`playground-egress-threat-model.md` section 11); the relay driver must
+  implement `EgressEnabled()` and report `Remote()`. A container whose
+  networks are all internal publishes no port, on start and as networks are
+  connected and disconnected while it runs (`-p` is silently inert, as in
+  Docker; moby v28.0.0: `libnetwork/endpoint.go:698` `if !n.internal`
+  guards `ProgramExternalConnectivity`, the port-publishing step of
+  `libnetwork/drivers/bridge/bridge_linux.go:1519` and `:1545`/`:1550`
+  `PortBindings`; `:1482` sets the gateway only `if !network.config.Internal`).
+  A container on an internal network AND another network keeps the other's
   routes and ports, as in Docker.
 - **Aliases and several networks.** `--network-alias` (or
   `NetworkingConfig.EndpointsConfig[net].Aliases` at create, or

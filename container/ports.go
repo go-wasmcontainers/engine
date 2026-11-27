@@ -23,13 +23,35 @@ func checkPorts(cfg Config) error {
 	return nil
 }
 
-// internalOnly reports whether every network of c is internal (and it has
-// one).
-func (m *Manager) internalOnly(c *Container) bool {
+// reconcilePorts re-decides, for a RUNNING container about to have the
+// networks atts (network connect, disconnect), whether its ports are
+// published: they are closed when every network becomes internal and opened
+// again when one is not. The caller holds c.mu.
+func (m *Manager) reconcilePorts(ctx context.Context, c *Container, atts []Attachment) error {
+	if c.state != Running || c.net == nil {
+		return nil
+	}
+	only := m.internalOnly(atts)
+	switch {
+	case only && c.ports != nil:
+		c.ports.Close()
+		c.ports = nil
+	case !only && c.ports == nil:
+		s, err := m.publish(ctx, c, c.net, atts)
+		if err != nil {
+			return err
+		}
+		c.ports = s
+	}
+	return nil
+}
+
+// internalOnly reports whether every network of atts is internal (and there
+// is one).
+func (m *Manager) internalOnly(atts []Attachment) bool {
 	if m.opt.Internal == nil {
 		return false
 	}
-	atts := c.cfg.attachments()
 	for _, a := range atts {
 		if a.Network == NoNetwork || !m.opt.Internal(a.Network) {
 			return false
@@ -39,13 +61,14 @@ func (m *Manager) internalOnly(c *Container) bool {
 }
 
 // publish opens a starting container's published ports, dialing into it
-// through ep; nil when it publishes none. The caller holds c.mu.
-func (m *Manager) publish(ctx context.Context, c *Container, ep *netdriver.Multi) (*portmap.Set, error) {
+// through ep; nil when it publishes none. atts are the networks it is on.
+// The caller holds c.mu.
+func (m *Manager) publish(ctx context.Context, c *Container, ep *netdriver.Multi, atts []Attachment) (*portmap.Set, error) {
 	want := c.cfg.published()
 	if want.Bindings() == 0 {
 		return nil, nil
 	}
-	if m.internalOnly(c) {
+	if m.internalOnly(atts) {
 		// Docker publishes nothing for a container on internal networks
 		// only, silently: the ports stay exposed, none is listening.
 		return nil, nil

@@ -176,6 +176,13 @@ func (m *Manager) Connect(ctx context.Context, ref string, a Attachment) error {
 			c.mu.Unlock()
 			return fmt.Errorf("%w: network %q: %v", ErrInvalid, a.Network, err)
 		}
+		if err := m.reconcilePorts(ctx, c, next); err != nil {
+			if ep, ok := c.net.Remove(a.Network); ok {
+				ep.Detach()
+			}
+			c.mu.Unlock()
+			return fmt.Errorf("%w: network %q: %v", ErrInvalid, a.Network, err)
+		}
 	} else if c.state == Running {
 		c.mu.Unlock()
 		return fmt.Errorf("%w: the container started without a network; restart it to connect it", ErrInvalid)
@@ -214,6 +221,10 @@ func (m *Manager) Disconnect(ref, network string) error {
 			ep.Detach()
 		}
 		c.ip = c.net.Addr()
+		if err := m.reconcilePorts(context.Background(), c, next); err != nil {
+			c.mu.Unlock()
+			return fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
 	}
 	c.cfg.Networks = next
 	c.mu.Unlock()
