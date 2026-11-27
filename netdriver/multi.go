@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -22,7 +23,9 @@ import (
 //   - A dial goes out through the network whose prefix holds the address
 //     (an endpoint with a Prefix method), else through the first network
 //     that reaches it.
-//   - Resolve asks every network, the first one's answers first.
+//   - Resolve asks the engine's own networks, the first one's answers
+//     first; a remote network (see Remote) is asked only for a hostname
+//     none of them holds.
 type Multi struct {
 	// op serialises Listen, ListenPacket, Add and Remove, so a socket
 	// opened while a network is added is open on it exactly once.
@@ -193,31 +196,78 @@ func (m *Multi) Resolve(ctx context.Context, name string) ([]netip.Addr, error) 
 	if len(eps) == 0 {
 		return nil, syscall.ENETDOWN
 	}
-	if len(eps) == 1 {
-		return eps[0].Endpoint.Resolve(ctx, name)
+	if a, err := netip.ParseAddr(name); err == nil {
+		return []netip.Addr{a}, nil // a literal asks nobody
 	}
 	var out []netip.Addr
 	var first error
 	seen := map[netip.Addr]bool{}
-	for _, e := range eps {
-		addrs, err := e.Endpoint.Resolve(ctx, name)
-		if err != nil {
-			if first == nil {
-				first = err
+	ask := func(remote bool) {
+		for _, e := range eps {
+			if IsRemote(e.Endpoint) != remote {
+				continue
 			}
-			continue
-		}
-		for _, a := range addrs {
-			if !seen[a] {
-				seen[a] = true
-				out = append(out, a)
+			addrs, err := e.Endpoint.Resolve(ctx, name)
+			if err != nil {
+				if first == nil {
+					first = err
+				}
+				continue
+			}
+			for _, a := range addrs {
+				if !seen[a] {
+					seen[a] = true
+					out = append(out, a)
+				}
 			}
 		}
 	}
+	// Networks inside the engine answer first, and a name one of them holds
+	// goes no further: a remote network (a relay) is somebody else's
+	// machine, and every name sent to it is a name its operator can read.
+	ask(false)
+	if len(out) == 0 && RemoteName(name) {
+		ask(true)
+	}
 	if len(out) == 0 {
+		if first == nil {
+			first = &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+		}
 		return nil, first
 	}
 	return out, nil
+}
+
+// Remote is implemented by an endpoint whose network is run by somebody
+// else (a relay): its Resolve and Dial leave the engine.
+type Remote interface{ Remote() bool }
+
+// IsRemote reports whether ep is on a network that leaves the engine.
+func IsRemote(ep Endpoint) bool {
+	r, ok := ep.(Remote)
+	return ok && r.Remote()
+}
+
+// RemoteName reports whether name may be sent to a remote network: a
+// hostname of at most 253 bytes whose labels are 1-63 bytes of [a-zA-Z0-9-]
+// (a trailing dot allowed). Anything else (an underscore, a space, an empty
+// label, a path) can only be a typo or a probe and never leaves the engine.
+func RemoteName(name string) bool {
+	name = strings.TrimSuffix(name, ".")
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if name[i] >= 0x80 { // Unicode case folding would turn 'İ' into 'i'
+			return false
+		}
+	}
+	for _, l := range strings.Split(name, ".") {
+		if !ValidName(strings.ToLower(l)) {
+			return false
+		}
+	}
+	return true
 }
 
 // Detach implements Endpoint: every network's endpoint is detached.

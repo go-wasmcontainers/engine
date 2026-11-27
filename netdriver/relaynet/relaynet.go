@@ -51,6 +51,9 @@ func (d *Driver) Close() error { return d.s.Close() }
 // its own types) to netdriver.Endpoint.
 type endpoint struct{ *driver.Endpoint }
 
+// Remote implements netdriver.Remote: the relay is somebody else's machine.
+func (endpoint) Remote() bool { return true }
+
 func (e endpoint) Listen(ctx context.Context, network string, port uint16) (net.Listener, error) {
 	l, err := e.Endpoint.Listen(ctx, network, port)
 	if err != nil {
