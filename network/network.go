@@ -92,6 +92,13 @@ type Manager struct {
 	by     map[string]*entry
 	hosted []string        // added by AddDriver
 	sealed map[string]bool // hosted names that were ever internal: they stay so
+	// sealedKeys are the store keys of those records, whether or not their
+	// value could be read: a name whose key is here is sealed.
+	sealedKeys map[string]bool
+}
+
+func (m *Manager) isSealed(name string) bool {
+	return m.sealed[name] || m.sealedKeys[sealedKey(name)]
 }
 
 type record struct {
@@ -109,7 +116,8 @@ type record struct {
 // the networks created before (from Store); a damaged record is skipped
 // and reported.
 func New(opt Options) (*Manager, []string, error) {
-	m := &Manager{opt: opt, by: map[string]*entry{}, sealed: map[string]bool{}}
+	m := &Manager{opt: opt, by: map[string]*entry{}, sealed: map[string]bool{}, sealedKeys: map[string]bool{}}
+	var repaired []string
 	for name := range opt.Internal {
 		if opt.Drivers[name] == nil {
 			return nil, nil, fmt.Errorf("%w: Internal names %q, which is not a driver", ErrInvalid, name)
@@ -121,14 +129,20 @@ func New(opt Options) (*Manager, []string, error) {
 			return nil, nil, err
 		}
 		for _, k := range keys {
+			// The KEY is the record: it is the hash of the name, so a value
+			// that cannot be read or does not match still means "some
+			// network was internal". Fail closed: the name whose key this is
+			// stays sealed, and the daemon still starts.
+			m.sealedKeys[k] = true
 			b, err := opt.Store.Get(k)
 			if err != nil {
-				return nil, nil, fmt.Errorf("network: reading %s: %w", k, err)
+				repaired = append(repaired, fmt.Sprintf("sealed record %s unreadable, its network stays internal: %v", k, err))
+				continue
 			}
-			// A record that does not match its key is not trusted, and not
-			// dropped either: this set only ever grows.
 			if n := string(b); nameRE.MatchString(n) && sealedKey(n) == k {
 				m.sealed[n] = true
+			} else {
+				repaired = append(repaired, fmt.Sprintf("sealed record %s is damaged, its network stays internal", k))
 			}
 		}
 	}
@@ -147,7 +161,7 @@ func New(opt Options) (*Manager, []string, error) {
 		if !nameRE.MatchString(name) || m.by[name] != nil || name == Host {
 			return nil, nil, fmt.Errorf("%w: driver name %q", ErrInvalid, name)
 		}
-		internal := opt.Internal[name] || m.sealed[name]
+		internal := opt.Internal[name] || m.isSealed(name)
 		if internal {
 			if err := admit(name, d); err != nil {
 				return nil, nil, err
@@ -158,7 +172,6 @@ func New(opt Options) (*Manager, []string, error) {
 		}
 		m.by[name] = &entry{Network{Name: name, ID: idFor(name), Driver: dn, Created: epoch, Builtin: true, Internal: internal}, d}
 	}
-	var repaired []string
 	if opt.Store != nil {
 		keys, err := opt.Store.Keys("network/")
 		if err != nil {
@@ -200,7 +213,7 @@ func sealedKey(name string) string { return "sealed/" + keyName(name) }
 // (the engine's restart must not forget it). A Store that cannot record it
 // refuses: an internal network whose flag would be lost is not one.
 func (m *Manager) seal(name string) error {
-	if m.sealed[name] {
+	if m.isSealed(name) {
 		return nil
 	}
 	if m.opt.Store != nil {
@@ -443,7 +456,7 @@ func (m *Manager) AddDriverWith(name, driverName string, d netdriver.NetworkDriv
 	if m.by[name] != nil {
 		return Network{}, fmt.Errorf("%w: network with name %s already exists", ErrExists, name)
 	}
-	internal = internal || m.sealed[name]
+	internal = internal || m.isSealed(name)
 	if internal {
 		if err := admit(name, d); err != nil {
 			return Network{}, err

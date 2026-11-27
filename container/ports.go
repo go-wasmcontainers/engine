@@ -31,7 +31,7 @@ func (m *Manager) reconcilePorts(ctx context.Context, c *Container, atts []Attac
 	if c.state != Running || c.net == nil {
 		return nil
 	}
-	only := m.internalOnly(atts)
+	only := m.internalOnly(atts) || onNone(atts)
 	switch {
 	case only && c.ports != nil:
 		c.ports.Close()
@@ -44,6 +44,17 @@ func (m *Manager) reconcilePorts(ctx context.Context, c *Container, atts []Attac
 		c.ports = s
 	}
 	return nil
+}
+
+// onNone reports whether atts is the none network: Docker publishes nothing
+// there.
+func onNone(atts []Attachment) bool {
+	for _, a := range atts {
+		if a.Network == NoNetwork {
+			return true
+		}
+	}
+	return false
 }
 
 // internalOnly reports whether every network of atts is internal (and there

@@ -30,7 +30,9 @@ func admit(name string, d netdriver.NetworkDriver) error {
 
 // sealed is an endpoint on an internal network. Its driver is asked again at
 // every call, and an endpoint that reports Remote is refused, so egress
-// learnt after the network was added (a relay's Welcome) is caught.
+// learnt after the network was added (a relay's Welcome) is caught. A driver
+// that implements netdriver.EgressNotifier also has every socket closed the
+// moment it says so, without waiting for the next call.
 type sealed struct {
 	netdriver.Endpoint
 	name  string
@@ -38,25 +40,47 @@ type sealed struct {
 	socks *socks
 }
 
+// sock is one open socket of an endpoint. It is the key of the set (a
+// pointer, so a driver that cannot be hashed cannot panic the map).
+type sock struct {
+	k *socks
+	c io.Closer
+}
+
+func (t *sock) Close() error {
+	t.k.del(t)
+	return t.c.Close()
+}
+
 // socks is every socket an endpoint opened and has not closed: they are all
 // closed the moment the network is found to have egress.
 type socks struct {
-	mu  sync.Mutex
-	set map[io.Closer]struct{}
+	mu   sync.Mutex
+	set  map[*sock]struct{}
+	stop func() // unregisters the egress notification
 }
 
-func (k *socks) add(c io.Closer) {
+// add records c unless the network has egress by now. The test is made under
+// the lock closeAll takes, so a socket opened while the network flips is
+// either in the set when closeAll runs, or refused here: none survives.
+func (k *socks) add(c io.Closer, check func() error) (*sock, error) {
 	k.mu.Lock()
-	if k.set == nil {
-		k.set = map[io.Closer]struct{}{}
+	defer k.mu.Unlock()
+	if err := check(); err != nil {
+		c.Close()
+		return nil, err
 	}
-	k.set[c] = struct{}{}
-	k.mu.Unlock()
+	if k.set == nil {
+		k.set = map[*sock]struct{}{}
+	}
+	t := &sock{k, c}
+	k.set[t] = struct{}{}
+	return t, nil
 }
 
-func (k *socks) del(c io.Closer) {
+func (k *socks) del(t *sock) {
 	k.mu.Lock()
-	delete(k.set, c)
+	delete(k.set, t)
 	k.mu.Unlock()
 }
 
@@ -65,15 +89,25 @@ func (k *socks) closeAll() {
 	all := k.set
 	k.set = nil
 	k.mu.Unlock()
-	for c := range all {
-		c.Close()
+	for t := range all {
+		t.c.Close()
 	}
 }
 
-// guard is the check every socket repeats before it sends or accepts.
-// Egress learnt since the socket was opened closes all of the endpoint's
-// sockets. The check precedes the call: a write already past it when the
-// flip lands is not recalled.
+func (k *socks) unnotify() {
+	k.mu.Lock()
+	stop := k.stop
+	k.stop = nil
+	k.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+// guard is the check every socket repeats before it sends, receives or
+// accepts. Egress learnt since the socket was opened closes all of the
+// endpoint's sockets. The check precedes the call: a write already past it
+// when the flip lands is not recalled.
 func (s sealed) guard() error {
 	if err := s.check(); err != nil {
 		s.socks.closeAll()
@@ -82,9 +116,27 @@ func (s sealed) guard() error {
 	return nil
 }
 
+// Detach stops listening for the driver's egress and lets the endpoint go.
+func (s sealed) Detach() error {
+	s.socks.unnotify()
+	return s.Endpoint.Detach()
+}
+
+// sealedConn guards a stream or connected datagram socket. It is wrapped
+// again (wrapConn) so that the optional interfaces the inner conn has
+// (CloseWrite, CloseRead, net.PacketConn) survive: shutdown(SHUT_WR) and a
+// UDP Dial's use as a PacketConn depend on them.
 type sealedConn struct {
 	net.Conn
 	s sealed
+	t *sock
+}
+
+func (c sealedConn) Read(b []byte) (int, error) {
+	if err := c.s.guard(); err != nil {
+		return 0, err
+	}
+	return c.Conn.Read(b)
 }
 
 func (c sealedConn) Write(b []byte) (int, error) {
@@ -94,14 +146,117 @@ func (c sealedConn) Write(b []byte) (int, error) {
 	return c.Conn.Write(b)
 }
 
-func (c sealedConn) Close() error {
-	c.s.socks.del(c)
-	return c.Conn.Close()
+func (c sealedConn) Close() error { return c.t.Close() }
+
+type closeWriter struct {
+	x interface{ CloseWrite() error }
+}
+
+func (m closeWriter) CloseWrite() error { return m.x.CloseWrite() }
+
+type closeReader struct {
+	x interface{ CloseRead() error }
+}
+
+func (m closeReader) CloseRead() error { return m.x.CloseRead() }
+
+// packetConn keeps ReadFrom and WriteTo of a conn that is also a PacketConn.
+type packetConn struct {
+	x net.PacketConn
+	s sealed
+}
+
+func (m packetConn) ReadFrom(b []byte) (int, net.Addr, error) {
+	if err := m.s.guard(); err != nil {
+		return 0, nil, err
+	}
+	return m.x.ReadFrom(b)
+}
+
+func (m packetConn) WriteTo(b []byte, a net.Addr) (int, error) {
+	if err := m.s.guard(); err != nil {
+		return 0, err
+	}
+	return m.x.WriteTo(b, a)
+}
+
+type (
+	connW struct {
+		sealedConn
+		closeWriter
+	}
+	connR struct {
+		sealedConn
+		closeReader
+	}
+	connWR struct {
+		sealedConn
+		closeWriter
+		closeReader
+	}
+	connP struct {
+		sealedConn
+		packetConn
+	}
+	connPW struct {
+		sealedConn
+		packetConn
+		closeWriter
+	}
+	connPR struct {
+		sealedConn
+		packetConn
+		closeReader
+	}
+	connPWR struct {
+		sealedConn
+		packetConn
+		closeWriter
+		closeReader
+	}
+)
+
+// wrapConn returns c guarded, with the optional interfaces of c kept.
+func wrapConn(c net.Conn, s sealed) (net.Conn, error) {
+	t, err := s.socks.add(c, s.check)
+	if err != nil {
+		return nil, err
+	}
+	b := sealedConn{c, s, t}
+	cw, w := c.(interface{ CloseWrite() error })
+	cr, r := c.(interface{ CloseRead() error })
+	pc, p := c.(net.PacketConn)
+	W, R, P := closeWriter{cw}, closeReader{cr}, packetConn{pc, s}
+	switch {
+	case p && w && r:
+		return connPWR{b, P, W, R}, nil
+	case p && w:
+		return connPW{b, P, W}, nil
+	case p && r:
+		return connPR{b, P, R}, nil
+	case p:
+		return connP{b, P}, nil
+	case w && r:
+		return connWR{b, W, R}, nil
+	case w:
+		return connW{b, W}, nil
+	case r:
+		return connR{b, R}, nil
+	}
+	return b, nil
 }
 
 type sealedPacket struct {
 	net.PacketConn
 	s sealed
+	t *sock
+}
+
+func (c sealedPacket) ReadFrom(b []byte) (int, net.Addr, error) {
+	if err := c.s.guard(); err != nil {
+		return 0, nil, err
+	}
+	return c.PacketConn.ReadFrom(b)
 }
 
 func (c sealedPacket) WriteTo(b []byte, a net.Addr) (int, error) {
@@ -111,14 +266,12 @@ func (c sealedPacket) WriteTo(b []byte, a net.Addr) (int, error) {
 	return c.PacketConn.WriteTo(b, a)
 }
 
-func (c sealedPacket) Close() error {
-	c.s.socks.del(c)
-	return c.PacketConn.Close()
-}
+func (c sealedPacket) Close() error { return c.t.Close() }
 
 type sealedListener struct {
 	net.Listener
 	s sealed
+	t *sock
 }
 
 func (l sealedListener) Accept() (net.Conn, error) {
@@ -132,15 +285,10 @@ func (l sealedListener) Accept() (net.Conn, error) {
 		c.Close()
 		return nil, err
 	}
-	sc := sealedConn{c, l.s}
-	l.s.socks.add(sc)
-	return sc, nil
+	return wrapConn(c, l.s)
 }
 
-func (l sealedListener) Close() error {
-	l.s.socks.del(l)
-	return l.Listener.Close()
-}
+func (l sealedListener) Close() error { return l.t.Close() }
 
 // sealedPrefixed keeps the Prefix of an endpoint that has one, which
 // netdriver.Multi routes by.
@@ -157,6 +305,12 @@ func seal(name string, drv netdriver.NetworkDriver, ep netdriver.Endpoint) (netd
 	if err := s.check(); err != nil {
 		ep.Detach()
 		return nil, err
+	}
+	if n, ok := drv.(netdriver.EgressNotifier); ok {
+		stop := n.NotifyEgress(func() { s.guard() })
+		s.socks.mu.Lock()
+		s.socks.stop = stop
+		s.socks.mu.Unlock()
 	}
 	if p, ok := ep.(interface{ Prefix() netip.Prefix }); ok {
 		return sealedPrefixed{s, p}, nil
@@ -179,9 +333,11 @@ func (s sealed) Listen(ctx context.Context, network string, port uint16) (net.Li
 	if err != nil {
 		return nil, err
 	}
-	sl := sealedListener{l, s}
-	s.socks.add(sl)
-	return sl, nil
+	t, err := s.socks.add(l, s.check)
+	if err != nil {
+		return nil, err
+	}
+	return sealedListener{l, s, t}, nil
 }
 
 func (s sealed) Dial(ctx context.Context, network string, addr netip.AddrPort) (net.Conn, error) {
@@ -192,9 +348,7 @@ func (s sealed) Dial(ctx context.Context, network string, addr netip.AddrPort) (
 	if err != nil {
 		return nil, err
 	}
-	sc := sealedConn{c, s}
-	s.socks.add(sc)
-	return sc, nil
+	return wrapConn(c, s)
 }
 
 func (s sealed) ListenPacket(ctx context.Context, network string, port uint16) (net.PacketConn, error) {
@@ -205,9 +359,11 @@ func (s sealed) ListenPacket(ctx context.Context, network string, port uint16) (
 	if err != nil {
 		return nil, err
 	}
-	sp := sealedPacket{p, s}
-	s.socks.add(sp)
-	return sp, nil
+	t, err := s.socks.add(p, s.check)
+	if err != nil {
+		return nil, err
+	}
+	return sealedPacket{p, s, t}, nil
 }
 
 func (s sealed) Resolve(ctx context.Context, name string) ([]netip.Addr, error) {

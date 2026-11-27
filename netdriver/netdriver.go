@@ -47,6 +47,16 @@ type EgressDriver interface {
 	EgressEnabled() bool
 }
 
+// EgressNotifier is an EgressDriver that says when it starts to carry traffic
+// out: it calls fn, once and from any goroutine, as EgressEnabled turns true,
+// and the returned stop unregisters fn. An internal network whose driver
+// implements it closes the endpoints' sockets at that moment; without it the
+// sockets are closed at the next call on them.
+type EgressNotifier interface {
+	EgressDriver
+	NotifyEgress(fn func()) (stop func())
+}
+
 // HasEgress reports whether d positively declares that it can carry traffic
 // out of the engine. It is NOT the test of an internal network: a driver
 // that says nothing answers false here. Use Confined.

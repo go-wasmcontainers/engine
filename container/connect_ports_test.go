@@ -65,7 +65,14 @@ func TestConnectDisconnectReconcile(t *testing.T) {
 	if err := m.Disconnect("web", "sealed"); err == nil {
 		t.Fatal("disconnect that must publish ports on an engine that cannot")
 	}
-	if len(c.cfg.Networks) != 2 {
-		t.Fatalf("a refused disconnect changed the networks: %v", c.cfg.Networks)
+	if len(c.cfg.Networks) != 2 || len(mn.Endpoints()) != 2 {
+		t.Fatalf("a refused disconnect changed the container: %v, %d live endpoints", c.cfg.Networks, len(mn.Endpoints()))
+	}
+	found := false
+	for _, e := range mn.Endpoints() {
+		found = found || e.Network == "sealed"
+	}
+	if !found {
+		t.Fatal("a refused disconnect detached the sealed endpoint")
 	}
 }

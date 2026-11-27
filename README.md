@@ -319,12 +319,20 @@ wait on, so the browser's engine worker keeps its event loop.
   `network.Options.Internal` alike. The declaration is asked again at every
   attach and at every dial, resolve and listen of the endpoint, and an
   endpoint that reports `Remote()` is refused, so a relay that learns its
-  egress later is cut off at once: its open sockets are closed and every
-  write, accept and new socket is refused (`ENETUNREACH`; a write already
-  past its check when the flip lands is not recalled). The set of names that
+  egress later is cut off: every read, write, accept and new socket is
+  refused (`ENETUNREACH`) and the endpoint's open sockets are closed. They
+  are closed the moment a driver that implements `netdriver.EgressNotifier`
+  calls back as it turns egress on; for any other driver, at the next call
+  on any of the endpoint's sockets (a write already past its check when the
+  flip lands is not recalled; a socket opened while the flip lands is closed
+  and refused, never kept). The sockets keep the optional interfaces
+  (`CloseWrite`, `CloseRead`, `net.PacketConn`) they have on an ordinary
+  network. The set of names that
   were internal is kept in the state store, so a name stays internal across
   a restart and when re-added; a store that cannot record it refuses the
-  network. A relay (remote endpoint) network cannot be internal: it is
+  network, and a record that cannot be read or does not parse keeps its
+  name (its key is the hash of the name) internal and is reported, instead of
+  stopping the engine or opening the network. A relay (remote endpoint) network cannot be internal: it is
   refused, fail closed, because class egress is opt-in per threat model D6
   (`playground-egress-threat-model.md` section 11); the relay driver must
   implement `EgressEnabled()` and report `Remote()`. A container whose
@@ -402,7 +410,11 @@ iptables); UDP keeps one session per client, ended after 90 s of silence.
   when the container stops, so a restart may pick other ones under `-P`.
 - A container on `--network none` cannot publish (refused at start, where
   Docker would publish a port that never answers), nor can an engine with no
-  host to listen on (`container.Options.Ports` nil).
+  host to listen on (`container.Options.Ports` nil). A running container
+  disconnected from its last network drops to `none` and its ports are
+  closed, as Docker publishes nothing there. A disconnect whose port
+  reconcile is refused leaves the container, config and live endpoints, as it
+  was.
 - A start refused before the process exists (a port, a network, a volume)
   is recorded as an exit with code 128 and the reason, as Docker records
   it: a `run --rm` returns at once and its container is removed.

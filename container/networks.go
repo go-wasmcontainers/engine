@@ -217,14 +217,16 @@ func (m *Manager) Disconnect(ref, network string) error {
 		next = []Attachment{{Network: NoNetwork}}
 	}
 	if c.state == Running && c.net != nil {
-		if ep, ok := c.net.Remove(network); ok {
-			ep.Detach()
-		}
-		c.ip = c.net.Addr()
+		// Ports first: a refusal leaves the container exactly as it was, the
+		// live endpoints included, instead of half undone.
 		if err := m.reconcilePorts(context.Background(), c, next); err != nil {
 			c.mu.Unlock()
 			return fmt.Errorf("%w: %v", ErrInvalid, err)
 		}
+		if ep, ok := c.net.Remove(network); ok {
+			ep.Detach()
+		}
+		c.ip = c.net.Addr()
 	}
 	c.cfg.Networks = next
 	c.mu.Unlock()

@@ -37,9 +37,6 @@ func TestSealedStoreEdges(t *testing.T) {
 	if _, _, err := New(Options{Store: failKeys{st}}); err == nil {
 		t.Fatal("started with an unreadable sealed set (Keys)")
 	}
-	if _, _, err := New(Options{Store: failGet{st}}); err == nil {
-		t.Fatal("started with an unreadable sealed set (Get)")
-	}
 	// Already recorded: no second Put (the store would refuse it).
 	if _, _, err := New(Options{Store: failPut{st}, Drivers: map[string]netdriver.NetworkDriver{"sealed": localDriver(t)}}); err != nil {
 		t.Fatalf("a recorded name was written again: %v", err)
@@ -57,10 +54,47 @@ func TestSealedStoreEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer m2.Close()
-	for _, n := range []string{"x", "y"} {
-		if _, err := m2.AddDriver(n, "relay", newRelayLike(true, true)); err != nil {
-			t.Fatalf("%s was sealed by a forged record: %v", n, err)
+	// The key is the authority: "x" is sealed whatever the value says, and
+	// the value does not seal the name it names.
+	if _, err := m2.AddDriver("x", "relay", newRelayLike(true, true)); err == nil {
+		t.Fatal("x was not sealed by its own key")
+	}
+	if _, err := m2.AddDriver("y", "relay", newRelayLike(true, true)); err != nil {
+		t.Fatalf("y was sealed by a forged record: %v", err)
+	}
+}
+
+// One sealed record that cannot be read, or does not parse, neither stops the
+// engine nor opens its network: the name whose key it is stays internal, and
+// the damage is reported.
+func TestSealedDamagedRecordFailsClosed(t *testing.T) {
+	for name, wrap := range map[string]func(state.Store) state.Store{
+		"unreadable": func(s state.Store) state.Store { return failGet{s} },
+		"garbage":    func(s state.Store) state.Store { s.Put(sealedKey("sealed"), []byte("\x00\xff")); return s },
+	} {
+		st := &state.Mem{}
+		m, _, err := New(Options{Store: st})
+		if err != nil {
+			t.Fatal(err)
 		}
+		if _, err := m.AddDriverWith("sealed", "relay", localDriver(t), true); err != nil {
+			t.Fatal(err)
+		}
+		m.Close()
+		m2, repaired, err := New(Options{Store: wrap(st)})
+		if err != nil {
+			t.Fatalf("%s: the engine did not start: %v", name, err)
+		}
+		if len(repaired) == 0 {
+			t.Fatalf("%s: damage not reported", name)
+		}
+		if _, err := m2.AddDriver("sealed", "relay", newRelayLike(true, true)); err == nil {
+			t.Fatalf("%s: the network opened", name)
+		}
+		if _, _, err := New(Options{Store: wrap(st), Drivers: map[string]netdriver.NetworkDriver{"sealed": newRelayLike(true, true)}}); !errors.Is(err, ErrEgress) {
+			t.Fatalf("%s: an egress driver under the damaged name: %v", name, err)
+		}
+		m2.Close()
 	}
 }
 

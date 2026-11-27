@@ -135,7 +135,18 @@ func TestReconcilePorts(t *testing.T) {
 	if err := m.reconcilePorts(ctx, c, both); err != nil || c.ports == nil {
 		t.Fatalf("an ordinary network connected again: ports=%v err=%v", c.ports, err)
 	}
-	c.ports.Close()
+	// Dropped to none (the last network was disconnected): Docker publishes
+	// nothing there, whether the network it left was internal or not.
+	none := []Attachment{{Network: NoNetwork}}
+	if err := m.reconcilePorts(ctx, c, none); err != nil || c.ports != nil {
+		t.Fatalf("none after open: ports=%v err=%v", c.ports, err)
+	}
+	if err := m.reconcilePorts(ctx, c, sealedOnly); err != nil || c.ports != nil {
+		t.Fatalf("sealed only: ports=%v err=%v", c.ports, err)
+	}
+	if err := m.reconcilePorts(ctx, c, none); err != nil || c.ports != nil {
+		t.Fatalf("none after sealed: ports=%v err=%v", c.ports, err)
+	}
 	// Not running: nothing to do.
 	c2 := &Container{name: "x", state: Created, cfg: Config{Ports: spec}}
 	if err := m.reconcilePorts(ctx, c2, open); err != nil || c2.ports != nil {
