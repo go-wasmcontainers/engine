@@ -271,3 +271,20 @@ func TestOptionsDriversInternal(t *testing.T) {
 		t.Fatal("dial out of an internal Options driver")
 	}
 }
+
+// A host driver without aliases refuses a container that asks for some, and
+// is not called.
+func TestHostedDriverRefusesAliases(t *testing.T) {
+	m, _, _ := New(Options{})
+	defer m.Close()
+	d := newRelayLike(false, false)
+	if _, err := m.AddDriver("class", "relay", d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Attach(ctx5(t), "class", "web", []string{"api"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("aliases on a driver without them: %v", err)
+	}
+	if d.attached.Load() != 0 {
+		t.Fatal("the refused attach reached the driver")
+	}
+}
