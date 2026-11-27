@@ -58,7 +58,8 @@ type Network struct {
 	// Builtin networks cannot be removed.
 	Builtin bool
 	// Internal is Docker's `internal: true`: no route out of the engine,
-	// and none can be added (AddDriverWith refuses an egress driver).
+	// enforced at attach and at every dial (see AddDriverWith); a container
+	// whose networks are all internal publishes no port.
 	Internal bool
 }
 
@@ -72,6 +73,11 @@ type Options struct {
 	// DriverName describes a host driver in `network ls` (default
 	// "remote").
 	DriverName string
+	// Internal names the Drivers that are internal networks (Docker's
+	// `internal: true`). A driver there must declare that it has no egress
+	// (netdriver.Confined), else New fails with ErrEgress; a name that is
+	// not a driver fails with ErrInvalid.
+	Internal map[string]bool
 }
 
 type entry struct {
@@ -84,7 +90,8 @@ type Manager struct {
 	opt    Options
 	mu     sync.Mutex
 	by     map[string]*entry
-	hosted []string // added by AddDriver
+	hosted []string        // added by AddDriver
+	sealed map[string]bool // hosted names that were ever internal: they stay so
 }
 
 type record struct {
@@ -102,7 +109,12 @@ type record struct {
 // the networks created before (from Store); a damaged record is skipped
 // and reported.
 func New(opt Options) (*Manager, []string, error) {
-	m := &Manager{opt: opt, by: map[string]*entry{}}
+	m := &Manager{opt: opt, by: map[string]*entry{}, sealed: map[string]bool{}}
+	for name := range opt.Internal {
+		if opt.Drivers[name] == nil {
+			return nil, nil, fmt.Errorf("%w: Internal names %q, which is not a driver", ErrInvalid, name)
+		}
+	}
 	br, err := netdriver.NewLocal(netdriver.DefaultPrefix)
 	if err != nil {
 		return nil, nil, err
@@ -118,7 +130,13 @@ func New(opt Options) (*Manager, []string, error) {
 		if !nameRE.MatchString(name) || m.by[name] != nil || name == Host {
 			return nil, nil, fmt.Errorf("%w: driver name %q", ErrInvalid, name)
 		}
-		m.by[name] = &entry{Network{Name: name, ID: idFor(name), Driver: dn, Created: epoch, Builtin: true}, d}
+		internal := opt.Internal[name]
+		if internal {
+			if err := admit(name, d); err != nil {
+				return nil, nil, err
+			}
+		}
+		m.by[name] = &entry{Network{Name: name, ID: idFor(name), Driver: dn, Created: epoch, Builtin: true, Internal: internal}, d}
 	}
 	var repaired []string
 	if opt.Store != nil {
@@ -318,13 +336,25 @@ func (m *Manager) Attach(ctx context.Context, network, name string, aliases []st
 			return nil, nil
 		}
 	}
+	if e.Internal {
+		// Asked before the driver is: a driver that has learnt egress is
+		// not called at all.
+		if err := admit(e.Name, e.drv); err != nil {
+			return nil, err
+		}
+	}
+	var ep netdriver.Endpoint
 	if ad, ok := e.drv.(netdriver.AliasDriver); ok {
-		return ad.AttachAliases(ctx, name, aliases)
-	}
-	if len(aliases) > 0 {
+		ep, err = ad.AttachAliases(ctx, name, aliases)
+	} else if len(aliases) > 0 {
 		return nil, fmt.Errorf("%w: network %s (%s) has no aliases", ErrInvalid, e.Name, e.Driver)
+	} else {
+		ep, err = e.drv.Attach(ctx, name)
 	}
-	return e.drv.Attach(ctx, name)
+	if err != nil || ep == nil || !e.Internal {
+		return ep, err
+	}
+	return seal(e.Name, e.drv, ep)
 }
 
 // Prune removes every created network that no container uses and whose
@@ -356,21 +386,30 @@ func (m *Manager) AddDriver(name, driverName string, d netdriver.NetworkDriver) 
 }
 
 // AddDriverWith is AddDriver with the network's `internal` flag. An
-// internal network REFUSES a driver that can carry traffic out
-// (netdriver.HasEgress): the flag is set at create and can never be given
-// an egress, so the refusal is here, before the driver is registered
-// (playground-egress-threat-model.md section 11).
+// internal network accepts only a driver that POSITIVELY declares it has no
+// egress (netdriver.Confined: a *netdriver.Local, or an EgressDriver whose
+// EgressEnabled is false); a driver that says nothing, or a wrapper that
+// hides the method, is refused (ErrEgress). The declaration is asked again
+// at every Attach and every Dial/Resolve/Listen of the endpoint, and an
+// endpoint that reports Remote is refused, so egress learnt later (a relay's
+// Welcome) closes the network instead of opening it
+// (playground-egress-threat-model.md section 11). A name that was ever
+// internal stays internal when re-added after RemoveDriver.
 func (m *Manager) AddDriverWith(name, driverName string, d netdriver.NetworkDriver, internal bool) (Network, error) {
 	if !nameRE.MatchString(name) || name == Host || d == nil {
 		return Network{}, fmt.Errorf("%w: driver name %q", ErrInvalid, name)
-	}
-	if internal && netdriver.HasEgress(d) {
-		return Network{}, fmt.Errorf("%w: network %s is internal and cannot take a driver with egress", ErrInvalid, name)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.by[name] != nil {
 		return Network{}, fmt.Errorf("%w: network with name %s already exists", ErrExists, name)
+	}
+	internal = internal || m.sealed[name]
+	if internal {
+		if err := admit(name, d); err != nil {
+			return Network{}, err
+		}
+		m.sealed[name] = true
 	}
 	n := Network{Name: name, ID: idFor(name), Driver: driverName, Created: time.Now().UTC(), Builtin: true, Internal: internal}
 	m.by[name] = &entry{n, d}

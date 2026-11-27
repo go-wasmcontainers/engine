@@ -310,11 +310,21 @@ wait on, so the browser's engine worker keeps its event loop.
   compose-spec, "Networks top-level element", `internal`: "an externally
   isolated network") makes a network with no route out of
   the engine; inspect reports `"Internal": true`. In-engine networks never
-  have one, so the flag is a promise the engine keeps: a host driver that can
-  carry traffic out (`netdriver.EgressDriver` with `EgressEnabled()` true)
-  is refused on an internal network by `network.Manager.AddDriverWith`. A
+  have one, so the flag is a promise the engine keeps, and it fails closed:
+  an internal network accepts only a driver that POSITIVELY declares it has
+  no egress (`netdriver.Confined`: an in-engine `*netdriver.Local`, or a
+  `netdriver.EgressDriver` whose `EgressEnabled()` is false). A driver that
+  says nothing, or a wrapper that hides the method, is refused
+  (`network.ErrEgress`), through `AddDriverWith` and through
+  `network.Options.Internal` alike. The declaration is asked again at every
+  attach and at every dial, resolve and listen of the endpoint, and an
+  endpoint that reports `Remote()` is refused, so a relay that learns its
+  egress later is cut off at once. A name that was internal stays internal
+  when re-added. A container whose networks are all internal publishes no
+  port (`-p` is silently inert, as in Docker: moby `libnetwork/endpoint.go`
+  programs external connectivity only for a network that is not internal). A
   container on an internal network AND another network keeps the other's
-  routes, as in Docker.
+  routes and ports, as in Docker.
 - **Aliases and several networks.** `--network-alias` (or
   `NetworkingConfig.EndpointsConfig[net].Aliases` at create, or
   `network connect --alias`) adds names on a user-defined network; an alias

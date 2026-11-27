@@ -315,6 +315,11 @@ type Options struct {
 	// Network attaches a container to one of Config.Networks under its DNS
 	// name and aliases; nil means containers have no network.
 	Network func(ctx context.Context, network, name string, aliases []string) (netdriver.Endpoint, error)
+	// Internal says whether a network is internal (Docker's `internal`).
+	// A container whose networks are all internal publishes no port, as in
+	// Docker (moby libnetwork/endpoint.go programs external connectivity
+	// only for a network that is not internal); nil: none is internal.
+	Internal func(network string) bool
 	// Ports is where published ports listen (wctrd: portmap.OS); nil
 	// means this engine cannot publish them, and a container that asks
 	// is refused at start.

@@ -23,11 +23,31 @@ func checkPorts(cfg Config) error {
 	return nil
 }
 
+// internalOnly reports whether every network of c is internal (and it has
+// one).
+func (m *Manager) internalOnly(c *Container) bool {
+	if m.opt.Internal == nil {
+		return false
+	}
+	atts := c.cfg.attachments()
+	for _, a := range atts {
+		if a.Network == NoNetwork || !m.opt.Internal(a.Network) {
+			return false
+		}
+	}
+	return len(atts) > 0
+}
+
 // publish opens a starting container's published ports, dialing into it
 // through ep; nil when it publishes none. The caller holds c.mu.
 func (m *Manager) publish(ctx context.Context, c *Container, ep *netdriver.Multi) (*portmap.Set, error) {
 	want := c.cfg.published()
 	if want.Bindings() == 0 {
+		return nil, nil
+	}
+	if m.internalOnly(c) {
+		// Docker publishes nothing for a container on internal networks
+		// only, silently: the ports stay exposed, none is listening.
 		return nil, nil
 	}
 	if m.opt.Ports == nil {
