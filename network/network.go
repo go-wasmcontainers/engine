@@ -57,6 +57,9 @@ type Network struct {
 	Labels  map[string]string
 	// Builtin networks cannot be removed.
 	Builtin bool
+	// Internal is Docker's `internal: true`: no route out of the engine,
+	// and none can be added (AddDriverWith refuses an egress driver).
+	Internal bool
 }
 
 // Options configures a Manager.
@@ -90,6 +93,9 @@ type record struct {
 	Subnet  string            `json:"subnet"`
 	Created time.Time         `json:"created"`
 	Labels  map[string]string `json:"labels,omitempty"`
+	// Internal is stored only when set, so records written before it
+	// existed read back as not internal.
+	Internal bool `json:"internal,omitempty"`
 }
 
 // New returns a manager with "bridge" and "none", the host drivers, and
@@ -143,7 +149,7 @@ func New(opt Options) (*Manager, []string, error) {
 				opt.Store.Delete(k)
 				continue
 			}
-			m.by[r.Name] = &entry{Network{Name: r.Name, ID: r.ID, Driver: "bridge", Subnet: pfx.String(), Created: r.Created, Labels: r.Labels}, drv}
+			m.by[r.Name] = &entry{Network{Name: r.Name, ID: r.ID, Driver: "bridge", Subnet: pfx.String(), Created: r.Created, Labels: r.Labels, Internal: r.Internal}, drv}
 		}
 	}
 	return m, repaired, nil
@@ -219,6 +225,12 @@ func (m *Manager) find(ref string) (*entry, error) {
 // Create makes an in-engine network on the next free /16 of 10.89.0.0
 // onwards.
 func (m *Manager) Create(name string, labels map[string]string) (Network, error) {
+	return m.CreateWith(name, labels, false)
+}
+
+// CreateWith is Create with Docker's `internal` flag: an internal network
+// has no route out of the engine.
+func (m *Manager) CreateWith(name string, labels map[string]string, internal bool) (Network, error) {
 	if !nameRE.MatchString(name) || name == Host {
 		return Network{}, fmt.Errorf("%w: invalid network name %q", ErrInvalid, name)
 	}
@@ -250,9 +262,9 @@ func (m *Manager) Create(name string, labels map[string]string) (Network, error)
 	if err != nil {
 		return Network{}, err
 	}
-	n := Network{Name: name, ID: newID(), Driver: "bridge", Subnet: pfx.String(), Created: time.Now().UTC(), Labels: labels}
+	n := Network{Name: name, ID: newID(), Driver: "bridge", Subnet: pfx.String(), Created: time.Now().UTC(), Labels: labels, Internal: internal}
 	if m.opt.Store != nil {
-		b, _ := json.Marshal(record{Name: n.Name, ID: n.ID, Subnet: n.Subnet, Created: n.Created, Labels: labels})
+		b, _ := json.Marshal(record{Name: n.Name, ID: n.ID, Subnet: n.Subnet, Created: n.Created, Labels: labels, Internal: internal})
 		if err := m.opt.Store.Put("network/"+keyName(name), b); err != nil {
 			return Network{}, err
 		}
@@ -340,15 +352,27 @@ func (m *Manager) Prune(inUse func(name string) bool, keep func(labels map[strin
 // a page); driverName describes it in `network ls`. RemoveDriver hands it
 // back; Remove refuses it.
 func (m *Manager) AddDriver(name, driverName string, d netdriver.NetworkDriver) (Network, error) {
+	return m.AddDriverWith(name, driverName, d, false)
+}
+
+// AddDriverWith is AddDriver with the network's `internal` flag. An
+// internal network REFUSES a driver that can carry traffic out
+// (netdriver.HasEgress): the flag is set at create and can never be given
+// an egress, so the refusal is here, before the driver is registered
+// (playground-egress-threat-model.md section 11).
+func (m *Manager) AddDriverWith(name, driverName string, d netdriver.NetworkDriver, internal bool) (Network, error) {
 	if !nameRE.MatchString(name) || name == Host || d == nil {
 		return Network{}, fmt.Errorf("%w: driver name %q", ErrInvalid, name)
+	}
+	if internal && netdriver.HasEgress(d) {
+		return Network{}, fmt.Errorf("%w: network %s is internal and cannot take a driver with egress", ErrInvalid, name)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.by[name] != nil {
 		return Network{}, fmt.Errorf("%w: network with name %s already exists", ErrExists, name)
 	}
-	n := Network{Name: name, ID: idFor(name), Driver: driverName, Created: time.Now().UTC(), Builtin: true}
+	n := Network{Name: name, ID: idFor(name), Driver: driverName, Created: time.Now().UTC(), Builtin: true, Internal: internal}
 	m.by[name] = &entry{n, d}
 	m.hosted = append(m.hosted, name)
 	return n, nil

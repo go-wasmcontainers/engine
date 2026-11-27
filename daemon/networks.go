@@ -23,7 +23,12 @@ func (d *Daemon) networkEvent(action string, n network.Network, containerID stri
 
 // NetworkCreate makes an in-engine network.
 func (d *Daemon) NetworkCreate(name string, labels map[string]string) (network.Network, error) {
-	n, err := d.nets.Create(name, labels)
+	return d.NetworkCreateWith(name, labels, false)
+}
+
+// NetworkCreateWith is NetworkCreate with Docker's `internal` flag.
+func (d *Daemon) NetworkCreateWith(name string, labels map[string]string, internal bool) (network.Network, error) {
+	n, err := d.nets.CreateWith(name, labels, internal)
 	if err == nil {
 		d.networkEvent("create", n, "")
 	}

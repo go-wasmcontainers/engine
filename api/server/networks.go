@@ -33,7 +33,7 @@ func (s *server) networkObject(n network.Network) api.Network {
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	out := api.Network{Name: n.Name, ID: n.ID, Created: n.Created.Format(time.RFC3339Nano), Scope: "local", Driver: n.Driver,
+	out := api.Network{Name: n.Name, ID: n.ID, Created: n.Created.Format(time.RFC3339Nano), Scope: "local", Driver: n.Driver, Internal: n.Internal,
 		IPAM: api.NetworkIPAM{Driver: "default", Config: []map[string]string{}}, Containers: map[string]api.NetworkEndpoint{},
 		Options: map[string]string{}, Labels: labels, Attachable: true}
 	if n.Subnet != "" {
@@ -125,11 +125,11 @@ func (s *server) networksCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("network driver %q: only bridge (in-engine) networks can be created", req.Driver))
 		return
 	}
-	if req.Internal || len(req.Options) > 0 {
+	if len(req.Options) > 0 {
 		writeError(w, http.StatusBadRequest, errors.New("network options are not supported"))
 		return
 	}
-	n, err := s.d.NetworkCreate(req.Name, req.Labels)
+	n, err := s.d.NetworkCreateWith(req.Name, req.Labels, req.Internal)
 	if err != nil {
 		writeError(w, networkStatus(err), err)
 		return

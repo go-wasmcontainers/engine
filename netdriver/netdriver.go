@@ -34,6 +34,21 @@ type AliasDriver interface {
 	AttachAliases(ctx context.Context, container string, aliases []string) (Endpoint, error)
 }
 
+// EgressDriver is a NetworkDriver that can carry a container's traffic out
+// of the engine (a relay with egress enabled). A driver that does not
+// implement it, or answers false, has no route out. An internal network
+// (Docker's `internal: true`) refuses one for good.
+type EgressDriver interface {
+	NetworkDriver
+	EgressEnabled() bool
+}
+
+// HasEgress reports whether d can carry traffic out of the engine.
+func HasEgress(d NetworkDriver) bool {
+	e, ok := d.(EgressDriver)
+	return ok && e.EgressEnabled()
+}
+
 // Endpoint is one container's place on a network.
 type Endpoint interface {
 	Addr() netip.Addr
