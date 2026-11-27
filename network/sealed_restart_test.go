@@ -10,7 +10,12 @@ import (
 
 type failKeys struct{ state.Store }
 
-func (failKeys) Keys(string) ([]string, error) { return nil, errors.New("unreadable") }
+func (f failKeys) Keys(p string) ([]string, error) {
+	if p == "sealed/" {
+		return nil, errors.New("unreadable")
+	}
+	return f.Store.Keys(p)
+}
 
 type failGet struct{ state.Store }
 
@@ -38,6 +43,10 @@ func TestSealedStoreEdges(t *testing.T) {
 	// Already recorded: no second Put (the store would refuse it).
 	if _, _, err := New(Options{Store: failPut{st}, Drivers: map[string]netdriver.NetworkDriver{"sealed": localDriver(t)}}); err != nil {
 		t.Fatalf("a recorded name was written again: %v", err)
+	}
+	// A new internal name through Options whose record cannot be written.
+	if _, _, err := New(Options{Store: failPut{&state.Mem{}}, Internal: map[string]bool{"fresh": true}, Drivers: map[string]netdriver.NetworkDriver{"fresh": localDriver(t)}}); err == nil {
+		t.Fatal("an internal Options driver whose flag could not be stored was accepted")
 	}
 	// A forged record: the value names "y" under the key of "x".
 	if err := st.Put(sealedKey("x"), []byte("y")); err != nil {
