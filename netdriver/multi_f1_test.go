@@ -124,3 +124,28 @@ func FuzzRemoteName(f *testing.F) {
 		}
 	})
 }
+
+func TestRemoteNameLength(t *testing.T) {
+	l63 := strings.Repeat("a", 63)
+	if n := l63 + "." + l63 + "." + l63 + "." + strings.Repeat("a", 61); len(n) != 253 || !RemoteName(n) {
+		t.Errorf("a 253-byte name: %d bytes, accepted %v", len(n), RemoteName(n))
+	}
+	if n := l63 + "." + l63 + "." + l63 + "." + strings.Repeat("a", 62); len(n) != 254 || RemoteName(n) {
+		t.Errorf("a 254-byte name: %d bytes, accepted %v", len(n), RemoteName(n))
+	}
+}
+
+// A container on a remote network alone: a literal still asks nobody.
+func TestMultiResolveLiteralAsksNobody(t *testing.T) {
+	spy := &spyRemote{}
+	m := NewMulti()
+	if err := m.Add(context.Background(), "class", spy); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.Resolve(context.Background(), "203.0.113.9"); err != nil || len(got) != 1 {
+		t.Fatalf("literal = %v, %v", got, err)
+	}
+	if n := spy.names(); len(n) != 0 {
+		t.Fatalf("asked %q", n)
+	}
+}
