@@ -276,3 +276,127 @@ func TestSealedDialRacingTheFlip(t *testing.T) {
 		t.Fatalf("the raced socket was left open: %v", err)
 	}
 }
+
+func (e flipEP) Listen(ctx context.Context, n string, p uint16) (net.Listener, error) {
+	e.on.Store(true)
+	return e.Endpoint.Listen(ctx, n, p)
+}
+
+func (e flipEP) ListenPacket(ctx context.Context, n string, p uint16) (net.PacketConn, error) {
+	e.on.Store(true)
+	return e.Endpoint.ListenPacket(ctx, n, p)
+}
+
+// Listen and ListenPacket that race the flip are refused and their sockets
+// closed: the port can be bound again through the raw endpoint.
+func TestSealedListenRacingTheFlip(t *testing.T) {
+	ctx := ctx5(t)
+	var peer net.Conn
+	loc := localDriver(t)
+	d := flipDrv{loc, &atomic.Bool{}, &peer}
+	m, _, _ := New(Options{})
+	defer m.Close()
+	if _, err := m.AddDriverWith("sealed", "relay", d, true); err != nil {
+		t.Fatal(err)
+	}
+	a, err := m.Attach(ctx, "sealed", "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := loc.Attach(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l, err := a.Listen(ctx, "tcp", 80); !errors.Is(err, ErrEgress) || l != nil {
+		t.Fatalf("Listen that raced the flip: %v, %v", l, err)
+	}
+	l, err := raw.Listen(ctx, "tcp", 80)
+	if err != nil {
+		t.Fatalf("the raced listener was left open: %v", err)
+	}
+	l.Close()
+	d.on.Store(false)
+	if p, err := a.ListenPacket(ctx, "udp", 53); !errors.Is(err, ErrEgress) || p != nil {
+		t.Fatalf("ListenPacket that raced the flip: %v, %v", p, err)
+	}
+	p, err := raw.ListenPacket(ctx, "udp", 53)
+	if err != nil {
+		t.Fatalf("the raced packet socket was left open: %v", err)
+	}
+	p.Close()
+}
+
+// Reads are guarded too, on every kind of socket, and an Accept refused by
+// the flip closes the endpoint's other sockets, not only itself.
+func TestSealedReadsAndAcceptAfterSilentFlip(t *testing.T) {
+	ctx := ctx5(t)
+	loc := localDriver(t)
+	d := notifyDriver{loc, &notifyState{}}
+	m, _, _ := New(Options{})
+	defer m.Close()
+	if _, err := m.AddDriverWith("sealed", "relay", d, true); err != nil {
+		t.Fatal(err)
+	}
+	a, err := m.Attach(ctx, "sealed", "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := loc.Attach(ctx, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl, _ := peer.Listen(ctx, "tcp", 80)
+	defer pl.Close()
+	pp, _ := peer.ListenPacket(ctx, "udp", 53)
+	defer pp.Close()
+	c, err := a.Dial(ctx, "tcp", netip.AddrPortFrom(peer.Addr(), 80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	psc, _ := pl.Accept()
+	defer psc.Close()
+	u, err := a.Dial(ctx, "udp", netip.AddrPortFrom(peer.Addr(), 53))
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := u.(net.PacketConn)
+	lp, err := a.ListenPacket(ctx, "udp", 5353)
+	if err != nil {
+		t.Fatal(err)
+	}
+	al, err := a.Listen(ctx, "tcp", 8080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.st.on.Store(true) // silently: no notification
+	go func() {
+		raw, err := loc.Attach(ctx, "z")
+		if err == nil {
+			if x, err := raw.Dial(ctx, "tcp", netip.AddrPortFrom(a.Addr(), 8080)); err == nil {
+				defer x.Close()
+				time.Sleep(time.Second)
+			}
+		}
+	}()
+	// The refused Accept closes the endpoint's other sockets: the peer of c
+	// sees EOF without any call on c.
+	if x, err := al.Accept(); !errors.Is(err, ErrEgress) || x != nil {
+		t.Fatalf("Accept: %v, %v", x, err)
+	}
+	psc.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := psc.Read(make([]byte, 1)); !errors.Is(err, io.EOF) && !isReset(err) {
+		t.Fatalf("the refused Accept left another socket open: %v", err)
+	}
+	if _, err := c.Read(make([]byte, 1)); !errors.Is(err, ErrEgress) {
+		t.Fatalf("Read: %v", err)
+	}
+	if _, _, err := up.ReadFrom(make([]byte, 1)); !errors.Is(err, ErrEgress) {
+		t.Fatalf("PacketConn.ReadFrom of a dialed UDP socket: %v", err)
+	}
+	if _, err := up.WriteTo([]byte("x"), net.UDPAddrFromAddrPort(netip.AddrPortFrom(peer.Addr(), 53))); !errors.Is(err, ErrEgress) {
+		t.Fatalf("PacketConn.WriteTo of a dialed UDP socket: %v", err)
+	}
+	if _, _, err := lp.ReadFrom(make([]byte, 1)); !errors.Is(err, ErrEgress) {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+}
