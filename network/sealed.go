@@ -65,9 +65,10 @@ type socks struct {
 // either in the set when closeAll runs, or refused here: none survives.
 func (k *socks) add(c io.Closer, check func() error) (*sock, error) {
 	k.mu.Lock()
-	defer k.mu.Unlock()
 	if err := check(); err != nil {
+		k.mu.Unlock()
 		c.Close()
+		k.closeAll() // egress is learnt: the other sockets go too
 		return nil, err
 	}
 	if k.set == nil {
@@ -75,6 +76,7 @@ func (k *socks) add(c io.Closer, check func() error) (*sock, error) {
 	}
 	t := &sock{k, c}
 	k.set[t] = struct{}{}
+	k.mu.Unlock()
 	return t, nil
 }
 
@@ -279,12 +281,9 @@ func (l sealedListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Checked after the accept: a peer that connected once egress was learnt
-	// is refused, and so is every other socket of the endpoint.
-	if err := l.s.guard(); err != nil {
-		c.Close()
-		return nil, err
-	}
+	// Checked after the accept, when the conn is registered: a peer that
+	// connected once egress was learnt is refused, and so is every other
+	// socket of the endpoint.
 	return wrapConn(c, l.s)
 }
 
