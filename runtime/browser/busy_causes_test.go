@@ -143,3 +143,58 @@ func TestBusyLogMeasuresLateTicksAndTransits(t *testing.T) {
 		t.Errorf("transits = %+v, want [[1e12+120, 1e12+150]]\n%s", got.Transits, b)
 	}
 }
+
+// sentHarness is clockHarness's simulated engine, printing for each call the
+// "sent" its message carried and the true time it was posted at.
+const sentHarness = `
+const vm = require("vm");
+const fs = require("fs");
+const D = 3.7; // the guest worker's epoch clock reads D ms more than the engine's
+let t = 0;
+const calls = [];
+const ctx = vm.createContext({
+  onmessage: null,
+  performance: { timeOrigin: 0, now: () => t + D },
+  postMessage: (m) => {
+    if (m.t !== "call") return;
+    calls.push({ sent: m.sent, at: t });
+    t += 0.05;
+    ctx.view.setFloat64(216, t, true);
+    t += 0.05;
+    ctx.view.setFloat64(224, t, true);
+    ctx.i32[0] = 2;
+    t += 0.05;
+  },
+  Atomics, SharedArrayBuffer, DataView, Int32Array,
+});
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
+vm.runInContext("i32 = new Int32Array(new SharedArrayBuffer(1024)); view = new DataView(i32.buffer); callNames[0] = 'x';", ctx);
+ctx.i32 = vm.runInContext("i32", ctx);
+ctx.view = vm.runInContext("view", ctx);
+for (let i = 0; i < 20; i++) { vm.runInContext("call(0, '', '', [])", ctx); t += 1; }
+console.log(JSON.stringify(calls));
+`
+
+// TestCallMessagesCarryTheirPostTimeOnTheReceiversClock: a call message says when
+// it was posted, on the clock of the worker that receives it (the guest's own
+// epoch clock minus the offset it has measured), so that the receiver's busy log
+// can record how long it was in flight. The first call has no estimate yet and
+// is stamped on the guest's clock; the later ones are corrected.
+func TestCallMessagesCarryTheirPostTimeOnTheReceiversClock(t *testing.T) {
+	b := runNode(t, sentHarness, writeAsset(t, "worker.js", WorkerJS))
+	var got []struct{ Sent, At float64 }
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%v\n%s", err, b)
+	}
+	if len(got) != 20 {
+		t.Fatalf("%d calls: %s", len(got), b)
+	}
+	if !nearMs(got[0].Sent, got[0].At+3.7) {
+		t.Errorf("first call: sent %.3f, want the guest's clock %.3f", got[0].Sent, got[0].At+3.7)
+	}
+	for i, c := range got[2:] {
+		if math.Abs(c.Sent-c.At) > 0.02 {
+			t.Errorf("call %d: sent %.3f, want the engine's clock %.3f", i+2, c.Sent, c.At)
+		}
+	}
+}

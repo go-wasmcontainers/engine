@@ -75,7 +75,10 @@ const (
 	CauseInFlight     = "message in flight"
 )
 
-// ExplainWith is Explain with the measured intervals.
+// ExplainWith is Explain with the measured intervals: of the time no slice
+// covers, the part the worker's event loop ran no timer is CauseNotScheduled,
+// of the rest the part a message to it was in flight is CauseInFlight, and
+// what no measurement covers stays "no slice".
 func ExplainWith(from, to float64, ev Evidence) []Share {
 	slices := ev.Slices
 	by := map[string]float64{}
@@ -99,7 +102,28 @@ func ExplainWith(from, to float64, ev Evidence) []Share {
 		}
 	}
 	if rest := to - from - covered; rest > 1e-9 {
-		by["no slice"] += rest
+		// What no slice covers: first the part a late tick of the worker's loop
+		// covers, then of what is left the part a message was in flight for; a
+		// measurement is credited only for its overlap with that time, and each
+		// instant once. What neither measures is "no slice".
+		gaps := []Interval{{from, to}}
+		for _, s := range slices {
+			gaps = subtract(gaps, Interval{s.At, s.At + s.Dur})
+		}
+		late := min(rest, overlap(gaps, ev.LateTicks))
+		if late > 1e-9 {
+			by[CauseNotScheduled] += late
+			rest -= late
+		}
+		gaps = subtractAll(gaps, ev.LateTicks)
+		flight := min(rest, overlap(gaps, ev.Transits))
+		if flight > 1e-9 {
+			by[CauseInFlight] += flight
+			rest -= flight
+		}
+		if rest > 1e-9 {
+			by["no slice"] += rest
+		}
 	}
 	out := make([]Share, 0, len(by))
 	for c, ms := range by {
@@ -112,6 +136,45 @@ func ExplainWith(from, to float64, ev Evidence) []Share {
 		return out[i].Cause < out[j].Cause
 	})
 	return out
+}
+
+// subtract removes b from every interval of a.
+func subtract(a []Interval, b Interval) []Interval {
+	var out []Interval
+	for _, x := range a {
+		if b.To <= x.From || b.From >= x.To || b.To <= b.From {
+			out = append(out, x)
+			continue
+		}
+		if b.From > x.From {
+			out = append(out, Interval{x.From, b.From})
+		}
+		if b.To < x.To {
+			out = append(out, Interval{b.To, x.To})
+		}
+	}
+	return out
+}
+
+func subtractAll(a, bs []Interval) []Interval {
+	for _, b := range bs {
+		a = subtract(a, b)
+	}
+	return a
+}
+
+// overlap is how much of the (disjoint) intervals a the intervals bs cover,
+// each instant once.
+func overlap(a, bs []Interval) float64 {
+	return total(a) - total(subtractAll(append([]Interval(nil), a...), bs))
+}
+
+func total(a []Interval) float64 {
+	t := 0.0
+	for _, x := range a {
+		t += x.To - x.From
+	}
+	return t
 }
 
 // Unattributed is the part of a wait [from, to] that nothing names: time no
