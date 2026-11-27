@@ -54,6 +54,30 @@ type Share struct {
 // a clock that disagrees). The shares are sorted, the largest first, and add
 // up to the wait.
 func Explain(from, to float64, slices []BusySlice) []Share {
+	return ExplainWith(from, to, Evidence{Slices: slices})
+}
+
+// Interval is a stretch of time (epoch ms) a worker measured.
+type Interval struct{ From, To float64 }
+
+// Evidence is what the serving worker measured around a wait: its slices, the
+// intervals its event loop ran late (busy.js lateTicks) and the transit
+// intervals of the messages it received (busy.js transits).
+type Evidence struct {
+	Slices    []BusySlice
+	LateTicks []Interval
+	Transits  []Interval
+}
+
+// The causes the measured intervals name.
+const (
+	CauseNotScheduled = "worker not scheduled"
+	CauseInFlight     = "message in flight"
+)
+
+// ExplainWith is Explain with the measured intervals.
+func ExplainWith(from, to float64, ev Evidence) []Share {
+	slices := ev.Slices
 	by := map[string]float64{}
 	covered := 0.0
 	for _, s := range slices {
@@ -97,8 +121,15 @@ func Explain(from, to float64, slices []BusySlice) []Share {
 // message, even where no site marked it. A long wait with a high Unattributed
 // has no label.
 func Unattributed(from, to float64, slices []BusySlice) float64 {
+	return UnattributedWith(from, to, Evidence{Slices: slices})
+}
+
+// UnattributedWith is Unattributed with the measured intervals: the time a late
+// tick or a transit interval covers is named (CauseNotScheduled,
+// CauseInFlight), the rest is as unexplained as before.
+func UnattributedWith(from, to float64, ev Evidence) float64 {
 	u := 0.0
-	for _, s := range Explain(from, to, slices) {
+	for _, s := range ExplainWith(from, to, ev) {
 		if s.Cause == "no slice" {
 			u += s.Ms
 			continue
