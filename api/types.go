@@ -227,6 +227,73 @@ type Network struct {
 	Containers map[string]NetworkEndpoint `json:"Containers"`
 	Options    map[string]string          `json:"Options"`
 	Labels     map[string]string          `json:"Labels"`
+	// Egress is the engine's own extension (Docker has none): the network's
+	// way out of the engine, read-only. Absent from a Docker daemon's reply.
+	Egress NetworkEgress `json:"Egress"`
+}
+
+// NetworkEgress is a network's way out of the engine. Policy is "none",
+// "internal", "gateway" or "unknown" (the driver says nothing, or something
+// this engine does not know: treated as able to leave). Gateway is present
+// only for "gateway". Allowlist is exact host names on port 443/TCP; nothing
+// else is carried, so nothing else is listed. No token, no payload.
+type NetworkEgress struct {
+	Policy    string         `json:"Policy"`
+	Reason    string         `json:"Reason"`
+	Gateway   *EgressGateway `json:"Gateway,omitempty"`
+	Allowlist []EgressDest   `json:"Allowlist"`
+	Limits    EgressLimits   `json:"Limits"`
+	Counters  EgressCounters `json:"Counters"`
+}
+
+// EgressGateway is the party that carries a network's traffic out.
+type EgressGateway struct {
+	Kind     string `json:"Kind"`     // "relay"
+	Origin   string `json:"Origin"`   // https://host[:port]; never a token
+	Operator string `json:"Operator"` // the label the operator set
+	State    string `json:"State"`    // "up" | "down"
+	Logs     bool   `json:"Logs"`     // destinations are logged by the operator
+}
+
+// EgressDest is one allowlisted destination.
+type EgressDest struct {
+	Host string `json:"Host"`
+	Port uint16 `json:"Port"`
+}
+
+// EgressLimits are the gateway's limits, as reported at join.
+type EgressLimits struct {
+	StreamsPerSession     uint32  `json:"StreamsPerSession"`
+	ConnectsPerSecond     float64 `json:"ConnectsPerSecond"`
+	ConnectBurst          uint32  `json:"ConnectBurst"`
+	StreamsPerDestination uint32  `json:"StreamsPerDestination"`
+	ClassBytesPerSecond   uint64  `json:"ClassBytesPerSecond"`
+	SessionBytesPerDay    uint64  `json:"SessionBytesPerDay"`
+	IdleSeconds           uint32  `json:"IdleSeconds"`
+	LifetimeSeconds       uint32  `json:"LifetimeSeconds"`
+	LookupsPerSecond      float64 `json:"LookupsPerSecond"`
+}
+
+// EgressCounters are the gateway's counters as of join (the relay sends them
+// in its Welcome; there is no live feed).
+type EgressCounters struct {
+	Allowed              uint64        `json:"Allowed"`
+	DeniedNotAllowlisted uint64        `json:"DeniedNotAllowlisted"`
+	DeniedPrivateRange   uint64        `json:"DeniedPrivateRange"`
+	DeniedTLSName        uint64        `json:"DeniedTLSName"`
+	DeniedLimit          uint64        `json:"DeniedLimit"`
+	DroppedUDP           uint64        `json:"DroppedUDP"`
+	BytesUp              uint64        `json:"BytesUp"`
+	BytesDown            uint64        `json:"BytesDown"`
+	ActiveStreams        uint32        `json:"ActiveStreams"`
+	LastDenied           *EgressDenial `json:"LastDenied,omitempty"`
+}
+
+// EgressDenial is the last thing the gateway refused; no payload.
+type EgressDenial struct {
+	Host   string `json:"Host"`
+	Reason string `json:"Reason"`
+	Time   string `json:"Time"` // RFC 3339
 }
 
 // NetworkIPAM is a network's address management.

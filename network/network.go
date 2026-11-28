@@ -62,6 +62,9 @@ type Network struct {
 	// enforced at attach and at every dial (see AddDriverWith); a container
 	// whose networks are all internal publishes no port.
 	Internal bool
+	// Egress is the network's way out of the engine, read-only and live: set
+	// by List and Get, never stored. It describes; attach and dial decide.
+	Egress netdriver.NetworkEgress
 }
 
 // Options configures a Manager.
@@ -266,10 +269,15 @@ func (m *Manager) Default() string { return Bridge }
 // List returns the networks, by name.
 func (m *Manager) List() []Network {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]Network, 0, len(m.by))
+	es := make([]entry, 0, len(m.by))
 	for _, e := range m.by {
-		out = append(out, e.Network)
+		es = append(es, *e)
+	}
+	m.mu.Unlock()
+	// The drivers are asked outside the manager's lock.
+	out := make([]Network, 0, len(es))
+	for _, e := range es {
+		out = append(out, e.view())
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -278,12 +286,14 @@ func (m *Manager) List() []Network {
 // Get finds a network by name, ID or unique ID prefix.
 func (m *Manager) Get(ref string) (Network, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	e, err := m.find(ref)
 	if err != nil {
+		m.mu.Unlock()
 		return Network{}, err
 	}
-	return e.Network, nil
+	c := *e
+	m.mu.Unlock()
+	return c.view(), nil
 }
 
 func (m *Manager) find(ref string) (*entry, error) {

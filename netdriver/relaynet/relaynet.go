@@ -26,11 +26,15 @@ import (
 
 // Driver is a NetworkDriver over one relay session.
 type Driver struct {
-	s *driver.Session
+	s   *driver.Session
+	src source // the same session, as far as egress state is concerned
+
+	mu     sync.Mutex
+	origin string // see SetOrigin
 }
 
 // New wraps a connected session.
-func New(s *driver.Session) *Driver { return &Driver{s: s} }
+func New(s *driver.Session) *Driver { return &Driver{s: s, src: s} }
 
 // Session is the relay session.
 func (d *Driver) Session() *driver.Session { return d.s }
@@ -119,6 +123,7 @@ func Connect(ctx context.Context, base, token string, hc *http.Client) (*Joined,
 	}
 	rctx, stop := context.WithCancel(context.Background())
 	j := &Joined{Driver: New(s), base: base, hc: hc, token: token, stop: stop}
+	j.Driver.SetOrigin(base)
 	go j.refresh(rctx)
 	return j, nil
 }

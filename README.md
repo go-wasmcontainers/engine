@@ -334,10 +334,13 @@ wait on, so the browser's engine worker keeps its event loop.
   a restart and when re-added; a store that cannot record it refuses the
   network, and a record that cannot be read or does not parse keeps its
   name (its key is the hash of the name) internal and is reported, instead of
-  stopping the engine or opening the network. A relay (remote endpoint) network cannot be internal: it is
-  refused, fail closed, because class egress is opt-in per threat model D6
-  (`playground-egress-threat-model.md` section 11); the relay driver must
-  implement `EgressEnabled()` and report `Remote()`. A container whose
+  stopping the engine or opening the network. A relay (remote endpoint)
+  network is internal only while its driver says it cannot leave: the relay
+  driver (`netdriver/relaynet`) implements `EgressEnabled()` from the
+  relay's Welcome, so a class whose relay says `policy: none` can be
+  internal and a class with an egress allowlist is refused, fail closed
+  (anything but a plain `none`, an unknown policy included, counts as able to
+  leave). A container whose
   networks are all internal publishes no port, on start and as networks are
   connected and disconnected while it runs (`-p` is silently inert, as in
   Docker; moby v28.0.0: `libnetwork/endpoint.go:698` `if !n.internal`
@@ -377,6 +380,38 @@ wait on, so the browser's engine worker keeps its event loop.
   host may also add and remove such a network at run time
   (`network.Manager.AddDriver` / `RemoveDriver`): the playground's
   "Join class" does.
+- **Egress, reported not granted.** A class whose relay (v0.4.0+) has an
+  egress allowlist lets its containers reach those hosts and nothing else;
+  the relay is the only gateway and enforces it (resolve-and-pin, deny
+  tables, SNI check, limits: its README, "Outbound egress"). The engine
+  adds no route and no switch: it reports the relay's state, read-only, in
+  `network inspect` and `GET /networks` as an `Egress` object (an engine
+  extension; Docker has none):
+  `Policy` is `none`, `internal`, `gateway` or `unknown`; `Reason`;
+  `Gateway` (only for `gateway`: `Kind: "relay"`, `Origin`, the operator's
+  `Operator` label, `State` `up`/`down`, `Logs`: destinations are logged by
+  the operator); `Allowlist` (`Host`, `Port`); `Limits`; `Counters`. What
+  is shown is what is carried: **443/TCP to exact host names, nothing
+  else**. The relay checks the TLS server name against the allowlisted name
+  and refuses Encrypted ClientHello (threat model D3, D4); there is no
+  wildcard, address or CIDR (D5), no IPv6 and no UDP or QUIC (D6, D7, D8;
+  the relay drops and counts datagrams, `Counters.DroppedUDP`). The engine
+  lists an allowlist entry only if the relay's own parser accepts it on port
+  443 (`egress.ParseDest`, fuzzed on both sides), once, at most 256, so a
+  relay cannot make the engine advertise a wider reach than it has.
+  `Origin` is `scheme://host[:port]` of the relay's API URL, never a token,
+  path or query. `bridge`, `none` and every network created here report
+  `none` (D6: no egress for `bridge`; a container opts in by joining the
+  class network); an `internal` one reports `internal`, and can never be
+  given an egress driver. The report is a description: attach and dial still
+  ask `netdriver.Confined`/`EgressEnabled()`, and a driver whose description
+  disagrees with its declaration is reported `unknown`. The relay states its
+  egress once, in its Welcome (v0.4.0 has no refresh message), so `Limits`,
+  `Counters` and `Allowlist` are as of join, and `netdriver.EgressNotifier`
+  on the relay driver never fires. In Go: `netdriver.EgressReporter`,
+  `network.Network.Egress`, `api.Network.Egress`; the relay driver is
+  `relaynet.Driver` (`EgressEnabled`, `EgressState`, `SetOrigin`;
+  `Join`/`Connect` set the origin).
 - `--network none` (and `--wasi wazero`) gives no sockets: `sock_open`
   fails with `ENOTSUP`. `--network host` is refused.
 

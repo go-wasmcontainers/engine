@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-wasmcontainers/engine/api"
 	"github.com/go-wasmcontainers/engine/container"
+	"github.com/go-wasmcontainers/engine/netdriver"
 	"github.com/go-wasmcontainers/engine/network"
 )
 
@@ -35,7 +36,7 @@ func (s *server) networkObject(n network.Network) api.Network {
 	}
 	out := api.Network{Name: n.Name, ID: n.ID, Created: n.Created.Format(time.RFC3339Nano), Scope: "local", Driver: n.Driver, Internal: n.Internal,
 		IPAM: api.NetworkIPAM{Driver: "default", Config: []map[string]string{}}, Containers: map[string]api.NetworkEndpoint{},
-		Options: map[string]string{}, Labels: labels, Attachable: true}
+		Options: map[string]string{}, Labels: labels, Attachable: true, Egress: egressObject(n.Egress)}
 	if n.Subnet != "" {
 		out.IPAM.Config = append(out.IPAM.Config, map[string]string{"Subnet": n.Subnet})
 	}
@@ -45,6 +46,26 @@ func (s *server) networkObject(n network.Network) api.Network {
 				out.Containers[c.ID] = api.NetworkEndpoint{Name: c.Name, IPv4Address: ni.IPAddress.String() + "/" + prefixBits(n.Subnet)}
 			}
 		}
+	}
+	return out
+}
+
+// egressObject is a network's egress state as the API shows it.
+func egressObject(e netdriver.NetworkEgress) api.NetworkEgress {
+	out := api.NetworkEgress{Policy: e.Policy, Reason: e.Reason, Allowlist: []api.EgressDest{},
+		Limits: api.EgressLimits(e.Limits)}
+	if g := e.Gateway; g != nil {
+		out.Gateway = &api.EgressGateway{Kind: g.Kind, Origin: g.Origin, Operator: g.Operator, State: g.State, Logs: g.Logs}
+	}
+	for _, d := range e.Allowlist {
+		out.Allowlist = append(out.Allowlist, api.EgressDest{Host: d.Host, Port: d.Port})
+	}
+	c := e.Counters
+	out.Counters = api.EgressCounters{Allowed: c.Allowed, DeniedNotAllowlisted: c.DeniedNotAllowlisted, DeniedPrivateRange: c.DeniedPrivateRange,
+		DeniedTLSName: c.DeniedTLSName, DeniedLimit: c.DeniedLimit, DroppedUDP: c.DroppedUDP, BytesUp: c.BytesUp, BytesDown: c.BytesDown,
+		ActiveStreams: c.ActiveStreams}
+	if d := c.LastDenied; d != nil {
+		out.Counters.LastDenied = &api.EgressDenial{Host: d.Host, Reason: d.Reason, Time: d.Time.UTC().Format(time.RFC3339Nano)}
 	}
 	return out
 }
