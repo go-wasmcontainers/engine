@@ -62,6 +62,11 @@ type Network struct {
 	// enforced at attach and at every dial (see AddDriverWith); a container
 	// whose networks are all internal publishes no port.
 	Internal bool
+	// Egress is the network's way out of the engine, read-only: set by List
+	// and Get from what the driver reports at that moment, never stored. A
+	// relay reports what its Welcome said at join (Counters.AsOf), not a live
+	// feed. It describes; attach and dial decide.
+	Egress netdriver.NetworkEgress
 }
 
 // Options configures a Manager.
@@ -181,6 +186,9 @@ func New(opt Options) (*Manager, []string, error) {
 			if err := admit(name, d); err != nil {
 				return nil, nil, err
 			}
+			if err := refuseRemote(name, d); err != nil {
+				return nil, nil, err
+			}
 			if err := m.seal(name); err != nil {
 				return nil, nil, err
 			}
@@ -266,10 +274,15 @@ func (m *Manager) Default() string { return Bridge }
 // List returns the networks, by name.
 func (m *Manager) List() []Network {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]Network, 0, len(m.by))
+	es := make([]entry, 0, len(m.by))
 	for _, e := range m.by {
-		out = append(out, e.Network)
+		es = append(es, *e)
+	}
+	m.mu.Unlock()
+	// The drivers are asked outside the manager's lock.
+	out := make([]Network, 0, len(es))
+	for _, e := range es {
+		out = append(out, e.view())
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -278,12 +291,14 @@ func (m *Manager) List() []Network {
 // Get finds a network by name, ID or unique ID prefix.
 func (m *Manager) Get(ref string) (Network, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	e, err := m.find(ref)
 	if err != nil {
+		m.mu.Unlock()
 		return Network{}, err
 	}
-	return e.Network, nil
+	c := *e
+	m.mu.Unlock()
+	return c.view(), nil
 }
 
 func (m *Manager) find(ref string) (*entry, error) {
@@ -434,6 +449,9 @@ func (m *Manager) Attach(ctx context.Context, network, name string, aliases []st
 		if err := admit(e.Name, e.drv); err != nil {
 			return nil, err
 		}
+		if err := refuseRemote(e.Name, e.drv); err != nil {
+			return nil, err
+		}
 	}
 	var ep netdriver.Endpoint
 	if ad, ok := e.drv.(netdriver.AliasDriver); ok {
@@ -470,6 +488,16 @@ func (m *Manager) Prune(inUse func(name string) bool, keep func(labels map[strin
 	return gone
 }
 
+// refuseRemote refuses, on an internal network, a driver run by somebody else
+// (netdriver.Remote on the DRIVER) whatever it declares: Attach would send it
+// the container's name before the endpoint's own Remote check could refuse.
+func refuseRemote(name string, d netdriver.NetworkDriver) error {
+	if r, ok := d.(netdriver.Remote); ok && r.Remote() {
+		return fmt.Errorf("%w: network %s is internal and its driver is remote: %w", ErrInvalid, name, ErrEgress)
+	}
+	return nil
+}
+
 // AddDriver adds a host-provided network at run time (a class joined from
 // a page); driverName describes it in `network ls`. RemoveDriver hands it
 // back; Remove refuses it.
@@ -499,6 +527,9 @@ func (m *Manager) AddDriverWith(name, driverName string, d netdriver.NetworkDriv
 	internal = internal || m.isSealed(name)
 	if internal {
 		if err := admit(name, d); err != nil {
+			return Network{}, err
+		}
+		if err := refuseRemote(name, d); err != nil {
 			return Network{}, err
 		}
 		if err := m.seal(name); err != nil {

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("https://u:pw@relay.example/x?token=abc#frag")

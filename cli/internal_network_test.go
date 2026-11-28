@@ -53,6 +53,24 @@ func TestNetworkInternal(t *testing.T) {
 		t.Error("options accepted")
 	}
 
+	// Egress (D5): the default bridge and a created network have none; an
+	// internal one says it is internal. Nothing here advertises a gateway.
+	for name, want := range map[string]string{"bridge": "none", "none": "none", "open": "none", "sealed": "internal"} {
+		raw, err := c.NetworkInspect(ctx, name)
+		if err != nil {
+			t.Fatal(name, err)
+		}
+		var n api.Network
+		if err := json.Unmarshal(raw, &n); err != nil || n.Egress.Policy != want || n.Egress.Gateway != nil || len(n.Egress.Allowlist) != 0 {
+			t.Errorf("%s: egress %+v (%v), want policy %s\n%s", name, n.Egress, err, want, raw)
+		}
+	}
+	for _, n := range list {
+		if n.Egress.Policy == "" || n.Egress.Policy == "gateway" {
+			t.Errorf("ls: %s egress %+v", n.Name, n.Egress)
+		}
+	}
+
 	// The CLI flag.
 	id := must(t, wctr(t, h, "network", "create", "--internal", "viacli"), 0).stdout
 	if raw := must(t, wctr(t, h, "network", "inspect", strings.TrimSpace(id)), 0).stdout; !strings.Contains(raw, `"Internal": true`) {

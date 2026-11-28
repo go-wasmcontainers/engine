@@ -2,6 +2,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -155,9 +156,17 @@ func versionInRange(maj, min string) bool {
 func humanDuration(d time.Duration) string { return units.HumanDuration(d) }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	// Encode first: a value that cannot be encoded (a NaN, say) is a 500 with
+	// a JSON error, not a status already sent and an empty body.
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		buf.Reset()
+		status = http.StatusInternalServerError
+		json.NewEncoder(&buf).Encode(api.ErrorResponse{Message: "encoding the response: " + err.Error()})
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	w.Write(buf.Bytes())
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
