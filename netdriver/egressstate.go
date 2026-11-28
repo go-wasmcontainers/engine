@@ -60,9 +60,11 @@ type EgressLimits struct {
 	LookupsPerSecond      float64
 }
 
-// EgressCounters are the gateway's counters as of the moment the driver
-// learnt them (the relay's Welcome: at join, not live).
+// EgressCounters are the gateway's counters as of AsOf, the moment the driver
+// learnt them (the relay's Welcome: at join, not live). AsOf is zero when
+// that moment is not known.
 type EgressCounters struct {
+	AsOf time.Time
 	Allowed, DeniedNotAllowlisted, DeniedPrivateRange, DeniedTLSName,
 	DeniedLimit, DroppedUDP uint64
 	BytesUp, BytesDown uint64

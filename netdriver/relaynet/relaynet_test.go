@@ -197,11 +197,12 @@ func TestEgressFromARealRelay(t *testing.T) {
 	if n, _ := m.Get(network.Bridge); n.Egress.Policy != netdriver.PolicyNone {
 		t.Errorf("bridge: %+v", n.Egress)
 	}
-	// internal: a relay that can leave is refused, one that cannot is accepted.
+	// internal: a relay is refused whatever its Welcome says (it is somebody
+	// else's machine and would be sent the container's name).
 	if _, _, err := network.New(network.Options{Drivers: map[string]netdriver.NetworkDriver{"class": egressful}, Internal: map[string]bool{"class": true}}); err == nil {
 		t.Error("an egress relay was accepted on an internal network")
 	}
-	if _, _, err := network.New(network.Options{Drivers: map[string]netdriver.NetworkDriver{"quiet": quiet}, Internal: map[string]bool{"quiet": true}}); err != nil {
-		t.Errorf("a relay without egress was refused as internal: %v", err)
+	if _, _, err := network.New(network.Options{Drivers: map[string]netdriver.NetworkDriver{"quiet": quiet}, Internal: map[string]bool{"quiet": true}}); err == nil {
+		t.Error("a relay without egress was accepted on an internal network")
 	}
 }

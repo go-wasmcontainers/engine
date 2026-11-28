@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("B\x8a\x01\n\agateway\x1a\x06Lab IT \x01*\fpypi.org:443*\v*.x.org:443*\v1.2.3.4:443*\x04h:80*\fPypi.org:4432\x12\x11\x00\x00\x00\x00\x00\x00\x14@I\x00\x00\x00\x00\x00\x00$@:%\b\x03R\x15evil\u2066.example.org\r\nZ\x04sni\a`\x80\xe2Ϫ\x06")

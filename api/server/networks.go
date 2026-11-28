@@ -61,13 +61,21 @@ func egressObject(e netdriver.NetworkEgress) api.NetworkEgress {
 		out.Allowlist = append(out.Allowlist, api.EgressDest{Host: d.Host, Port: d.Port})
 	}
 	c := e.Counters
-	out.Counters = api.EgressCounters{Allowed: c.Allowed, DeniedNotAllowlisted: c.DeniedNotAllowlisted, DeniedPrivateRange: c.DeniedPrivateRange,
+	out.Counters = api.EgressCounters{AsOf: egressTime(c.AsOf), Allowed: c.Allowed, DeniedNotAllowlisted: c.DeniedNotAllowlisted, DeniedPrivateRange: c.DeniedPrivateRange,
 		DeniedTLSName: c.DeniedTLSName, DeniedLimit: c.DeniedLimit, DroppedUDP: c.DroppedUDP, BytesUp: c.BytesUp, BytesDown: c.BytesDown,
 		ActiveStreams: c.ActiveStreams}
 	if d := c.LastDenied; d != nil {
-		out.Counters.LastDenied = &api.EgressDenial{Host: d.Host, Reason: d.Reason, Time: d.Time.UTC().Format(time.RFC3339Nano)}
+		out.Counters.LastDenied = &api.EgressDenial{Host: d.Host, Reason: d.Reason, Time: egressTime(d.Time)}
 	}
 	return out
+}
+
+// egressTime is a time as the API shows it; "" for a time that is not known.
+func egressTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // endpointSettings is inspect's NetworkSettings.Networks.

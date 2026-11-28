@@ -274,9 +274,11 @@ type EgressLimits struct {
 	LookupsPerSecond      float64 `json:"LookupsPerSecond"`
 }
 
-// EgressCounters are the gateway's counters as of join (the relay sends them
-// in its Welcome; there is no live feed).
+// EgressCounters are the gateway's counters as of AsOf (RFC 3339; the relay
+// sends them in its Welcome at join, there is no live feed; absent when the
+// moment is not known). Limits are as of the same moment.
 type EgressCounters struct {
+	AsOf                 string        `json:"AsOf,omitempty"`
 	Allowed              uint64        `json:"Allowed"`
 	DeniedNotAllowlisted uint64        `json:"DeniedNotAllowlisted"`
 	DeniedPrivateRange   uint64        `json:"DeniedPrivateRange"`
@@ -293,7 +295,7 @@ type EgressCounters struct {
 type EgressDenial struct {
 	Host   string `json:"Host"`
 	Reason string `json:"Reason"`
-	Time   string `json:"Time"` // RFC 3339
+	Time   string `json:"Time,omitempty"` // RFC 3339; absent when the relay's time was not credible
 }
 
 // NetworkIPAM is a network's address management.

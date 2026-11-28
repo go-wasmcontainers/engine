@@ -31,10 +31,17 @@ type Driver struct {
 
 	mu     sync.Mutex
 	origin string // see SetOrigin
+
+	joined time.Time // when the Welcome was read: the as-of of limits and counters
 }
 
 // New wraps a connected session.
-func New(s *driver.Session) *Driver { return &Driver{s: s, src: s} }
+func New(s *driver.Session) *Driver { return &Driver{s: s, src: s, joined: time.Now()} }
+
+// Remote implements netdriver.Remote for the driver itself: the relay is
+// somebody else's machine, so an internal network refuses this driver before
+// anything, a container's name included, is sent to it.
+func (*Driver) Remote() bool { return true }
 
 // Session is the relay session.
 func (d *Driver) Session() *driver.Session { return d.s }

@@ -8,7 +8,6 @@ require (
 	github.com/go-authn/oidc v0.4.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 )
 
 require (
@@ -23,4 +22,5 @@ require (
 	github.com/wasmdesk/wasmbox/audioring v0.3.0
 	golang.org/x/net v0.62.0
 	golang.org/x/term v0.48.0
+	google.golang.org/protobuf v1.36.12
 )

@@ -1,10 +1,12 @@
 package relaynet
 
 import (
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-wasmcontainers/relay/egress"
 	v1 "github.com/go-wasmcontainers/relay/gen/relayv1"
@@ -15,6 +17,45 @@ import (
 // maxAllowlist bounds the destinations shown: the relay is another party's
 // machine, and what it sends is displayed.
 const maxAllowlist = 256
+
+// Bounds on the free text and the clock the relay sends, which a UI draws.
+const (
+	maxOperator     = 64
+	maxReason       = 128
+	maxDenialReason = 64
+	maxDenialHost   = 253
+	// minDeniedUnix is 2000-01-01: no real denial is older. maxSkew is how far
+	// ahead of this machine's clock a denial may claim to be.
+	minDeniedUnix = 946684800
+	maxSkew       = 24 * time.Hour
+)
+
+// nowFunc is the clock the denial time is judged against (a test replaces it).
+var nowFunc = time.Now
+
+// clean makes text from another party safe to draw: invalid UTF-8, control
+// characters, format characters (which include every bidi override and
+// isolate) and line and paragraph separators are dropped, and what is left is
+// cut to max runes.
+func clean(s string, max int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range strings.ToValidUTF8(s, "") {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			continue
+		}
+		if n == max {
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
+// finite reports whether a rate the relay sent can be shown: a number, not
+// infinite, not negative.
+func finite(f float64) bool { return !math.IsNaN(f) && !math.IsInf(f, 0) && f >= 0 }
 
 // source is what the driver reads of its session: the relay's Welcome, and
 // whether the session has ended. *driver.Session is one.
@@ -74,7 +115,7 @@ func (d *Driver) EgressState() netdriver.NetworkEgress {
 	}
 	switch eg.GetPolicy() {
 	case "none":
-		r := eg.GetReason()
+		r := clean(eg.GetReason(), maxReason)
 		if r == "" {
 			r = "class relay without egress"
 		}
@@ -82,6 +123,11 @@ func (d *Driver) EgressState() netdriver.NetworkEgress {
 	case "gateway":
 	default:
 		return netdriver.NetworkEgress{Policy: netdriver.PolicyUnknown, Reason: "the relay reports a policy this engine does not know"}
+	}
+	if l := eg.GetLimits(); l != nil && !(finite(l.GetConnectsPerSecond()) && finite(l.GetLookupsPerSecond())) {
+		// A rate that cannot be shown: the whole description is not believed
+		// (EgressEnabled is untouched, so nothing is opened or hidden by it).
+		return netdriver.NetworkEgress{Policy: netdriver.PolicyUnknown, Reason: "the relay reports limits this engine cannot show"}
 	}
 	d.mu.Lock()
 	origin := d.origin
@@ -95,7 +141,7 @@ func (d *Driver) EgressState() netdriver.NetworkEgress {
 	out := netdriver.NetworkEgress{
 		Policy:    netdriver.PolicyGateway,
 		Reason:    "class relay",
-		Gateway:   &netdriver.EgressGateway{Kind: "relay", Origin: origin, Operator: eg.GetOperator(), State: state, Logs: eg.GetLogs()},
+		Gateway:   &netdriver.EgressGateway{Kind: "relay", Origin: origin, Operator: clean(eg.GetOperator(), maxOperator), State: state, Logs: eg.GetLogs()},
 		Allowlist: destsOf(eg.GetAllowlist()),
 	}
 	if l := eg.GetLimits(); l != nil {
@@ -111,9 +157,16 @@ func (d *Driver) EgressState() netdriver.NetworkEgress {
 			Allowed: c.GetAllowed(), DeniedNotAllowlisted: c.GetDeniedNotAllowlisted(), DeniedPrivateRange: c.GetDeniedPrivateRange(),
 			DeniedTLSName: c.GetDeniedTlsName(), DeniedLimit: c.GetDeniedLimit(), DroppedUDP: c.GetDroppedUdp(),
 			BytesUp: c.GetBytesUp(), BytesDown: c.GetBytesDown(), ActiveStreams: c.GetActiveStreams(),
+			AsOf: d.joined,
 		}
-		if h := c.GetLastDeniedHost(); h != "" {
-			out.Counters.LastDenied = &netdriver.EgressDenial{Host: h, Reason: c.GetLastDeniedReason(), Time: time.Unix(c.GetLastDeniedUnix(), 0)}
+		if h := clean(c.GetLastDeniedHost(), maxDenialHost); h != "" {
+			den := &netdriver.EgressDenial{Host: h, Reason: clean(c.GetLastDeniedReason(), maxDenialReason)}
+			// The relay's clock is not ours: a time outside [2000, now+1 day]
+			// is not shown (zero), rather than drawn as a date.
+			if u := c.GetLastDeniedUnix(); u >= minDeniedUnix && u <= nowFunc().Add(maxSkew).Unix() {
+				den.Time = time.Unix(u, 0)
+			}
+			out.Counters.LastDenied = den
 		}
 	}
 	return out
@@ -132,6 +185,9 @@ func destsOf(entries []string) []netdriver.EgressDest {
 			break
 		}
 		d, err := egress.ParseDest(e)
+		// The port test is dead defence today: ParseDest already refuses
+		// every port but 443. It stays so that a relay that widens its own
+		// parser cannot make this engine advertise another port (D3).
 		if err != nil || d.Port != netdriver.EgressPort || seen[d.Host] {
 			continue
 		}

@@ -62,8 +62,10 @@ type Network struct {
 	// enforced at attach and at every dial (see AddDriverWith); a container
 	// whose networks are all internal publishes no port.
 	Internal bool
-	// Egress is the network's way out of the engine, read-only and live: set
-	// by List and Get, never stored. It describes; attach and dial decide.
+	// Egress is the network's way out of the engine, read-only: set by List
+	// and Get from what the driver reports at that moment, never stored. A
+	// relay reports what its Welcome said at join (Counters.AsOf), not a live
+	// feed. It describes; attach and dial decide.
 	Egress netdriver.NetworkEgress
 }
 
@@ -182,6 +184,9 @@ func New(opt Options) (*Manager, []string, error) {
 		internal := opt.Internal[name] || m.isSealed(name)
 		if internal {
 			if err := admit(name, d); err != nil {
+				return nil, nil, err
+			}
+			if err := refuseRemote(name, d); err != nil {
 				return nil, nil, err
 			}
 			if err := m.seal(name); err != nil {
@@ -444,6 +449,9 @@ func (m *Manager) Attach(ctx context.Context, network, name string, aliases []st
 		if err := admit(e.Name, e.drv); err != nil {
 			return nil, err
 		}
+		if err := refuseRemote(e.Name, e.drv); err != nil {
+			return nil, err
+		}
 	}
 	var ep netdriver.Endpoint
 	if ad, ok := e.drv.(netdriver.AliasDriver); ok {
@@ -480,6 +488,16 @@ func (m *Manager) Prune(inUse func(name string) bool, keep func(labels map[strin
 	return gone
 }
 
+// refuseRemote refuses, on an internal network, a driver run by somebody else
+// (netdriver.Remote on the DRIVER) whatever it declares: Attach would send it
+// the container's name before the endpoint's own Remote check could refuse.
+func refuseRemote(name string, d netdriver.NetworkDriver) error {
+	if r, ok := d.(netdriver.Remote); ok && r.Remote() {
+		return fmt.Errorf("%w: network %s is internal and its driver is remote: %w", ErrInvalid, name, ErrEgress)
+	}
+	return nil
+}
+
 // AddDriver adds a host-provided network at run time (a class joined from
 // a page); driverName describes it in `network ls`. RemoveDriver hands it
 // back; Remove refuses it.
@@ -509,6 +527,9 @@ func (m *Manager) AddDriverWith(name, driverName string, d netdriver.NetworkDriv
 	internal = internal || m.isSealed(name)
 	if internal {
 		if err := admit(name, d); err != nil {
+			return Network{}, err
+		}
+		if err := refuseRemote(name, d); err != nil {
 			return Network{}, err
 		}
 		if err := m.seal(name); err != nil {
