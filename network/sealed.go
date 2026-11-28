@@ -68,11 +68,6 @@ type socks struct {
 // either in the set when closeAll runs, or refused here: none survives.
 func (k *socks) add(c io.Closer, check func() error) (*sock, error) {
 	k.mu.Lock()
-	if k.tripped.Load() {
-		k.mu.Unlock()
-		c.Close()
-		return nil, errNotified
-	}
 	if k.set == nil {
 		k.set = map[*sock]struct{}{}
 	}
@@ -88,8 +83,6 @@ func (k *socks) add(c io.Closer, check func() error) (*sock, error) {
 	}
 	return t, nil
 }
-
-var errNotified = fmt.Errorf("%w: %w", ErrEgress, syscall.ENETUNREACH)
 
 // notified is the driver's notice that it carries traffic out. The notice IS
 // the verdict: it is not checked against EgressEnabled, and the driver is not
