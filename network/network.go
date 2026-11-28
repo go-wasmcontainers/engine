@@ -389,6 +389,13 @@ func (m *Manager) Remove(ref string, inUse func(name string) bool) error {
 func (m *Manager) tripFor(e *entry) *atomic.Bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.by[e.Name] != e {
+		// Removed since it was found (Remove / RemoveDriver raced Attach):
+		// no entry is re-created, and the endpoint is born tripped.
+		t := new(atomic.Bool)
+		t.Store(true)
+		return t
+	}
 	if m.trips == nil {
 		m.trips = map[*entry]*atomic.Bool{}
 	}
@@ -514,6 +521,7 @@ func (m *Manager) RemoveDriver(name string) (netdriver.NetworkDriver, error) {
 		if h == name {
 			e := m.by[name]
 			delete(m.by, name)
+			delete(m.trips, e)
 			m.hosted = append(m.hosted[:i], m.hosted[i+1:]...)
 			return e.drv, nil
 		}
