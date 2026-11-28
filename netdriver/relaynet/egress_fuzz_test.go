@@ -26,6 +26,9 @@ func FuzzAllowlist(f *testing.F) {
 			if d.Port != 443 {
 				t.Fatalf("port %d from %q %q", d.Port, a, b)
 			}
+			if d.Host == "" {
+				t.Fatalf("empty host from %q %q", a, b)
+			}
 			if d.Host != strings.ToLower(d.Host) || strings.ContainsAny(d.Host, "*:[]/@ \x00") || !strings.Contains(d.Host, ".") {
 				t.Fatalf("host %q from %q %q", d.Host, a, b)
 			}

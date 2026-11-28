@@ -199,6 +199,10 @@ func TestOrigin(t *testing.T) {
 		"":                                            "",
 		"https://relay.example:99999":                 "",
 		"https://rel ay.example":                      "",
+		"https://rel_ay.example":                      "",
+		"https://relay.exam~ple":                      "",
+		"https://relay.example$:443":                  "",
+		"https://[::1]:8443":                          "https://[::1]:8443",
 	} {
 		if got := originOf(in); got != want {
 			t.Errorf("originOf(%q) = %q, want %q", in, got, want)

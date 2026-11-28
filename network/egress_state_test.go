@@ -183,3 +183,31 @@ func TestNetworkEgressIsACopy(t *testing.T) {
 		t.Fatal("aliased")
 	}
 }
+
+// A driver that declares egress and describes nothing is "gateway" only while
+// it says it can leave.
+func TestNetworkEgressDeclarationOnly(t *testing.T) {
+	m, _, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	d := &flipDecl{Local: localDriver(t)}
+	if _, err := m.AddDriver("decl", "remote", d); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := m.Get("decl"); n.Egress.Policy != netdriver.PolicyNone || n.Egress.Reason != "the driver declares no egress" {
+		t.Fatalf("off: %+v", n.Egress)
+	}
+	d.on = true
+	if n, _ := m.Get("decl"); n.Egress.Policy != netdriver.PolicyGateway || n.Egress.Reason != "the driver declares egress" {
+		t.Fatalf("on: %+v", n.Egress)
+	}
+}
+
+type flipDecl struct {
+	*netdriver.Local
+	on bool
+}
+
+func (f *flipDecl) EgressEnabled() bool { return f.on }
