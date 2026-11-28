@@ -321,8 +321,10 @@ wait on, so the browser's engine worker keeps its event loop.
   endpoint that reports `Remote()` is refused, so a relay that learns its
   egress later is cut off: every read, write, accept and new socket is
   refused (`ENETUNREACH`) and the endpoint's open sockets are closed. They
-  are closed the moment a driver that implements `netdriver.EgressNotifier`
-  calls back as it turns egress on; for any other driver, at the next call
+  are closed as soon as a driver that implements `netdriver.EgressNotifier`
+  calls back as it turns egress on (the notice is the verdict, even before
+  `EgressEnabled` reads true, and may be sent under the driver's own lock; the
+  close runs on another goroutine); for any other driver, at the next call
   on any of the endpoint's sockets (a write already past its check when the
   flip lands is not recalled; a socket opened while the flip lands is closed
   and refused, never kept). The sockets keep the optional interfaces

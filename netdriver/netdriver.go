@@ -50,8 +50,15 @@ type EgressDriver interface {
 // EgressNotifier is an EgressDriver that says when it starts to carry traffic
 // out: it calls fn, once and from any goroutine, as EgressEnabled turns true,
 // and the returned stop unregisters fn. An internal network whose driver
-// implements it closes the endpoints' sockets at that moment; without it the
-// sockets are closed at the next call on them.
+// implements it closes the endpoints' sockets at that moment (on another
+// goroutine); without it the sockets are closed at the next call on them.
+//
+// The notice is the verdict: fn does not ask EgressEnabled, so it may be
+// called before EgressEnabled turns true, and the sockets are closed all the
+// same. Lock rules: fn only records the notice and starts a goroutine, never
+// calls back into the driver, so a driver MAY call it while holding its own
+// lock (including the one EgressEnabled takes). stop must not wait for
+// running callbacks while the driver's lock is held.
 type EgressNotifier interface {
 	EgressDriver
 	NotifyEgress(fn func()) (stop func())

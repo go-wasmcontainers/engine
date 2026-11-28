@@ -141,3 +141,25 @@ func TestInternalSurvivesRestart(t *testing.T) {
 		t.Fatal("an internal network whose flag could not be stored was accepted")
 	}
 }
+
+// A damaged record is rewritten once: the report does not repeat at every
+// start, and its network stays internal.
+func TestSealedDamagedRecordReportedOnce(t *testing.T) {
+	st := &state.Mem{}
+	if err := st.Put(sealedKey("sealed"), []byte("\x00\xff")); err != nil {
+		t.Fatal(err)
+	}
+	m, repaired, err := New(Options{Store: st})
+	if err != nil || len(repaired) != 1 {
+		t.Fatalf("first start: %v, %v", repaired, err)
+	}
+	m.Close()
+	m2, repaired, err := New(Options{Store: st})
+	if err != nil || len(repaired) != 0 {
+		t.Fatalf("second start reports again: %v, %v", repaired, err)
+	}
+	defer m2.Close()
+	if _, err := m2.AddDriver("sealed", "relay", newRelayLike(true, true)); err == nil {
+		t.Fatal("the network opened after the rewrite")
+	}
+}

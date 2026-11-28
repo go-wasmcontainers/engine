@@ -400,3 +400,106 @@ func TestSealedReadsAndAcceptAfterSilentFlip(t *testing.T) {
 		t.Fatalf("ReadFrom: %v", err)
 	}
 }
+
+// lockNotifier takes ONE lock for EgressEnabled and for calling its callbacks,
+// as a driver that notifies under its own lock does; fire can send the notice
+// before the flag is visible.
+type lockNotifier struct {
+	*netdriver.Local
+	mu  *sync.Mutex
+	on  *bool
+	fns *[]func()
+}
+
+func newLockNotifier(t *testing.T) lockNotifier {
+	return lockNotifier{localDriver(t), &sync.Mutex{}, new(bool), &[]func(){}}
+}
+
+func (n lockNotifier) EgressEnabled() bool { n.mu.Lock(); defer n.mu.Unlock(); return *n.on }
+func (n lockNotifier) NotifyEgress(fn func()) func() {
+	n.mu.Lock()
+	*n.fns = append(*n.fns, fn)
+	n.mu.Unlock()
+	return func() {}
+}
+
+// The notice arrives before the flag is visible: it is still the verdict.
+func TestSealedNoticeBeforeFlag(t *testing.T) {
+	ctx := ctx5(t)
+	n := newLockNotifier(t)
+	m, _, _ := New(Options{})
+	defer m.Close()
+	if _, err := m.AddDriverWith("s", "relay", n, true); err != nil {
+		t.Fatal(err)
+	}
+	ep, err := m.Attach(ctx, "s", "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc, err := ep.ListenPacket(ctx, "udp", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range *n.fns {
+		fn()
+	}
+	// The flag is still false: the inner socket must close all the same.
+	inner := pc.(sealedPacket).PacketConn
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		inner.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+		_, _, err := inner.ReadFrom(make([]byte, 1))
+		if errors.Is(err, net.ErrClosed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the socket was not closed by a notice that came before the flag: %v", err)
+		}
+	}
+	// And the endpoint stays refused, flag or not.
+	if _, err := ep.ListenPacket(ctx, "udp", 0); !errors.Is(err, ErrEgress) {
+		t.Fatalf("new socket after the notice: %v", err)
+	}
+}
+
+// A driver that calls the callback under the lock EgressEnabled takes does not
+// deadlock, and a Dial registering at the same time does not either.
+func TestSealedNoticeUnderDriverLock(t *testing.T) {
+	ctx := ctx5(t)
+	n := newLockNotifier(t)
+	m, _, _ := New(Options{})
+	defer m.Close()
+	if _, err := m.AddDriverWith("s", "relay", n, true); err != nil {
+		t.Fatal(err)
+	}
+	ep, err := m.Attach(ctx, "s", "a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			if p, err := ep.ListenPacket(ctx, "udp", 0); err == nil {
+				p.Close()
+			}
+		}
+	}()
+	notified := make(chan struct{})
+	go func() {
+		n.mu.Lock()
+		*n.on = true
+		for _, fn := range *n.fns {
+			fn()
+		}
+		n.mu.Unlock()
+		close(notified)
+	}()
+	for _, c := range []chan struct{}{done, notified} {
+		select {
+		case <-c:
+		case <-time.After(5 * time.Second):
+			t.Fatal("deadlock between the driver's notice and the endpoint")
+		}
+	}
+}

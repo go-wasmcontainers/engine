@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/go-wasmcontainers/engine/netdriver"
@@ -58,6 +59,8 @@ type socks struct {
 	mu   sync.Mutex
 	set  map[*sock]struct{}
 	stop func() // unregisters the egress notification
+	// tripped: the driver notified that it has egress. Permanent.
+	tripped atomic.Bool
 }
 
 // add records c unless the network has egress by now. The test is made under
@@ -65,11 +68,10 @@ type socks struct {
 // either in the set when closeAll runs, or refused here: none survives.
 func (k *socks) add(c io.Closer, check func() error) (*sock, error) {
 	k.mu.Lock()
-	if err := check(); err != nil {
+	if k.tripped.Load() {
 		k.mu.Unlock()
 		c.Close()
-		k.closeAll() // egress is learnt: the other sockets go too
-		return nil, err
+		return nil, errNotified
 	}
 	if k.set == nil {
 		k.set = map[*sock]struct{}{}
@@ -77,7 +79,25 @@ func (k *socks) add(c io.Closer, check func() error) (*sock, error) {
 	t := &sock{k, c}
 	k.set[t] = struct{}{}
 	k.mu.Unlock()
+	// The driver is asked with no lock of ours held (it may hold its own
+	// while it notifies), AFTER the socket is in the set: egress that lands
+	// before this test finds it, one that lands after finds it in the set.
+	if err := check(); err != nil {
+		k.closeAll() // egress is learnt: the other sockets go too
+		return nil, err
+	}
 	return t, nil
+}
+
+var errNotified = fmt.Errorf("%w: %w", ErrEgress, syscall.ENETUNREACH)
+
+// notified is the driver's notice that it carries traffic out. The notice IS
+// the verdict: it is not checked against EgressEnabled, and the driver is not
+// called (it may call us under its own lock). The sockets are closed on
+// another goroutine.
+func (k *socks) notified() {
+	k.tripped.Store(true)
+	go k.closeAll()
 }
 
 func (k *socks) del(t *sock) {
@@ -127,7 +147,9 @@ func (s sealed) Detach() error {
 // sealedConn guards a stream or connected datagram socket. It is wrapped
 // again (wrapConn) so that the optional interfaces the inner conn has
 // (CloseWrite, CloseRead, net.PacketConn) survive: shutdown(SHUT_WR) and a
-// UDP Dial's use as a PacketConn depend on them.
+// UDP Dial's use as a PacketConn depend on them. Not preserved: SyscallConn,
+// io.ReaderFrom / io.WriterTo and the *net.UDPConn-specific methods
+// (ReadFromUDP, ...); nothing in this repository uses them.
 type sealedConn struct {
 	net.Conn
 	s sealed
@@ -306,7 +328,7 @@ func seal(name string, drv netdriver.NetworkDriver, ep netdriver.Endpoint) (netd
 		return nil, err
 	}
 	if n, ok := drv.(netdriver.EgressNotifier); ok {
-		stop := n.NotifyEgress(func() { s.guard() })
+		stop := n.NotifyEgress(s.socks.notified)
 		s.socks.mu.Lock()
 		s.socks.stop = stop
 		s.socks.mu.Unlock()
@@ -318,7 +340,7 @@ func seal(name string, drv netdriver.NetworkDriver, ep netdriver.Endpoint) (netd
 }
 
 func (s sealed) check() error {
-	if !netdriver.Confined(s.drv) || netdriver.IsRemote(s.Endpoint) {
+	if s.socks.tripped.Load() || !netdriver.Confined(s.drv) || netdriver.IsRemote(s.Endpoint) {
 		return fmt.Errorf("%w: network %s: %w", ErrEgress, s.name, syscall.ENETUNREACH)
 	}
 	return nil

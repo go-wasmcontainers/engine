@@ -97,6 +97,10 @@ type Manager struct {
 	sealedKeys map[string]bool
 }
 
+// sealedUnknown is the value of a sealed record whose name was lost to
+// damage: its key (the hash of the name) still seals that name.
+const sealedUnknown = "?"
+
 func (m *Manager) isSealed(name string) bool {
 	return m.sealed[name] || m.sealedKeys[sealedKey(name)]
 }
@@ -135,15 +139,23 @@ func New(opt Options) (*Manager, []string, error) {
 			// stays sealed, and the daemon still starts.
 			m.sealedKeys[k] = true
 			b, err := opt.Store.Get(k)
-			if err != nil {
-				repaired = append(repaired, fmt.Sprintf("sealed record %s unreadable, its network stays internal: %v", k, err))
-				continue
+			if err == nil && string(b) == sealedUnknown {
+				continue // repaired by an earlier start: the key alone holds the name
 			}
-			if n := string(b); nameRE.MatchString(n) && sealedKey(n) == k {
-				m.sealed[n] = true
-			} else {
-				repaired = append(repaired, fmt.Sprintf("sealed record %s is damaged, its network stays internal", k))
+			if err == nil {
+				if n := string(b); nameRE.MatchString(n) && sealedKey(n) == k {
+					m.sealed[n] = true
+					continue
+				}
+				err = errors.New("value does not match its key")
 			}
+			msg := fmt.Sprintf("sealed record %s damaged (%v), its network stays internal", k, err)
+			// Rewritten once, so the report does not repeat at every start;
+			// a store that refuses it keeps reporting.
+			if perr := opt.Store.Put(k, []byte(sealedUnknown)); perr == nil {
+				msg += "; record rewritten"
+			}
+			repaired = append(repaired, msg)
 		}
 	}
 	br, err := netdriver.NewLocal(netdriver.DefaultPrefix)
