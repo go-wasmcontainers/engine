@@ -335,12 +335,13 @@ wait on, so the browser's engine worker keeps its event loop.
   network, and a record that cannot be read or does not parse keeps its
   name (its key is the hash of the name) internal and is reported, instead of
   stopping the engine or opening the network. A relay (remote endpoint)
-  network is internal only while its driver says it cannot leave: the relay
-  driver (`netdriver/relaynet`) implements `EgressEnabled()` from the
-  relay's Welcome, so a class whose relay says `policy: none` can be
-  internal and a class with an egress allowlist is refused, fail closed
-  (anything but a plain `none`, an unknown policy included, counts as able to
-  leave). A container whose
+  network is never internal: a driver whose endpoints are remote is refused
+  on an internal network when the network is created, when the driver is
+  added and at every attach, before the relay sees a container name, even
+  for a class whose relay says `policy: none`. Separately, the relay driver
+  (`netdriver/relaynet`) implements `EgressEnabled()` from the relay's
+  Welcome for inspect, fail closed (anything but a plain `none`, an unknown
+  policy included, counts as able to leave). A container whose
   networks are all internal publishes no port, on start and as networks are
   connected and disconnected while it runs (`-p` is silently inert, as in
   Docker; moby v28.0.0: `libnetwork/endpoint.go:698` `if !n.internal`
