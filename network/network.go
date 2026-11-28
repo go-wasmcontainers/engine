@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-wasmcontainers/engine/netdriver"
@@ -95,6 +96,8 @@ type Manager struct {
 	// sealedKeys are the store keys of those records, whether or not their
 	// value could be read: a name whose key is here is sealed.
 	sealedKeys map[string]bool
+	// trips: the egress notice of each network (see tripFor).
+	trips map[*entry]*atomic.Bool
 }
 
 // sealedUnknown is the value of a sealed record whose name was lost to
@@ -375,8 +378,26 @@ func (m *Manager) Remove(ref string, inUse func(name string) bool) error {
 		}
 	}
 	delete(m.by, e.Name)
+	delete(m.trips, e)
 	e.drv.Close()
 	return nil
+}
+
+// tripFor is the network's egress verdict, shared by all its endpoints: set by
+// the driver's notice, never cleared, so an endpoint attached after the notice
+// is born tripped.
+func (m *Manager) tripFor(e *entry) *atomic.Bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.trips == nil {
+		m.trips = map[*entry]*atomic.Bool{}
+	}
+	t := m.trips[e]
+	if t == nil {
+		t = new(atomic.Bool)
+		m.trips[e] = t
+	}
+	return t
 }
 
 // Attach puts a container on a network ("" = the default) under its DNS
@@ -418,7 +439,7 @@ func (m *Manager) Attach(ctx context.Context, network, name string, aliases []st
 	if err != nil || ep == nil || !e.Internal {
 		return ep, err
 	}
-	return seal(e.Name, e.drv, ep)
+	return seal(e.Name, e.drv, ep, m.tripFor(e))
 }
 
 // Prune removes every created network that no container uses and whose
