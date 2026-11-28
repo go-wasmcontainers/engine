@@ -188,6 +188,10 @@ func New(opt Options) (*Daemon, error) {
 	}
 	repairedVols = append(repairedVols, repairedNets...)
 	opt.Containers.Network = nets.Attach
+	opt.Containers.Internal = func(name string) bool {
+		n, err := nets.Get(name)
+		return err == nil && n.Internal
+	}
 	d := &Daemon{opt: opt, store: st, mgr: container.NewManager(opt.Containers), lowers: map[image.Digest]*lowerEntry{}, events: bus, vols: vols, nets: nets}
 	// Containers from the last run, if any were stored.
 	rep, err := d.mgr.Restore(func(id string) (*rootfs.FS, error) {

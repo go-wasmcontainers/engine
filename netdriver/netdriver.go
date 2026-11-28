@@ -35,18 +35,59 @@ type AliasDriver interface {
 }
 
 // EgressDriver is a NetworkDriver that can carry a container's traffic out
-// of the engine (a relay with egress enabled). A driver that does not
-// implement it, or answers false, has no route out. An internal network
-// (Docker's `internal: true`) refuses one for good.
+// of the engine (a relay with egress enabled). It is how a driver DECLARES
+// itself: answering false is the positive statement "I cannot carry traffic
+// out" that an internal network (Docker's `internal: true`) requires, and
+// the answer is read live at every attach and dial. A driver that does not
+// implement it is not trusted: unknown is refused on an internal network.
+// A relay driver must implement it, answer true from the moment it may
+// route out (its Welcome says so), and its endpoints must report Remote().
 type EgressDriver interface {
 	NetworkDriver
 	EgressEnabled() bool
 }
 
-// HasEgress reports whether d can carry traffic out of the engine.
+// EgressNotifier is an EgressDriver that says when it starts to carry traffic
+// out: it calls fn, once and from any goroutine, as EgressEnabled turns true,
+// and the returned stop unregisters fn. An internal network whose driver
+// implements it closes the endpoints' sockets at that moment (on another
+// goroutine); without it the sockets are closed at the next call on them.
+//
+// The notice is the verdict: fn does not ask EgressEnabled, so it may be
+// called before EgressEnabled turns true, and the sockets are closed all the
+// same. Lock rules: fn only records the notice and starts a goroutine, never
+// calls back into the driver, so a driver MAY call it while holding its own
+// lock (including the one EgressEnabled takes). stop must not wait for
+// running callbacks while the driver's lock is held.
+type EgressNotifier interface {
+	EgressDriver
+	NotifyEgress(fn func()) (stop func())
+}
+
+// HasEgress reports whether d positively declares that it can carry traffic
+// out of the engine. It is NOT the test of an internal network: a driver
+// that says nothing answers false here. Use Confined.
 func HasEgress(d NetworkDriver) bool {
 	e, ok := d.(EgressDriver)
 	return ok && e.EgressEnabled()
+}
+
+// Confined reports whether d positively declares that it cannot carry
+// traffic out of the engine: it is a *Local (in-engine), or it implements
+// EgressDriver and answers false NOW. Anything else, a driver that says
+// nothing or a wrapper that hides EgressEnabled, is not confined: unknown
+// means refused on an internal network. The answer is live, so it is asked
+// again at every attach and dial.
+func Confined(d NetworkDriver) bool {
+	switch x := d.(type) {
+	case nil:
+		return false
+	case *Local:
+		return true
+	case EgressDriver:
+		return !x.EgressEnabled()
+	}
+	return false
 }
 
 // Endpoint is one container's place on a network.
