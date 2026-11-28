@@ -100,6 +100,8 @@ jobs:
           - { target: FuzzApplyChanges, pkg: ./daemon }
           # The filters query parameter of list and prune requests.
           - { target: FuzzParseFilters, pkg: ./api/server }
+          - { target: FuzzAllowlist, pkg: ./netdriver/relaynet }
+          - { target: FuzzOrigin, pkg: ./netdriver/relaynet }
           # The line editor's fuzz targets (FuzzReader, FuzzEditor,
           # FuzzSplitPartial, FuzzSplit) moved with it to go-widgets/lineedit,
           # whose CI runs them since v0.1.1 (go-widgets/lineedit#2).
