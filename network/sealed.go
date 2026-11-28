@@ -59,8 +59,10 @@ type socks struct {
 	mu   sync.Mutex
 	set  map[*sock]struct{}
 	stop func() // unregisters the egress notification
-	// tripped: the driver notified that it has egress. Permanent.
-	tripped atomic.Bool
+	// tripped: the driver notified that it has egress. Permanent, and shared
+	// by every endpoint of the network (it lives on the network's entry), so
+	// an endpoint attached after the notice is born tripped.
+	tripped *atomic.Bool
 }
 
 // add records c unless the network has egress by now. The test is made under
@@ -314,8 +316,8 @@ type sealedPrefixed struct {
 func (s sealedPrefixed) Prefix() netip.Prefix { return s.prefix.Prefix() }
 
 // seal returns ep refused unless its network is confined now.
-func seal(name string, drv netdriver.NetworkDriver, ep netdriver.Endpoint) (netdriver.Endpoint, error) {
-	s := sealed{ep, name, drv, &socks{}}
+func seal(name string, drv netdriver.NetworkDriver, ep netdriver.Endpoint, trip *atomic.Bool) (netdriver.Endpoint, error) {
+	s := sealed{ep, name, drv, &socks{tripped: trip}}
 	if err := s.check(); err != nil {
 		ep.Detach()
 		return nil, err
